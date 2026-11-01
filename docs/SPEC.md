@@ -99,7 +99,7 @@ package.json
 宿主提供（plugin 可调）
   workspace.list() / workspace.get(id)
   runtime.registerLaunchHook()            需要 runtime_launch_hook；之后宿主在每次拉起前调 plugin.launchHook(ctx) 取 env/profilePatch
-  runtime.ensure(profile, cwd)            需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）
+  runtime.ensure(profile, cwd, env?) → { runtimeId }  需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）。只允许插件自己装入的非工作区 profile（如 daily），cwd 须为已存在的绝对目录；env 是插件给的变量（如 DAILY_TOOLS_HOST/_TOKEN），保留名（ALCOVE_*、DSH_HOME）被拒（-32602）；凭据由宿主注入。卸载插件时一并停掉这些运行时。
   ui.register(contribution)               需要 settings_page 等能力；contribution 为声明式 schema
   ui.update(id, data)                      刷新卡片/侧栏数据
   settings.read(ns) / settings.write(ns, v) 命名空间隔离，策略段只有带 policy_write 能力的插件可写
@@ -129,7 +129,7 @@ package.json
 
 ### 3.3 profile 组装（首期）
 
-个人工作区 profile = `dsh-base` + 用户添加的 bundle + `alcove.profiles` 含 `personal` 的已启用插件包。全部经 `dsh plugin` 写入 `dsh.profile.bundles`，之后执行 `--dump-config`，失败则回退上一版 profile 并提示。Alcove 不直接改写 profile 的 `package.json` 或 `node_modules`。
+个人工作区 profile = sdk 模板（`--from-default-profile sdk`，含 `dsh-base` 与 `dsh-sdk-app`）+ `@precinct/alcove-bridge` + 用户添加的 bundle + `alcove.profiles` 含 `personal` 的已启用插件包。插件声明的其它 profile（如 `daily`）不存在时按同样的 sdk 模板 + 桥接先建好再装插件。新建工作区时把已装的 personal 插件补进去；移除工作区时删 profile 并从插件记录里去掉。实现：`internal/profile`、`internal/app`；e2e：`e2e/app_test.go`。全部经 `dsh plugin` 写入 `dsh.profile.bundles`，之后执行 `--dump-config`，失败则回退上一版 profile 并提示。Alcove 不直接改写 profile 的 `package.json` 或 `node_modules`。
 
 ## 4. 里程碑与任务
 

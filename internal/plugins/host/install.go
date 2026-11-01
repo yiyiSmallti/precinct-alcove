@@ -53,6 +53,10 @@ type Host struct {
 	// "personal" means every personal workspace profile. Nil installs into
 	// the store profile only.
 	ResolveProfiles func(name string) []string
+	// PrepareProfile creates a target profile that does not exist yet (from
+	// the sdk template plus the bridge), so that adding the package does not
+	// leave a bare profile dsh cannot run. Nil adds into whatever is there.
+	PrepareProfile func(ctx context.Context, profile string) error
 
 	mu sync.Mutex
 }
@@ -64,6 +68,7 @@ type Installed struct {
 	SHA256       string    `json:"sha256"`
 	Stored       string    `json:"stored"`   // .tgz inside the package store
 	Profiles     []string  `json:"profiles"` // target profiles it was added to (store profile excluded)
+	Targets      []string  `json:"targets"`  // alcove.profiles as declared, e.g. personal, daily
 	Capabilities []string  `json:"capabilities"`
 	Sidecar      string    `json:"sidecar,omitempty"` // relative path for this OS
 	SignedBy     int       `json:"signedBy"`          // index into TrustedKeys, -1 when unsigned
@@ -321,6 +326,13 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	for _, prof := range append([]string{StoreProfile}, plan.Profiles...) {
 		// Track the profile before adding: a cancelled or failed add can
 		// leave it half-changed, and undo skips profiles that are clean.
+		if prof != StoreProfile && h.PrepareProfile != nil {
+			if _, err := os.Stat(h.DSH.ProfileDir(prof)); errors.Is(err, os.ErrNotExist) {
+				if err := h.PrepareProfile(ctx, prof); err != nil {
+					return fail("profile", prof, err)
+				}
+			}
+		}
 		done = append(done, prof)
 		if _, err := h.DSH.PluginAdd(ctx, prof, stored); err != nil {
 			return fail("add", prof, err)
@@ -347,6 +359,7 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	if p.Alcove != nil {
 		rec.Capabilities = p.Alcove.Capabilities
 		rec.Sidecar = p.Alcove.Sidecar[h.GOOS]
+		rec.Targets = p.Alcove.Profiles
 	}
 	all, err := h.load()
 	if err == nil {
@@ -389,6 +402,62 @@ func (h *Host) Uninstall(ctx context.Context, name string) error {
 		return err
 	}
 	delete(all, name)
+	return h.save(all)
+}
+
+// AddToProfile adds an installed package to one more profile, e.g. a
+// workspace created after the package was installed. The profile is
+// recorded first so Uninstall also removes it there.
+func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	rec, ok := all[name]
+	if !ok || rec.Incomplete {
+		return fmt.Errorf("%s is not installed", name)
+	}
+	for _, p := range rec.Profiles {
+		if p == profile {
+			return nil
+		}
+	}
+	rec.Profiles = append(rec.Profiles, profile)
+	all[name] = rec
+	if err := h.save(all); err != nil {
+		return err
+	}
+	if _, err := h.DSH.PluginAdd(ctx, profile, rec.Stored); err != nil {
+		h.undo(context.WithoutCancel(ctx), name, []string{profile})
+		rec.Profiles = rec.Profiles[:len(rec.Profiles)-1]
+		all[name] = rec
+		h.save(all)
+		return &StepError{Step: "add", Profile: profile, Err: err}
+	}
+	return nil
+}
+
+// ForgetProfile drops profile from every record after the caller deleted
+// the profile itself (a removed workspace).
+func (h *Host) ForgetProfile(profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	for n, rec := range all {
+		keep := rec.Profiles[:0:0]
+		for _, p := range rec.Profiles {
+			if p != profile {
+				keep = append(keep, p)
+			}
+		}
+		rec.Profiles = keep
+		all[n] = rec
+	}
 	return h.save(all)
 }
 
