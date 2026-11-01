@@ -1,0 +1,327 @@
+//go:build e2e
+
+// End-to-end checks for sidecars and host extension protocol v1 (SPEC 3.2):
+// a signed package with a sidecar is installed through dsh, its sidecar runs
+// from the store profile, calls are gated by granted capabilities, and
+// crashes are rate limited. Writes e2e/report/sidecar.md.
+package e2e
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sig"
+)
+
+const e2ePlugin = "@precinct/alcove-e2e"
+
+// recorder is the Services the test hands to the manager.
+type recorder struct {
+	mu   sync.Mutex
+	ui   map[string]sidecar.Contribution
+	logs []string
+}
+
+func (r *recorder) Register(plugin string, c sidecar.Contribution) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ui[plugin+"#"+c.ID] = c
+	return nil
+}
+
+func (r *recorder) Update(plugin, id string, data json.RawMessage) error { return nil }
+
+func (r *recorder) Unregister(plugin, id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.ui, plugin+"#"+id)
+}
+
+func (r *recorder) log(plugin, level, msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logs = append(r.logs, msg)
+}
+
+func (r *recorder) has(prefix string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.logs {
+		if strings.HasPrefix(l, prefix) {
+			return l, true
+		}
+	}
+	return "", false
+}
+
+func newManager(rec *recorder, work string, env ...string) *sidecar.Manager {
+	return &sidecar.Manager{
+		AlcoveVersion: "0.1.0", DSHVersion: "e2e",
+		Services: sidecar.Services{UI: rec, Log: rec.log},
+		Settings: &sidecar.Settings{Dir: filepath.Join(work, "alcove", "settings")},
+		Env:      env,
+		Backoff:  100 * time.Millisecond, HelloTimeout: 2 * time.Second, StopTimeout: 500 * time.Millisecond,
+	}
+}
+
+func TestSidecar(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	cli := testCLI(t, work)
+	ver, _ := cli.Version(ctx)
+	r := &report{t: t, title: "边车与宿主扩展协议 v1 e2e（A3 运行部分，SPEC 3.2）", file: "sidecar.md"}
+	defer r.write(fmt.Sprintf("dsh %s · %s/%s · %s", ver, runtime.GOOS, runtime.GOARCH, time.Now().UTC().Format(time.RFC3339)))
+
+	// 1. Install a signed package whose sidecar is built for this OS.
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	h := &host.Host{DSH: cli, Dir: filepath.Join(work, "alcove", "plugins"), AlcoveVersion: "0.1.0", GOOS: runtime.GOOS, TrustedKeys: []ed25519.PublicKey{pub}}
+	tgz := pack(t, work, "1.0.0", buildFakePlugin(t, work), func(pj map[string]any) {
+		a := pj["alcove"].(map[string]any)
+		a["capabilities"] = []any{"settings_page", "runtime_launch_hook"}
+		a["sidecar"] = map[string]any{runtime.GOOS: "bin/alcove-e2e.exe"}
+	})
+	s, _ := sig.Sign(tgz, priv)
+	os.WriteFile(tgz+".sig", []byte(s), 0o644)
+	var rec0 *host.Installed
+	plan, err := h.Prepare(ctx, tgz)
+	if err == nil && !plan.OK() {
+		err = fmt.Errorf("problems: %v", plan.Problems)
+	}
+	if err == nil {
+		rec0, err = h.Install(ctx, plan)
+	}
+	exe := ""
+	if err == nil {
+		exe = h.SidecarPath(*rec0)
+		_, err = os.Stat(exe)
+	}
+	r.step("安装带边车的签名包，边车在包仓 profile 里", err, filepath.Base(filepath.Dir(filepath.Dir(exe))))
+	if err != nil {
+		return
+	}
+	spec := sidecar.Spec{Name: e2ePlugin, Version: "1.0.0", Exe: exe, Caps: rec0.Capabilities}
+
+	// 2. Handshake, capability checks, settings isolation, launch hook.
+	calls := []map[string]any{
+		{"method": "settings.write", "params": map[string]any{"ns": e2ePlugin, "value": map[string]any{"k": 1}}},
+		{"method": "settings.read", "params": map[string]any{"ns": e2ePlugin}},
+		{"method": "settings.write", "params": map[string]any{"ns": "@precinct/other", "value": 1}},
+		{"method": "settings.write", "params": map[string]any{"ns": "policy", "value": 1}},
+		{"method": "settings.read", "params": map[string]any{"ns": "policy"}},
+		{"method": "inbox.post", "params": map[string]any{"title": "x"}},
+		{"method": "ui.register", "params": map[string]any{"type": "sidebar_item", "id": "side"}},
+		{"method": "runtime.registerLaunchHook"},
+		{"method": "workspace.list"},
+	}
+	cb, _ := json.Marshal(calls)
+	ui := `[{"type":"settings_page","id":"e2e","sections":[]}]`
+	rec := &recorder{ui: map[string]sidecar.Contribution{}}
+	m := newManager(rec, work, "FAKE_PLUGIN_CALLS="+string(cb), "FAKE_PLUGIN_UI="+ui)
+	err = m.Start(ctx, spec)
+	if err == nil {
+		rec.mu.Lock()
+		_, ok := rec.ui[e2ePlugin+"#e2e"]
+		rec.mu.Unlock()
+		if !ok {
+			err = errors.New("settings_page from ready was not registered")
+		}
+	}
+	r.step("hello/ready 握手，ready 里的设置页登记到界面", err, "")
+	if err != nil {
+		st, _ := m.Status(e2ePlugin)
+		t.Logf("status %+v", st)
+		return
+	}
+	err = waitFor(func() bool { _, ok := rec.has("calls done"); return ok }, 5*time.Second)
+	want := []string{
+		`result 0 ok {}`,
+		`result 1 ok {"value":{"k":1}}`,
+		`result 2 err -32030`,
+		`result 3 err -32030`,
+		`result 4 ok {"value":null}`,
+		`result 5 err -32030`,
+		`result 6 err -32030`,
+		`result 7 ok {}`,
+		`result 8 err -32031`,
+	}
+	for i, w := range want {
+		if err != nil {
+			break
+		}
+		got, _ := rec.has(fmt.Sprintf("result %d ", i))
+		if got != w {
+			err = fmt.Errorf("call %d: got %q, want %q", i, got, w)
+		}
+	}
+	r.step("能力与命名空间把关：自己的设置可读写；别人的命名空间、策略段、未授权的 inbox 与侧栏被拒（-32030）；未提供的服务答 -32031", err, "")
+
+	lr := m.LaunchHooks(ctx, sidecar.LaunchContext{WorkspaceID: "w1", Profile: "ws-1", Cwd: work})
+	err = nil
+	if strings.Join(lr.Env, ",") != "FAKE_PLUGIN_TOKEN=from-hook" || len(lr.Failed) > 0 {
+		err = fmt.Errorf("launch hooks: env %v, failed %v", lr.Env, lr.Failed)
+	}
+	r.step("拉起前调用 launchHook，取回 env", err, strings.Join(lr.Env, ","))
+
+	err = m.UIAction(ctx, e2ePlugin, "e2e", "save", json.RawMessage(`{"a":1}`))
+	if err == nil {
+		err = waitFor(func() bool { _, ok := rec.has("uiAction"); return ok }, 2*time.Second)
+	}
+	r.step("界面操作转给插件（onUiAction）", err, "")
+
+	pid := m.PID(e2ePlugin)
+	err = m.Stop(ctx, e2ePlugin)
+	if err == nil && !pidGone(pid) {
+		err = fmt.Errorf("sidecar %d still running", pid)
+	}
+	if err == nil {
+		rec.mu.Lock()
+		if len(rec.ui) != 0 {
+			err = fmt.Errorf("ui left registered: %v", rec.ui)
+		}
+		rec.mu.Unlock()
+	}
+	r.step("shutdown 后边车退出，界面登记撤销", err, "")
+
+	// 3. Crash rate limiting.
+	var mu sync.Mutex
+	var states []string
+	m2 := newManager(&recorder{ui: map[string]sidecar.Contribution{}}, work, "FAKE_PLUGIN_MODE=crash")
+	m2.OnState = func(name string, st sidecar.Status) {
+		mu.Lock()
+		states = append(states, string(st.State))
+		mu.Unlock()
+	}
+	start := time.Now()
+	err = m2.Start(ctx, spec)
+	if err == nil {
+		err = waitFor(func() bool { st, _ := m2.Status(e2ePlugin); return st.State == sidecar.Crashed }, 10*time.Second)
+	}
+	st, _ := m2.Status(e2ePlugin)
+	if err == nil && st.Crashes != 3 {
+		err = fmt.Errorf("crashes = %d", st.Crashes)
+	}
+	mu.Lock()
+	detail := fmt.Sprintf("%s 内：%s", time.Since(start).Round(100*time.Millisecond), strings.Join(states, " → "))
+	mu.Unlock()
+	r.step("崩溃退避重启，3 次后停在 crashed 不再拉起", err, detail)
+	if err == nil {
+		time.Sleep(500 * time.Millisecond)
+		if st, _ := m2.Status(e2ePlugin); st.State != sidecar.Crashed {
+			err = fmt.Errorf("state moved on to %s", st.State)
+		}
+		if err == nil {
+			err = m2.Start(ctx, spec)
+		}
+		m2.Stop(ctx, e2ePlugin)
+	}
+	r.step("用户手动启动会清零崩溃计数并重新拉起", err, "")
+
+	// 4. A sidecar that never answers hello fails within the budget.
+	m3 := newManager(&recorder{ui: map[string]sidecar.Contribution{}}, work, "FAKE_PLUGIN_MODE=nohello")
+	m3.HelloTimeout, m3.MaxCrashes = 500*time.Millisecond, 1
+	start = time.Now()
+	err = m3.Start(ctx, spec)
+	if errors.Is(err, sidecar.ErrHandshake) {
+		err = nil
+		if d := time.Since(start); d > 4*time.Second {
+			err = fmt.Errorf("took %v", d)
+		}
+	} else {
+		err = fmt.Errorf("want handshake error, got %v", err)
+	}
+	r.step("不应答 hello 的边车在时限内判失败", err, time.Since(start).Round(100*time.Millisecond).String())
+
+	// 5. A sidecar that ignores shutdown is killed with its children.
+	m4 := newManager(&recorder{ui: map[string]sidecar.Contribution{}}, work, "FAKE_PLUGIN_MODE=stubborn")
+	err = m4.Start(ctx, spec)
+	child := 0
+	if err == nil {
+		err = waitFor(func() bool {
+			st, _ := m4.Status(e2ePlugin)
+			m := regexp.MustCompile(`child (\d+)`).FindStringSubmatch(st.Stderr)
+			if m != nil {
+				fmt.Sscan(m[1], &child)
+			}
+			return child > 0
+		}, 3*time.Second)
+	}
+	if err == nil {
+		start = time.Now()
+		m4.Stop(ctx, e2ePlugin)
+		if d := time.Since(start); d > 4*time.Second {
+			err = fmt.Errorf("stop took %v", d)
+		} else if !pidGone(child) {
+			err = fmt.Errorf("child %d still running", child)
+		}
+	}
+	r.step("不理 shutdown 的边车超时后连同子进程一起结束", err, "")
+
+	// 6. Uninstall leaves nothing behind.
+	err = h.Uninstall(ctx, e2ePlugin)
+	if err == nil {
+		if _, serr := os.Stat(exe); serr == nil {
+			err = errors.New("sidecar still on disk")
+		}
+	}
+	r.step("卸载后边车文件随包仓移除", err, "")
+}
+
+// buildFakePlugin builds e2e/fakeplugin for this OS, or reads a prebuilt
+// one from ALCOVE_E2E_FAKEPLUGIN on machines without Go.
+func buildFakePlugin(t *testing.T, work string) []byte {
+	if p := os.Getenv("ALCOVE_E2E_FAKEPLUGIN"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("ALCOVE_E2E_FAKEPLUGIN: %v", err)
+		}
+		return b
+	}
+	out := filepath.Join(work, "fakeplugin.exe")
+	cmd := exec.Command("go", "build", "-o", out, "./fakeplugin")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeplugin: %v\n%s", err, b)
+	}
+	b, _ := os.ReadFile(out)
+	return b
+}
+
+// pidGone reports whether pid has exited (absent, or a zombie on Linux).
+func pidGone(pid int) bool {
+	if pid <= 0 {
+		return true
+	}
+	for i := 0; i < 40; i++ {
+		if runtime.GOOS == "windows" {
+			out, _ := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH").Output()
+			if !strings.Contains(string(out), fmt.Sprint(pid)) {
+				return true
+			}
+		} else {
+			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+			if err != nil {
+				if runtime.GOOS == "linux" || exec.Command("kill", "-0", fmt.Sprint(pid)).Run() != nil {
+					return true
+				}
+			} else if f := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:])); len(f) > 0 && f[0] == "Z" {
+				return true
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
