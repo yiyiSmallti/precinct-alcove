@@ -223,7 +223,7 @@ func (s *Shell) fieldView(c *ui.Context, plugin, id string, f *settingsForm, fd 
 	switch fd.Type {
 	case "text":
 		ui.Field(c, label, func() {
-			changed = ui.TextInput(c, &v.text).Placeholder(fd.Placeholder).Changed()
+			changed = ui.TextInput(c, &v.text).Placeholder(fd.Placeholder).Disabled(f.busy).Changed()
 		})
 	case "secretRef":
 		ph := "输入后保存，只存在系统凭据库里"
@@ -231,20 +231,17 @@ func (s *Shell) fieldView(c *ui.Context, plugin, id string, f *settingsForm, fd 
 			ph = "已保存；输入新值可替换"
 		}
 		ui.Field(c, label, func() {
-			changed = ui.TextInput(c, &v.text).Password().Placeholder(ph).Changed()
+			changed = ui.TextInput(c, &v.text).Password().Placeholder(ph).Disabled(f.busy).Changed()
 		})
 	case "toggle":
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, label).Grow(1)
-			changed = ui.Switch(c, &v.on).Label(label).Changed()
+			changed = ui.Switch(c, &v.on).Label(label).Disabled(f.busy).Changed()
 		})
 	case "select":
-		labels := make([]string, len(fd.Options))
-		for i, o := range fd.Options {
-			labels[i] = o.Label
-		}
+		labels := optionLabels(fd.Options)
 		ui.Field(c, label, func() {
-			changed = ui.Select(c, &v.text, labels).Changed()
+			changed = ui.Select(c, &v.text, labels).Disabled(f.busy).Changed()
 		})
 	case "button":
 		if styledButton(c, label, fd.Style).Disabled(f.busy).Clicked() && !f.busy {

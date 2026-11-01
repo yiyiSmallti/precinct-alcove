@@ -226,3 +226,21 @@ func TestPluginsPagePlan(t *testing.T) {
 		t.Error("plan kept after cancel")
 	}
 }
+
+func TestSelectWithRepeatedLabels(t *testing.T) {
+	s, tt := newShell(t)
+	f := withPlugin(s, "settings_page")
+	s.Register("@precinct/daily", sidecar.Contribution{ID: "p", Type: "settings_page", Raw: json.RawMessage(`{"sections":[{"fields":[
+		{"id":"m","type":"select","label":"模型","value":"a","options":[{"value":"a","label":"快速"},{"value":"b","label":"快速"}]}]}]}`)})
+	s.mu.Lock()
+	s.page = pagePlugin + "@precinct/daily"
+	s.mu.Unlock()
+	tt.Frame()
+	if err := tt.Click("保存"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, tt, s, func() bool { _, a := f.got(); return len(a) == 1 })
+	if _, a := f.got(); !strings.HasSuffix(a[0], `{"values":{"m":"a"}}`) {
+		t.Errorf("untouched select changed: %q", a[0])
+	}
+}

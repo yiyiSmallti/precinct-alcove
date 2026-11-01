@@ -99,13 +99,15 @@ func (s *Shell) pluginForm(plugin string, c sidecar.Contribution) *settingsForm 
 			case "select":
 				var val string
 				json.Unmarshal(fd.Value, &val)
-				for _, o := range fd.Options {
+				labels := optionLabels(fd.Options)
+				for i, o := range fd.Options {
 					if o.Value == val {
-						v.text = o.Label
+						v.text = labels[i]
+						break
 					}
 				}
-				if v.text == "" && len(fd.Options) > 0 {
-					v.text = fd.Options[0].Label
+				if v.text == "" && len(labels) > 0 {
+					v.text = labels[0]
 				}
 			case "secretRef":
 				v.hasRef = len(fd.Value) > 0 && string(fd.Value) != "null" && string(fd.Value) != `""`
@@ -135,9 +137,10 @@ func (s *Shell) submit(plugin, id string, f *settingsForm, action string) {
 			case "toggle":
 				values[fd.ID] = v.on
 			case "select":
-				for _, o := range fd.Options {
-					if o.Label == v.text {
-						values[fd.ID] = o.Value
+				for i, l := range optionLabels(fd.Options) {
+					if l == v.text {
+						values[fd.ID] = fd.Options[i].Value
+						break
 					}
 				}
 			case "secretRef":
@@ -181,4 +184,22 @@ func (s *Shell) submit(plugin, id string, f *settingsForm, action string) {
 			}
 		})
 	}()
+}
+
+// optionLabels are the labels the select shows, made unique (a repeated
+// label gets its value appended) so the chosen label maps back to exactly
+// one option.
+func optionLabels(opts []fieldOption) []string {
+	count := map[string]int{}
+	for _, o := range opts {
+		count[o.Label]++
+	}
+	out := make([]string, len(opts))
+	for i, o := range opts {
+		out[i] = o.Label
+		if count[o.Label] > 1 {
+			out[i] = o.Label + "（" + o.Value + "）"
+		}
+	}
+	return out
 }

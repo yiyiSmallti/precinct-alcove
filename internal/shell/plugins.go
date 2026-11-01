@@ -283,8 +283,12 @@ func (s *Shell) installPlan() {
 		return
 	}
 	s.planBusy, s.planErr = true, ""
+	// Install updates the plan's targets: give it a copy, the card keeps
+	// showing the original under mu.
+	work := *plan
+	work.Profiles = append([]string(nil), plan.Profiles...)
 	go func() {
-		rec, err := s.App.InstallPlugin(context.Background(), plan)
+		rec, err := s.App.InstallPlugin(context.Background(), &work)
 		s.reloadPlugins()
 		s.post(func() {
 			s.planBusy = false

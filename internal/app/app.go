@@ -351,10 +351,12 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 			a.Runtimes.Stop(k)
 		}
 	}
-	if err := a.Plugins.Uninstall(ctx, name); err != nil {
-		return err
+	// Secrets go first: if the credential store refuses, the plugin stays
+	// installed and uninstalling again retries the cleanup.
+	if err := a.forgetPluginSecrets(name); err != nil {
+		return fmt.Errorf("remove %s's secrets: %w", name, err)
 	}
-	return a.forgetPluginSecrets(name)
+	return a.Plugins.Uninstall(ctx, name)
 }
 
 // Settings reads settings.json.
