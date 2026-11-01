@@ -3,6 +3,9 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -242,5 +245,25 @@ func TestSelectWithRepeatedLabels(t *testing.T) {
 	until(t, tt, s, func() bool { _, a := f.got(); return len(a) == 1 })
 	if _, a := f.got(); !strings.HasSuffix(a[0], `{"values":{"m":"a"}}`) {
 		t.Errorf("untouched select changed: %q", a[0])
+	}
+}
+
+func TestBackgroundHook(t *testing.T) {
+	s, _ := newShell(t)
+	var got []bool
+	s.OnBackground = func(on bool) { got = append(got, on) }
+	write := func(recs map[string]host.Installed) {
+		b, _ := json.Marshal(recs)
+		if err := os.WriteFile(filepath.Join(s.App.Plugins.Dir, "installed.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s.reloadPlugins()
+	}
+	write(map[string]host.Installed{"@precinct/x": {Name: "@precinct/x", Capabilities: []string{"settings_page"}}})
+	write(map[string]host.Installed{"@precinct/daily": {Name: "@precinct/daily", Capabilities: []string{"inbox", "background"}}})
+	write(map[string]host.Installed{"@precinct/daily": {Name: "@precinct/daily", Capabilities: []string{"inbox", "background"}}})
+	write(map[string]host.Installed{})
+	if fmt.Sprint(got) != "[true false]" {
+		t.Errorf("background changes %v", got)
 	}
 }

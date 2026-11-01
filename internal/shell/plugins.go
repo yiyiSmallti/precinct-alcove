@@ -43,16 +43,17 @@ func (s *Shell) calls() sidecarCalls {
 
 // pluginsState is the plugin part of the shell's state.
 type pluginsState struct {
-	plugins  []host.Installed
-	sidecars map[string]sidecar.Status
-	plan     *host.Plan // checked package waiting for the user's yes
-	planBusy bool       // checking or installing
-	planErr  string
-	confirm  string          // plugin whose uninstall waits for a second click
-	busy     map[string]bool // plugin → uninstall or restart running
-	forms    map[string]*settingsForm
-	chats    map[string]*chat
-	cards    map[string]*contribCard // card contributions, by plugin#id
+	plugins    []host.Installed
+	sidecars   map[string]sidecar.Status
+	plan       *host.Plan // checked package waiting for the user's yes
+	planBusy   bool       // checking or installing
+	planErr    string
+	background bool            // an installed plugin holds background
+	confirm    string          // plugin whose uninstall waits for a second click
+	busy       map[string]bool // plugin → uninstall or restart running
+	forms      map[string]*settingsForm
+	chats      map[string]*chat
+	cards      map[string]*contribCard // card contributions, by plugin#id
 }
 
 // contribCard is a card contribution (ui.register type card) with its
@@ -239,6 +240,16 @@ func (s *Shell) reloadPlugins() {
 		s.plugins = recs
 		for k, v := range st {
 			s.sidecars[k] = v
+		}
+		bg := false
+		for _, r := range recs {
+			bg = bg || !r.Incomplete && hasCap(r, "background")
+		}
+		if bg != s.background {
+			s.background = bg
+			if s.OnBackground != nil {
+				s.OnBackground(bg)
+			}
 		}
 	})
 }

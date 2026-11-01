@@ -75,6 +75,30 @@ func (r *recorder) has(prefix string) (string, bool) {
 	return "", false
 }
 
+// index is the position of the first log line with prefix, or -1.
+func (r *recorder) index(prefix string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, l := range r.logs {
+		if strings.HasPrefix(l, prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r *recorder) count(prefix string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, l := range r.logs {
+		if strings.HasPrefix(l, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func newManager(rec *recorder, work string, env ...string) *sidecar.Manager {
 	return &sidecar.Manager{
 		AlcoveVersion: "0.1.0", DSHVersion: "e2e",

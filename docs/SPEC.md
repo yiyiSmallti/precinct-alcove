@@ -17,7 +17,8 @@
 ```
 cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁、崩溃日志随 PR E
 internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；插件页（从文件安装：计划、问题、确认；卸载二次确认；边车状态、最后错误与 stderr 尾部、重新启动）；插件详情页渲染 settings_page；侧栏渲染 sidebar_item；持 inbox 的插件各有一个对话视图（消息、卡片、card 贡献、输入未送达标记与重发）。兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
-（待做）                    托盘 / 菜单栏、工作区 closed 事件、运行时面板
+cmd/alcove/tray.go         常驻：装有 background 插件时出现托盘（Windows）/ 菜单栏（macOS）图标，关窗口只隐藏，菜单"打开 Alcove""退出 Alcove"；卸掉最后一个 background 插件即撤图标、关窗口即退出
+（待做）                    运行时面板
 internal/core/identity     本地身份、凭据引用、钥匙串读写
 internal/core/workspace    工作区 CRUD、目录校验、每工作区 profile 名
 internal/core/credentials  凭据记录（credentials.json，不含 key）+ 系统凭据库里的 key；拉起时 LaunchEnv 生成 provider 的环境变量
@@ -108,7 +109,7 @@ package.json
   log(level, msg)
 插件提供（宿主可调）
   launchHook(ctx) → { env, profilePatch }   一期只应用 env；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn
-  onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed
+  onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed；通知，evt = { kind, workspace{ id, name, dir, profile } }。opened 在该工作区运行时启动时发一次（不是每条消息），closed 在运行时退出时发（空闲退出、崩溃、停止、移除工作区），removed 在 closed 之后
   onInboxInput{ id, text, ts }              需要 inbox；用户在该插件的对话视图里输入。插件落盘后应答 {}；宿主按 id 幂等重发（超时、断连、边车重启后），插件见重复 id 直接应答 {}；未应答的输入在视图标"未送达"。ts 为 RFC 3339 UTC
   onUiAction(contributionId, action, payload)
   onDeepLink(url)                          需要 deep_link

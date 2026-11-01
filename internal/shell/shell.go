@@ -40,6 +40,10 @@ type Shell struct {
 	PickFolder func() (string, error)
 	// PickFile asks the user for a plugin package (.tgz); "" means cancelled.
 	PickFile func() (string, error)
+	// OnBackground is called (on the UI thread) when Alcove starts or stops
+	// having a plugin that runs in the background: the window then hides to
+	// the tray / menu bar on close instead of quitting (SPEC 3.2 常驻).
+	OnBackground func(on bool)
 	// Lang picks displayReason texts ("zh", "en").
 	Lang string
 
@@ -163,7 +167,7 @@ func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
 	})
 }
 
-// OnExit is Runtimes.OnExit: the workspace's next message starts a new
+// OnExit is App.OnRuntimeExit: the workspace's next message starts a new
 // runtime; a crash is shown.
 func (s *Shell) OnExit(k alrt.Key, runtimeID string, err error) {
 	s.post(func() {
