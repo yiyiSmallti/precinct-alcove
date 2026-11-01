@@ -145,11 +145,20 @@ func TestBridge(t *testing.T) {
 
 	// dsh offers escalation only for the exact command the sandbox just
 	// denied, so the script runs it plainly first, then asks to escalate.
+	// dsh's shell tool is bash on Unix and pwsh on Windows (Windows retest,
+	// charter#9: there is no bash tool there).
+	shellTool := "bash"
+	if runtime.GOOS == "windows" {
+		shellTool = "pwsh"
+	}
 	escalate := func(path string) []fakemodel.ToolCall {
 		cmd := "touch " + path
+		if runtime.GOOS == "windows" {
+			cmd = "New-Item -ItemType File -Force -Path '" + path + "' | Out-Null"
+		}
 		return []fakemodel.ToolCall{
-			{Name: "bash", Input: map[string]any{"command": cmd, "description": "write outside the workspace"}},
-			{Name: "bash", Input: map[string]any{
+			{Name: shellTool, Input: map[string]any{"command": cmd, "description": "write outside the workspace"}},
+			{Name: shellTool, Input: map[string]any{
 				"command": cmd, "description": "write outside the workspace",
 				"sandbox_permissions": "danger-full-access", "justification": "e2e: needs a write outside the workspace",
 			}},
