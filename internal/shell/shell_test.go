@@ -2,10 +2,12 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -252,5 +254,26 @@ func TestStartFailedRefusesTasks(t *testing.T) {
 	s.mu.Unlock()
 	if starting || !strings.Contains(msg, "path too long") || notice == "" {
 		t.Errorf("starting=%v err=%q notice=%q", starting, msg, notice)
+	}
+}
+
+func TestExportDiagnostics(t *testing.T) {
+	s, tt := newShell(t)
+	out := filepath.Join(t.TempDir(), "diag.zip")
+	s.SaveFile = func(string) (string, error) { return out, nil }
+	if _, err := s.App.Creds.Add("k", "deepseek-official", "", "sk-shell-diag-123456"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.page = PageSettings
+	s.mu.Unlock()
+	tt.Frame()
+	if err := tt.Click("导出诊断包…"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, tt, s, func() bool { return strings.HasPrefix(s.diagStatus, "已导出") })
+	b, err := os.ReadFile(out)
+	if err != nil || len(b) == 0 || bytes.Contains(b, []byte("sk-shell-diag-123456")) {
+		t.Errorf("bundle %d bytes, err %v", len(b), err)
 	}
 }

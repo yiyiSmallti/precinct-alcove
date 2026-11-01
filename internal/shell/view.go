@@ -297,6 +297,19 @@ func (s *Shell) settingsView(c *ui.Context) {
 					}
 				})
 			})
+			ui.Text(c, "诊断").FontSize(18).Bold()
+			ui.Text(c, "把日志和设置打包成 zip，发给支持人员。key、token 和对话内容都不会包含在内。").TextColor(t.TextMuted)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				if ui.Button(c, "导出诊断包…").Disabled(s.diagBusy).Clicked() && !s.diagBusy {
+					s.exportDiagnostics()
+				}
+				if s.diagBusy {
+					ui.Spinner(c)
+				}
+			})
+			if s.diagStatus != "" {
+				ui.Text(c, s.diagStatus).TextColor(t.TextMuted).Selectable()
+			}
 		})
 	})
 }
