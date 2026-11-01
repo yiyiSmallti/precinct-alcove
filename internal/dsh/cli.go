@@ -59,6 +59,14 @@ func (e *Error) Error() string {
 				extra = append(extra, l)
 			}
 		}
+		// pnpm prints its error code (ERR_PNPM_...) on stdout, which dsh
+		// passes through instead of logging.
+		for _, l := range strings.Split(e.Stdout, "\n") {
+			if l = strings.TrimSpace(l); strings.Contains(l, "ERR_PNPM_") {
+				extra = append(extra, l)
+				break
+			}
+		}
 		if len(extra) > 0 {
 			msg += " | " + strings.Join(extra, " | ")
 		}

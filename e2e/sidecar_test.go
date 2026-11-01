@@ -51,6 +51,13 @@ func (r *recorder) Unregister(plugin, id string) {
 	delete(r.ui, plugin+"#"+id)
 }
 
+func (r *recorder) inbox(plugin string, item json.RawMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logs = append(r.logs, "inbox "+string(item))
+	return nil
+}
+
 func (r *recorder) log(plugin, level, msg string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -71,7 +78,7 @@ func (r *recorder) has(prefix string) (string, bool) {
 func newManager(rec *recorder, work string, env ...string) *sidecar.Manager {
 	return &sidecar.Manager{
 		AlcoveVersion: "0.1.0", DSHVersion: "e2e",
-		Services: sidecar.Services{UI: rec, Log: rec.log},
+		Services: sidecar.Services{UI: rec, Log: rec.log, Inbox: rec.inbox},
 		Settings: &sidecar.Settings{Dir: filepath.Join(work, "alcove", "settings")},
 		Env:      env,
 		Backoff:  100 * time.Millisecond, HelloTimeout: 2 * time.Second, StopTimeout: 500 * time.Millisecond,
@@ -80,7 +87,7 @@ func newManager(rec *recorder, work string, env ...string) *sidecar.Manager {
 
 func TestSidecar(t *testing.T) {
 	ctx := context.Background()
-	work := t.TempDir()
+	work := shortTemp(t)
 	cli := testCLI(t, work)
 	ver, _ := cli.Version(ctx)
 	r := &report{t: t, title: "边车与宿主扩展协议 v1 e2e（A3 运行部分，SPEC 3.2）", file: "sidecar.md"}
@@ -91,7 +98,7 @@ func TestSidecar(t *testing.T) {
 	h := &host.Host{DSH: cli, Dir: filepath.Join(work, "alcove", "plugins"), AlcoveVersion: "0.1.0", GOOS: runtime.GOOS, TrustedKeys: []ed25519.PublicKey{pub}}
 	tgz := pack(t, work, "1.0.0", buildFakePlugin(t, work), func(pj map[string]any) {
 		a := pj["alcove"].(map[string]any)
-		a["capabilities"] = []any{"settings_page", "runtime_launch_hook"}
+		a["capabilities"] = []any{"settings_page", "runtime_launch_hook", "inbox"}
 		a["sidecar"] = map[string]any{runtime.GOOS: "bin/alcove-e2e.exe"}
 	})
 	s, _ := sig.Sign(tgz, priv)
@@ -122,10 +129,11 @@ func TestSidecar(t *testing.T) {
 		{"method": "settings.write", "params": map[string]any{"ns": "@precinct/other", "value": 1}},
 		{"method": "settings.write", "params": map[string]any{"ns": "policy", "value": 1}},
 		{"method": "settings.read", "params": map[string]any{"ns": "policy"}},
-		{"method": "inbox.post", "params": map[string]any{"title": "x"}},
+		{"method": "inbox.post", "params": map[string]any{"id": "card-1", "kind": "card", "card": map[string]any{"title": "x", "actions": []any{map[string]any{"id": "done", "label": "完成"}}}}},
 		{"method": "ui.register", "params": map[string]any{"type": "sidebar_item", "id": "side"}},
 		{"method": "runtime.registerLaunchHook"},
 		{"method": "workspace.list"},
+		{"method": "inbox.post", "params": map[string]any{"kind": "message", "text": "no id"}},
 	}
 	cb, _ := json.Marshal(calls)
 	ui := `[{"type":"settings_page","id":"e2e","sections":[]}]`
@@ -153,10 +161,11 @@ func TestSidecar(t *testing.T) {
 		`result 2 err -32030`,
 		`result 3 err -32030`,
 		`result 4 ok {"value":null}`,
-		`result 5 err -32030`,
+		`result 5 ok {}`,
 		`result 6 err -32030`,
 		`result 7 ok {}`,
 		`result 8 err -32031`,
+		`result 9 err -32602`,
 	}
 	for i, w := range want {
 		if err != nil {
@@ -167,7 +176,7 @@ func TestSidecar(t *testing.T) {
 			err = fmt.Errorf("call %d: got %q, want %q", i, got, w)
 		}
 	}
-	r.step("能力与命名空间把关：自己的设置可读写；别人的命名空间、策略段、未授权的 inbox 与侧栏被拒（-32030）；未提供的服务答 -32031", err, "")
+	r.step("能力与命名空间把关：自己的设置可读写；别人的命名空间、策略段、未授权的侧栏被拒（-32030）；未提供的服务答 -32031；inbox.post 须带 id（-32602）", err, "")
 
 	lr := m.LaunchHooks(ctx, sidecar.LaunchContext{WorkspaceID: "w1", Profile: "ws-1", Cwd: work})
 	err = nil
@@ -181,6 +190,18 @@ func TestSidecar(t *testing.T) {
 		err = waitFor(func() bool { _, ok := rec.has("uiAction"); return ok }, 2*time.Second)
 	}
 	r.step("界面操作转给插件（onUiAction）", err, "")
+
+	err = m.InboxInput(ctx, e2ePlugin, "in-1", "你好", time.Now())
+	if err == nil {
+		err = waitFor(func() bool { l, ok := rec.has("inboxInput"); return ok && strings.Contains(l, `"in-1"`) }, 2*time.Second)
+	}
+	if err == nil {
+		err = m.UIAction(ctx, e2ePlugin, "card-1", "done", json.RawMessage(`{}`))
+	}
+	if err == nil {
+		err = waitFor(func() bool { return hasLine(rec, "card-1") }, 2*time.Second)
+	}
+	r.step("对话视图输入送达插件（onInboxInput），卡片按钮按 item id 转给插件", err, "")
 
 	pid := m.PID(e2ePlugin)
 	err = m.Stop(ctx, e2ePlugin)
@@ -373,6 +394,17 @@ func pidGone(pid int) bool {
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func hasLine(r *recorder, sub string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.logs {
+		if strings.HasPrefix(l, "uiAction") && strings.Contains(l, sub) {
+			return true
+		}
 	}
 	return false
 }

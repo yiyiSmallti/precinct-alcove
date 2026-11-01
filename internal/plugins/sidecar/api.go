@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/jsonrpc"
 )
@@ -216,7 +217,23 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 		if svc.Inbox == nil {
 			return nil, unavailable(method)
 		}
-		return map[string]any{}, svc.Inbox(p.name, raw)
+		var q struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || q.ID == "" {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "inbox.post: item needs an id"}
+		}
+		if err := svc.Inbox(p.name, raw); err != nil {
+			return nil, err
+		}
+		// Card buttons come back through onUiAction with the item id.
+		p.mu.Lock()
+		if p.ui == nil {
+			p.ui = map[string]bool{}
+		}
+		p.ui[q.ID] = true
+		p.mu.Unlock()
+		return map[string]any{}, nil
 	case "log":
 		var q struct{ Level, Msg string }
 		if err := json.Unmarshal(raw, &q); err != nil {
@@ -402,6 +419,19 @@ func (m *Manager) UIAction(ctx context.Context, plugin, contributionID, action s
 		return fmt.Errorf("%s has no ui contribution %q", plugin, contributionID)
 	}
 	return c.Call(ctx, "onUiAction", map[string]any{"contributionId": contributionID, "action": action, "payload": payload}, nil)
+}
+
+// InboxInput delivers what the user typed in a plugin's conversation view
+// (inbox capability). The plugin answers once it has stored the input; the
+// host resends the same id until then, so the plugin must treat a repeated
+// id as already handled.
+func (m *Manager) InboxInput(ctx context.Context, plugin, id, text string, ts time.Time) error {
+	for _, p := range m.running("inbox") {
+		if c := p.conn(); p.name == plugin && c != nil {
+			return c.Call(ctx, "onInboxInput", map[string]any{"id": id, "text": text, "ts": ts.UTC().Format(time.RFC3339Nano)}, nil)
+		}
+	}
+	return fmt.Errorf("%w: %s (with inbox)", ErrNotRunning, plugin)
 }
 
 // DeepLink routes alcove://plugin/<name>/... to that plugin if it holds

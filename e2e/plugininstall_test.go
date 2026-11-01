@@ -61,7 +61,7 @@ func (r *report) write(env string) {
 
 func TestPluginInstall(t *testing.T) {
 	ctx := context.Background()
-	work := t.TempDir()
+	work := shortTemp(t)
 	cli := testCLI(t, work)
 	dshVersion, err := cli.Version(ctx)
 	if err != nil {

@@ -61,7 +61,7 @@ func (a *scriptedAnswerer) AnswerQuestions(ctx context.Context, runtimeID string
 }
 
 func TestBridge(t *testing.T) {
-	work := t.TempDir()
+	work := shortTemp(t)
 	cli := testCLI(t, work)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
