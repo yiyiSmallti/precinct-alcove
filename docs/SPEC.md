@@ -6,8 +6,8 @@
 
 - Go 1.27+（MyGo v0.7.x 的要求），MyGo（原生模式；`internal/ui/webview` 作为页面级回退）。纯 Go，无 cgo。
 - dsh 运行时：Node 24 LTS 便携版 + `@deepseek-ai/dsh`（锁版本）+ `dsh-base` + `dsh-sdk-app` + pnpm（`dsh plugin` 调用 PATH 上的 `pnpm`，Alcove 拉起 dsh 时把随包 pnpm 放进 PATH），随包。
-- 平台：Windows 10+ x64；macOS 13+，arm64 与 amd64 合成通用二进制（`lipo`）。CI 每个 PR 交叉编译两个平台；macOS e2e 不进每次 CI（macOS runner 分钟数贵 10 倍），在 Mac 基线机上发版前跑。
-- 构建：GoReleaser 或自写脚本。Windows x64 安装包（MSIX 或 NSIS，验证周定）。macOS：`Alcove.app`（`Contents/Resources/` 下放对应平台的 Node、dsh 与 pnpm），`codesign` 用 Developer ID、开 hardened runtime，`notarytool` 公证并 staple，装进 `.dmg`。随包 Node 需要 `com.apple.security.cs.allow-jit` 与 `allow-unsigned-executable-memory` 两项 entitlement，否则 V8 起不来。MyGo 的签名增量更新两平台通用。
+- 平台：Windows 10+ x64；macOS 13+，arm64 与 amd64 合成通用二进制（`mygo build -platform darwin/universal`，随包 node 同样合成；两个 CPU 的原生包并存于一份 node_modules）。CI 每个 PR 交叉编译两个平台；macOS e2e 不进每次 CI（macOS runner 分钟数贵 10 倍），在 Mac 基线机上发版前跑。
+- 构建：`installer/build.sh`（备运行时 + `mygo build`，配置在 `mygo.json`）。Windows x64：NSIS 安装包，装到 `%LOCALAPPDATA%\Programs\Alcove`（用户可写，才能自更新）。macOS：`Alcove.app`（`Contents/Resources/runtime` 下放 Node、dsh 与 pnpm），Developer ID 签名、hardened runtime，`notarytool` 公证并 staple，装进 `.dmg`。随包 Node 需要 `com.apple.security.cs.allow-jit` 与 `allow-unsigned-executable-memory` 两项 entitlement（`installer/node.entitlements.plist`，经 `macos.helperEntitlements`），否则 V8 起不来。MyGo 的签名增量更新两平台通用。
 - 存储（下文的 `<数据目录>`）：Windows `%LOCALAPPDATA%\Alcove\`，macOS `~/Library/Application Support/Alcove/`。其下 `identity.json`、`workspaces.json`、`settings.json`、`plugins/`、`logs/`；dsh home 在 `<数据目录>/dsh/`，每工作区 profile 在 `dsh/profiles/ws-<id>/`。
 - 本机 IPC 端点（桥接、daily-tools 宿主等回连）：Windows 命名管道；macOS 用 Unix 套接字，放在 `$TMPDIR/alcove-<短随机名>.sock`，不放 `<数据目录>`（macOS 的套接字路径上限 104 字节，`~/Library/Application Support/...` 容易超）。
 - 凭据：经 MyGo `Secrets` 存系统凭据库：Windows Credential Manager，macOS 登录钥匙串（服务名 `Alcove`）。只存 key；其余配置明文 JSON。
@@ -15,7 +15,7 @@
 ## 2. 模块
 
 ```
-cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁（第二次启动把参数交给已开的实例，alcove:// 链接转给持 deep_link 的插件）；日志写 logs/alcove.log（超 5 MB 启动时轮转），Go 崩溃报告写 logs/crash.log
+cmd/alcove                 入口：找随包运行时（应用资源目录下 runtime/：Windows 在 exe 旁，macOS 为 Contents/Resources/runtime；go run 时为 resources/<平台>/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖），版本取 mygo.json 的 version，装配 app 与窗口；单实例锁（第二次启动只把窗口调出来）；alcove:// 链接（安装时注册，启动链接与之后的链接都经 App.OnOpenURL）等边车起来后转给持 deep_link 的插件；日志写 logs/alcove.log（超 5 MB 启动时轮转），Go 崩溃报告写 logs/crash.log
 internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；插件页（从文件安装：计划、问题、确认；卸载二次确认；边车状态、最后错误与 stderr 尾部、重新启动）；插件详情页渲染 settings_page；侧栏渲染 sidebar_item；持 inbox 的插件各有一个对话视图（消息、卡片、card 贡献、输入未送达标记与重发）。兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
 cmd/alcove/tray.go         常驻：装有 background 插件时出现托盘（Windows）/ 菜单栏（macOS）图标，关窗口只隐藏，菜单"打开 Alcove""退出 Alcove"；卸掉最后一个 background 插件即撤图标、关窗口即退出
 （待做）                    运行时面板
@@ -30,9 +30,9 @@ internal/plugins/host      插件生命周期：签名校验、读 package.json 
 internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime_launch_hook, provider_endpoint, background, inbox, deep_link
 internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
-internal/update            签名增量更新客户端；更新源可配置
+internal/update            更新（已实现，A5）：包一层 mygo.Updater（mygo build 产出的签名归档、差量包与 update-<平台>.json，ed25519 验签）；Mirror 是"更新源"：从企业镜像目录取清单，清单里的文件按文件名从同一目录取，验签不变。设置页"更新"：当前版本、检查更新（启动时与每 24 小时自动）、更新说明、下载并安装（进度）、立即重启、更新源（https，存 settings.json 的 updateSource）
 internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB；decisions.jsonl 只留时间、类型、运行时、工具名、结果与问题数，不含理由、问题与回答）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。读不到凭据库（如钥匙串锁着）就不导出。短于 4 字节的值不按值替换（会把正文改得面目全非），靠形状规则兜底。验收 A4：e2e/diag_test.go
-installer/                 安装包脚本、签名流水线
+installer/                 stage-runtime.sh 备随包运行时（darwin-universal、windows-amd64），build.sh 打包，node.entitlements.plist；签名与更新密钥见 README.dev.md
 e2e/                       端到端脚本与报告模板
 ```
 

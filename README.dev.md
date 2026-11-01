@@ -11,3 +11,25 @@ go test -tags e2e ./e2e/ -count=1 -v
 ```
 
 报告写到 `e2e/report/*.md`，CI 每次运行都作为构件上传。
+
+# 打包
+
+在 Mac 上（`.app`、签名与 `.dmg` 需要 macOS；Windows 安装包另需 NSIS：`brew install makensis`）：
+
+```sh
+installer/build.sh                    # macOS 通用 .app/.dmg + Windows x64 安装包，产物在 build/
+installer/build.sh darwin-universal   # 只打一个平台
+ALCOVE_RESTAGE=0 installer/build.sh   # 复用已备好的运行时
+```
+
+`installer/stage-runtime.sh` 把随包运行时（Node 24 官方构建，按 SHASUMS256 校验；锁版本的 dsh 与 pnpm；pnpm 垫片；bridge 包）放进 `resources/`，`mygo build` 再把它装进应用的资源目录（Windows 在 exe 旁，macOS 在 `Contents/Resources`）。npm 按目标平台装原生可选包，不跑安装脚本（它们会为构建机编译）。macOS 通用版：两个 CPU 的 node 分放 `resources/darwin-arm64`、`resources/darwin-amd64`，由 mygo 合成通用二进制；`node_modules` 合并两个 CPU 的原生包放 `resources/darwin`，两边同名文件必须一致。约 1.1 GB，不进仓库。
+
+配置在 `mygo.json`：`alcove://` 链接注册（`urlSchemes`）、macOS 13+、随包 node 的 JIT entitlement（`installer/node.entitlements.plist`）。
+
+还差用户提供的部分，到位后加进 `mygo.json`：
+
+- macOS 签名公证：`macos.signingIdentity` 填 `Developer ID Application: … (QHNTJ2FBJY)`，`macos.notarize.keychainProfile` 填 `xcrun notarytool store-credentials` 存的配置名。没有时为临时签名，只能在构建它的 Mac 上运行。
+- Windows 代码签名：`windows.certificate`（.pfx，口令在 `MYGO_WINDOWS_CERTIFICATE_PASSWORD`）。
+- 自动更新：`go tool mygo keygen` 生成密钥对，公钥与发布位置写进 `updates`（`publicKey` 与 `url`），私钥只放发布机或 CI 密钥（`MYGO_UPDATER_PRIVATE_KEY`）。没有 `updates` 的构建不检查更新，设置页显示"不能自动更新"。
+
+应用内更新（A5）：启动时与每 24 小时检查一次，设置页"更新"可手动检查、看更新说明、下载安装（有差量包时只下差量）并重启。"更新源"填企业镜像的 https 目录（放一份发布文件的拷贝）后，清单与文件都从镜像取，但仍须是同一把密钥签的包。
