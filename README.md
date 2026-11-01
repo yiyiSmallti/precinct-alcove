@@ -6,9 +6,9 @@ Precinct 系列 · 基于 dsh（DeepSeek Harness）的轻量桌面客户端 + �
 
 一个人自己的角落：常驻的 Go 进程（MyGo 原生 UI + 客户端核心）、按需拉起的完整 dsh 运行时、按需拉起的插件子进程。安装包为完整构建，运行时随包签名发布，与客户端同版本号。
 
-**裸装只有 dsh 基础功能**：个人身份与 API 凭据（钥匙串，注入 dsh 进程）、工作区、对话与本机任务执行（dsh 完整能力：工具、审批、提问表单、子代理、skills、MCP）、运行时生命周期、每工作区 profile 的 dsh bundle 管理（dsh 原生机制，用户可装任意社区 bundle）、只有"从文件安装插件包"一个入口的插件宿主。没有日常 bot、记忆、日程、组织功能，也没有市场。不依赖任何服务端，模型调用直连 OpenAI 兼容端点；需要路由或脱敏时可指向单独运行的本机 [Gatehouse](https://github.com/yiyiSmallti/gatehouse)。
+**裸装只有 dsh 基础功能**：个人身份与 API 凭据（钥匙串，注入 dsh 进程）、工作区、对话与本机任务执行（dsh 完整能力：工具、审批、提问表单、子代理、skills、MCP）、运行时生命周期、每工作区 profile 的 dsh bundle 管理（dsh 原生机制，用户可装任意社区 bundle）、只有"从文件安装插件包"一个入口的插件宿主。没有日常 bot、记忆、日程、组织功能，也没有市场。不依赖任何服务端，模型调用直连 OpenAI 兼容端点；需要路由或脱敏时可指向单独运行的本机 [Gatehouse](https://github.com/yiyiSmallti/precinct-gatehouse)。
 
-其余一切都是 Alcove 插件，由 [Dovetail](https://github.com/yiyiSmallti/dovetail) 提供（只上第一方插件）：
+其余一切都是 Alcove 插件，由 [Dovetail](https://github.com/yiyiSmallti/precinct-dovetail) 提供（只上第一方插件）：
 
 - `dovetail`：插件市场本身。随安装包预装、可卸载；没有它宿主仍能从文件安装。
 
@@ -29,7 +29,7 @@ Alcove 核心不含任何 Cloister 代码，也不含日常 bot。
 
 ## 与系列其它项目的关系
 
-只通过插件和线协议关联，不共享代码库。总览与架构文档见 [Charter](https://github.com/yiyiSmallti/charter)。
+只通过插件和线协议关联，不共享代码库。总览与架构文档见 [Charter](https://github.com/yiyiSmallti/precinct-charter)。
 
 ## 状态
 
