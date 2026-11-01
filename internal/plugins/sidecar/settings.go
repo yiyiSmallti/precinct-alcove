@@ -1,6 +1,7 @@
 package sidecar
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,8 +22,10 @@ type Settings struct {
 const MaxSettingsSize = 1 << 20
 
 func (s *Settings) path(ns string) string {
-	// Namespaces contain "@" and "/"; hex keeps file names flat and safe.
-	return filepath.Join(s.Dir, hex.EncodeToString([]byte(ns))+".json")
+	// Namespaces contain "@" and "/" and can be long; a digest keeps file
+	// names flat, safe and bounded. The file itself records the namespace.
+	sum := sha256.Sum256([]byte(ns))
+	return filepath.Join(s.Dir, hex.EncodeToString(sum[:])+".json")
 }
 
 // Read returns the stored value, or JSON null when nothing is stored.
