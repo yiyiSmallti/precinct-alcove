@@ -137,6 +137,22 @@ func (m *Manager) List() []Info {
 	return out
 }
 
+// Keys returns the keys of running runtimes and of those still starting.
+func (m *Manager) Keys() []Key {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]Key, 0, len(m.procs)+len(m.starting))
+	for k := range m.procs {
+		keys = append(keys, k)
+	}
+	for k := range m.starting {
+		if m.procs[k] == nil {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 // Stop stops the runtime for k, if any. A start still in progress for k is
 // waited for and then stopped, so nothing for k is left running on return.
 func (m *Manager) Stop(k Key) error {
@@ -168,17 +184,7 @@ func (m *Manager) Stop(k Key) error {
 // StopAll stops every runtime, in parallel; used on quit and when policy
 // turns local execution off.
 func (m *Manager) StopAll() {
-	m.mu.Lock()
-	keys := make([]Key, 0, len(m.procs)+len(m.starting))
-	for k := range m.procs {
-		keys = append(keys, k)
-	}
-	for k := range m.starting {
-		if m.procs[k] == nil {
-			keys = append(keys, k)
-		}
-	}
-	m.mu.Unlock()
+	keys := m.Keys()
 	var wg sync.WaitGroup
 	for _, k := range keys {
 		wg.Add(1)

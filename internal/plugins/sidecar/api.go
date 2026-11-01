@@ -374,9 +374,13 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 // WorkspaceEvent tells sidecars with workspace_hook that a workspace was
 // opened, closed, created or removed. It does not wait for them.
 func (m *Manager) WorkspaceEvent(ctx context.Context, kind string, ws Workspace) {
+	// Each delivery runs on its own: a sidecar that stops reading its pipe
+	// must not hold up the workspace operation. A stuck write ends when the
+	// sidecar is stopped and its pipe closes.
+	ctx = context.WithoutCancel(ctx)
 	for _, p := range m.running("workspace_hook") {
 		if c := p.conn(); c != nil {
-			c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws})
+			go c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws})
 		}
 	}
 }

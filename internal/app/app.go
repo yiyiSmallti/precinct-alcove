@@ -215,10 +215,12 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 		return err
 	}
 	a.Runtimes.Stop(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
-	if err := a.Plugins.ForgetProfile(w.Profile); err != nil {
+	// Delete first: if that fails, the plugin records still list the
+	// profile, so a later uninstall can clean it up.
+	if err := a.Profiles.Delete(w.Profile); err != nil {
 		return err
 	}
-	if err := a.Profiles.Delete(w.Profile); err != nil {
+	if err := a.Plugins.ForgetProfile(w.Profile); err != nil {
 		return err
 	}
 	if err := a.Workspaces.Remove(id); err != nil {
@@ -342,9 +344,10 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 			}
 		}
 	}
-	for _, info := range a.Runtimes.List() {
-		if own[info.Profile] {
-			a.Runtimes.Stop(info.Key)
+	// Keys includes starts still in progress (Stop waits for them).
+	for _, k := range a.Runtimes.Keys() {
+		if own[k.Profile] {
+			a.Runtimes.Stop(k)
 		}
 	}
 	return a.Plugins.Uninstall(ctx, name)
