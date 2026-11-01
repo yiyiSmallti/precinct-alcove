@@ -106,7 +106,7 @@ func (c *CLI) Run(ctx context.Context, args ...string) (Result, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.Node, append([]string{c.Bin}, args...)...)
-	cmd.Env = c.environ()
+	cmd.Env = c.Environ()
 	cmd.Stdin = nil // closed: dsh must not prompt
 	// On timeout, end the whole process tree (dsh runs pnpm), and stop
 	// waiting for output pipes a stray descendant may still hold.
@@ -127,7 +127,9 @@ func (c *CLI) Run(ctx context.Context, args ...string) (Result, error) {
 	return res, nil
 }
 
-func (c *CLI) environ() []string {
+// Environ is the environment every dsh process gets: PATH with the bundled
+// tools first, DSH_HOME, and Env.
+func (c *CLI) Environ() []string {
 	env := os.Environ()
 	path := os.Getenv("PATH")
 	if len(c.ToolDirs) > 0 {

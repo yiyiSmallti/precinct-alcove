@@ -1,0 +1,12 @@
+# Alcove bridge bundle (Alcove SPEC 3.1).
+# - The SDK profile has no approval or question channel; this bundle answers
+#   both through the Alcove client over the host-callback connection.
+# - The SDK profile has no ask_user_question tool; add it.
+# - Session logs must not ride along on model requests.
+- id: session-log-deepseek
+  disabled: true
+- insert:
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+    - id: alcove-bridge
+      name: '@precinct/alcove-bridge'

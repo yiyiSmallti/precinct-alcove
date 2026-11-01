@@ -37,7 +37,13 @@ e2e/                       端到端脚本与报告模板
 
 - 启动：`node dsh.js --profile <ws-profile> --dsh-home <home>`，cwd = 工作区目录，env 注入 `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`（或 provider 对应变量），由 `runtime_launch_hook` 允许插件追加 env 与 profile patch。
 - 就绪：JSON-RPC `initialize` 成功；超时 15 s 判失败并展示 stderr 尾部。
-- 审批与提问：`dsh-sdk-app`（rc.5）没有审批通道，审批请求直接判 `unavailable`（验证报告第 4 节）。Alcove 随包带第一方 bundle `@precinct/alcove-bridge`，装进每个工作区 profile：挂 `approval/request` 终端监听器与 `ctx.userQuestions` 回答方，经本机 IPC（Windows 命名管道；地址与一次性令牌经环境变量注入，约定同 Charter protocols.md 的宿主回调约定）回连 Alcove；同一 patch 关掉 `session-log-deepseek`。
+- 审批与提问：`dsh-sdk-app`（rc.5）没有审批通道，审批请求直接判 `unavailable`（验证报告第 4 节）。Alcove 随包带第一方 bundle `@precinct/alcove-bridge`（`bridge/`），装进每个工作区 profile。它的 patch 关掉 `session-log-deepseek`，补上 sdk 模板缺的 `ask_user_question` 工具（`@deepseek-ai/dsh-tool-ask-user`），并挂 `approval/request` 与 `user-questions/request` 两个终端监听器，经本机 IPC 回连 Alcove。连接约定同 Charter protocols.md 的宿主回连约定：`ALCOVE_BRIDGE_HOST` / `ALCOVE_BRIDGE_HOST_TOKEN`，令牌每次拉起一个、一次性，握手后从进程环境删除。协议 `alcove-bridge/1`，每行一个 JSON-RPC 帧：
+  - bridge → 宿主 `host.hello { protocol, token, pid }`
+  - bridge → 宿主 `approval.ask { requestId, sessionId, toolName, callId?, reason, displayReason? }` → `{ outcome: "allowed-once" | "rejected" | "cancelled" }`。`displayReason` 是 dsh 多语言文本（字符串或 `{ en, zh }`），界面按语言取，`reason` 是给模型看的原文。
+  - bridge → 宿主 `questions.ask { requestId, sessionId, callId?, questions[] }` → `{ answers: [{ id, selected[], custom? }] }`
+  - bridge → 宿主通知 `request.cancel { requestId }`：dsh 撤回了请求（回合取消等），界面关掉对应卡片。连接断开时宿主同样关掉该运行时的所有卡片。
+  - 宿主不可达或握手失败时监听器交给下一个（即 dsh 默认的 `unavailable`），不放行。
+  - 每个审批结果与回答追加一行到 `%LOCALAPPDATA%\Alcove\logs\decisions.jsonl`（PRD F3）。
 - 模型端点：dsh 自带 DeepSeek 适配器讲 Anthropic Messages API。指向 OpenAI 兼容端点（含本机 Gatehouse，`http://127.0.0.1:7788/v1`）时，在 profile patch 里配 `@deepseek-ai/dsh-llm-pi-ai` 的 `openai-completions` 路由，静态请求头 `X-Gatehouse-Source: alcove`。
 - 空闲：最后一个会话事件后计时，默认 600 s；钉住则不退。
 - 退出：先 `shutdown` RPC，5 s 后强杀；记录会话 JSONL 是否完整（文件尾校验）。
