@@ -21,7 +21,7 @@ internal/core/workspace    工作区 CRUD、目录校验、每工作区 profile 
 internal/runtime           dsh 进程管理：拉起、就绪探测、JSON-RPC 客户端、空闲计时、停止；一个工作区一个进程
 internal/runtime/events    dsh 事件 → UI 模型（消息、工具调用、审批、提问、子代理、完成/失败）
 internal/profile           profile 目录生成、bundle add/remove（npm/.tgz）、--dump-config 校验、按归属组装（首期只有个人）
-internal/plugins/host      插件生命周期：安装/卸载、manifest、签名、子进程启动、JSON-RPC、崩溃限频
+internal/plugins/host      插件生命周期：签名校验、读 package.json 的 engines.dsh 与 alcove 字段、经 dsh plugin add/remove 安装卸载、边车子进程启动、JSON-RPC、崩溃限频
 internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime_launch_hook, provider_endpoint, background, inbox, deep_link
 internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
@@ -40,14 +40,52 @@ e2e/                       端到端脚本与报告模板
 - 空闲：最后一个会话事件后计时，默认 600 s；钉住则不退。
 - 退出：先 `shutdown` RPC，5 s 后强杀；记录会话 JSONL 是否完整（文件尾校验）。
 
-### 3.2 插件协议 v1（JSON-RPC 2.0 over stdio）
+### 3.2 插件包与宿主扩展协议 v1
+
+插件包遵循 dsh 官方插件协议（Charter ADR 0001）：每个 Alcove 插件都是一个标准 dsh 插件 npm 包，宿主侧能力另在 `package.json` 的 `alcove` 字段声明。
+
+**包格式**
 
 ```
-握手   host → plugin: hello{ protocol: 1, alcoveVersion, grantedCaps[] }
+<name>-<version>.tgz          标准 npm 包，可直接 dsh plugin add
+<name>-<version>.tgz.sig      Ed25519 分离签名，签 .tgz 的 sha256
+package.json
+  name, version, description
+  engines.dsh                 dsh 原生兼容校验，与随包 dsh 版本比对
+  组合包 patch                 按 dsh 约定声明（字段名以验证周核实为准）；无运行时内能力也声明空 patch
+  dependencies                其它 dsh 包（如 daily-tools），pnpm 解析
+  alcove:
+    protocol: 1
+    host: "<Alcove SemVer 范围>"
+    requires: ["<插件名>@<范围>"]          宿主侧依赖，安装前检查
+    capabilities: [...]                   见 internal/plugins/caps
+    profiles: ["personal" | "daily" | "worker" | ...]   装入哪些 profile；personal 指所有个人工作区
+    sidecar: { windows: "bin/<name>.exe" }  可选
+    ui: [...]                             声明式 UI schema v1
+```
+
+- 首期第一方包不带 install/postinstall 脚本；Alcove 调用 dsh 时不批准任何构建脚本。
+- 签名：Ed25519，公钥随 Alcove 内置，可由策略追加组织公钥。dsh/pnpm 不验发布者签名，签名只由 Alcove 校验。
+
+**安装流程（F5）**
+
+1. 选择 `.tgz`（同目录需有 `.sig`）→ 校验签名。
+2. 读包内 `package.json`：`engines.dsh` 不覆盖随包 dsh 版本即拒绝（不走 dsh 的版本豁免）；`alcove.host` 不覆盖当前 Alcove 版本即拒绝；`alcove.requires` 未满足即提示先装依赖。
+3. 展示能力清单，用户确认。
+4. `dsh plugin --profile alcove-plugins add <tgz>`：保留 profile，只作包仓，永不启动；边车从这里的 `node_modules/<name>/` 拉起。
+5. 对 `alcove.profiles` 覆盖的每个 profile 执行 `dsh plugin --profile <p> add <tgz>`，再 `--dump-config` 校验。
+6. 任一步失败：已完成的 profile 逐个 `dsh plugin remove`，包仓同样移除，界面展示 dsh 诊断原文。
+7. 卸载顺序相反：停边车 → 各 profile remove → 包仓 remove。
+
+**宿主扩展协议 v1（边车，JSON-RPC 2.0 over stdio）**
+
+```
+握手   host → plugin: hello{ protocol: 1, alcoveVersion, dshVersion, grantedCaps[] }
        plugin → host: ready{ name, version, uiContributions[] }
 宿主提供（plugin 可调）
   workspace.list() / workspace.get(id)
   runtime.registerLaunchHook()            需要 runtime_launch_hook；之后宿主在每次拉起前调 plugin.launchHook(ctx) 取 env/profilePatch
+  runtime.ensure(profile, cwd)            需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）
   ui.register(contribution)               需要 settings_page 等能力；contribution 为声明式 schema
   ui.update(id, data)                      刷新卡片/侧栏数据
   settings.read(ns) / settings.write(ns, v) 命名空间隔离，策略段只有带 policy_write 能力的插件可写
@@ -62,13 +100,12 @@ e2e/                       端到端脚本与报告模板
   shutdown()
 ```
 
-- manifest：`name, version, hosts.alcove（SemVer 范围）, requires[], capabilities[], dsh_bundles[]{name, version, profiles[]}, ui[], exec{ windows: "bin/plugin.exe" }, signature`。
-- 签名：Ed25519，公钥随 Alcove 内置，可由策略追加组织公钥。
+- 没有 `alcove.sidecar` 的插件只有运行时内能力与声明式 UI，不起子进程。
 - 声明式 UI schema v1：`settings_page{ sections[]{ fields[]: text|secretRef|toggle|select|button } }`、`sidebar_item{ title, icon, viewId }`、`card{ title, body(markdown 子集), actions[]{ id, label, style } }`。
 
 ### 3.3 profile 组装（首期）
 
-个人工作区 profile = `dsh-base` + 用户添加的 bundle + 已启用插件 manifest 里声明给该归属的 bundle。写入 `dsh.profile.bundles` 后执行 `--dump-config`，失败则回退上一版 profile 并提示。
+个人工作区 profile = `dsh-base` + 用户添加的 bundle + `alcove.profiles` 含 `personal` 的已启用插件包。全部经 `dsh plugin` 写入 `dsh.profile.bundles`，之后执行 `--dump-config`，失败则回退上一版 profile 并提示。Alcove 不直接改写 profile 的 `package.json` 或 `node_modules`。
 
 ## 4. 里程碑与任务
 
@@ -76,7 +113,7 @@ e2e/                       端到端脚本与报告模板
 - M1 骨架（2 周）：MyGo 窗口 + 工作区列表 + 拉起 dsh + 对话视图渲染消息与工具调用；凭据管理；空闲退出。验收 A1 的前半段。
 - M2 完整对话（2 周）：审批卡、提问表单、子代理、会话列表与续跑、模型/思考强度选择；运行时面板；诊断包。验收 A1、A4。
 - M3 profile 与 bundle（1 周）：npm/.tgz 添加、校验、回退。验收 A2。
-- M4 插件宿主（3 周）：协议 v1、能力授权、声明式 UI、签名、崩溃限频、卸载；策略段读取；提供 Go 空插件样例与 SDK（`alcove-plugin-go` 小包，仅 RPC 封装）。验收 A3。
+- M4 插件宿主（3 周）：dsh 插件包安装链路、宿主扩展协议 v1、能力授权、声明式 UI、签名、崩溃限频、卸载；策略段读取；提供最小样例包（空组合包 patch + Go 边车）与 SDK（`alcove-plugin-go` 小包，仅 RPC 封装）。验收 A3。
 - M5 安装与更新（1 周）：完整构建打包、签名、增量更新、更新源配置。验收 A5。
 - 合计约 9 周，单人全栈节奏；并行两人可压到 6 周（UI 与 runtime/plugins 分开）。
 
@@ -87,6 +124,6 @@ e2e/                       端到端脚本与报告模板
 ## 6. 风险与对策
 
 - MyGo 原生模式成熟度：按验证周结论决定页面级 webview 回退范围。
-- dsh rc 版本破坏性变更：锁版本；升级只在发版窗口，并重跑 e2e。
+- dsh rc 版本破坏性变更：锁版本；升级只在发版窗口，并重跑 e2e。插件包的兼容性统一由 `engines.dsh` 兜底，升级 dsh 时先跑 Dovetail 全部包的安装校验。
 - 声明式 UI 表达力不够：首期只承诺三类贡献，插件更复杂的视图走通用对话视图的卡片。
 - Node 便携版的杀毒软件误报：安装包整体签名，首批客户终端加白名单，文档写明。
