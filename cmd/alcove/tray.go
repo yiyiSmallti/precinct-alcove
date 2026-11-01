@@ -53,6 +53,9 @@ func (b *background) set(on bool) {
 		}
 		b.tray = t
 	case !on && b.tray != nil:
+		// The window may be hidden: bring it back before the tray, the
+		// only way to reopen it, goes away.
+		b.show()
 		b.tray.Destroy()
 		b.tray = nil
 	}

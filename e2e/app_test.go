@@ -208,6 +208,9 @@ func TestApp(t *testing.T) {
 			return closed && removed
 		}, 10*time.Second)
 	}
+	if err == nil && rec.index("workspace closed "+w1.ID) > rec.index("workspace removed "+w1.ID) {
+		err = errors.New("removed arrived before closed")
+	}
 	r.step("移除工作区：停运行时、删 profile、保留文件，插件记录同步，插件收到 closed 与 removed", err, "")
 
 	// 6. Uninstalling the plugin stops its sidecar and leaves no copies.

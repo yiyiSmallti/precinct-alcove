@@ -66,9 +66,12 @@ type App struct {
 	// before Start.
 	OnRuntimeExit func(k alrt.Key, runtimeID string, err error)
 
-	cfg    Config
-	mu     sync.Mutex
-	opened sync.Map // alrt.Key → sidecar.Workspace, for the closed event
+	cfg Config
+	mu  sync.Mutex
+	// Workspace lifecycle (opened/closed), by runtime id: each started
+	// workspace runtime gets one opened and one closed, in that order.
+	lifeMu sync.Mutex
+	life   map[string]*lifecycle
 	cancel context.CancelFunc
 }
 
@@ -221,6 +224,7 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 		return err
 	}
 	a.Runtimes.Stop(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
+	a.closeWorkspace(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
 	// Delete first: if that fails, the plugin records still list the
 	// profile, so a later uninstall can clean it up.
 	if err := a.Profiles.Delete(w.Profile); err != nil {
@@ -252,36 +256,73 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		// drop it silently.
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
 	}
-	running := a.running(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
 	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env)
 	if err != nil {
 		return nil, err
 	}
-	if !running {
-		// opened pairs with closed: once per runtime start.
-		a.opened.Store(alrt.Key{Profile: w.Profile, Cwd: w.Dir}, sidecarView(w))
-		a.Sidecars.WorkspaceEvent(ctx, "opened", sidecarView(w))
-	}
+	a.opened(p, alrt.Key{Profile: w.Profile, Cwd: w.Dir}, sidecarView(w))
 	return p, nil
 }
 
-func (a *App) running(k alrt.Key) bool {
-	for _, x := range a.Runtimes.Keys() {
-		if x == k {
-			return true
+type lifecycle struct {
+	key    alrt.Key
+	ws     sidecar.Workspace
+	closed bool
+}
+
+// opened sends opened the first time a runtime is seen. A runtime that
+// already exited (its exit callback may have run before this) is closed
+// right after.
+func (a *App) opened(p *alrt.Process, k alrt.Key, ws sidecar.Workspace) {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	if a.life == nil {
+		a.life = map[string]*lifecycle{}
+	}
+	if a.life[p.ID] != nil {
+		return
+	}
+	l := &lifecycle{key: k, ws: ws}
+	a.life[p.ID] = l
+	a.Sidecars.WorkspaceEvent(context.Background(), "opened", ws)
+	select {
+	case <-p.Exited():
+		a.closeLocked(l)
+	default:
+	}
+}
+
+// closeLocked sends closed once per opened.
+func (a *App) closeLocked(l *lifecycle) {
+	if l.closed {
+		return
+	}
+	l.closed = true
+	a.Sidecars.WorkspaceEvent(context.Background(), "closed", l.ws)
+}
+
+// closeWorkspace sends closed for every open runtime of k (RemoveWorkspace,
+// after stopping it, so closed goes out before removed).
+func (a *App) closeWorkspace(k alrt.Key) {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	for _, l := range a.life {
+		if l.key == k {
+			a.closeLocked(l)
 		}
 	}
-	return false
 }
 
 // runtimeExited tells workspace_hook plugins that a workspace's runtime is
 // gone (closed: idle exit, crash or stop), then the UI.
 func (a *App) runtimeExited(k alrt.Key, runtimeID string, err error) {
-	// The record may already be gone (RemoveWorkspace stops the runtime
-	// first): use what was sent with opened.
-	if w, ok := a.opened.LoadAndDelete(k); ok {
-		a.Sidecars.WorkspaceEvent(context.Background(), "closed", w.(sidecar.Workspace))
+	a.lifeMu.Lock()
+	// A runtime not seen yet exited before OpenWorkspace got it back;
+	// opened closes it then.
+	if l := a.life[runtimeID]; l != nil {
+		a.closeLocked(l)
 	}
+	a.lifeMu.Unlock()
 	if a.OnRuntimeExit != nil {
 		a.OnRuntimeExit(k, runtimeID, err)
 	}

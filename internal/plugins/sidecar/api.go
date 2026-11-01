@@ -389,17 +389,45 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 }
 
 // WorkspaceEvent tells sidecars with workspace_hook that a workspace was
-// opened, closed, created or removed. It does not wait for them.
+// opened, closed, created or removed. It does not wait for them, and each
+// sidecar gets the events in the order WorkspaceEvent was called.
 func (m *Manager) WorkspaceEvent(ctx context.Context, kind string, ws Workspace) {
-	// Each delivery runs on its own: a sidecar that stops reading its pipe
+	// Deliveries run off the caller: a sidecar that stops reading its pipe
 	// must not hold up the workspace operation. A stuck write ends when the
 	// sidecar is stopped and its pipe closes.
 	ctx = context.WithoutCancel(ctx)
 	for _, p := range m.running("workspace_hook") {
 		if c := p.conn(); c != nil {
-			go c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws})
+			p.enqueue(func() { c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws}) })
 		}
 	}
+}
+
+// enqueue runs fn after the notifications queued before it, off the
+// caller's goroutine.
+func (p *plugin) enqueue(fn func()) {
+	p.evMu.Lock()
+	p.evq = append(p.evq, fn)
+	if p.evBusy {
+		p.evMu.Unlock()
+		return
+	}
+	p.evBusy = true
+	p.evMu.Unlock()
+	go func() {
+		for {
+			p.evMu.Lock()
+			if len(p.evq) == 0 {
+				p.evBusy = false
+				p.evMu.Unlock()
+				return
+			}
+			next := p.evq[0]
+			p.evq = p.evq[1:]
+			p.evMu.Unlock()
+			next()
+		}
+	}()
 }
 
 // UIAction forwards a click or form submit on a contribution to its owner.

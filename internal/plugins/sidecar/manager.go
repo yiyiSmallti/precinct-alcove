@@ -107,6 +107,10 @@ type plugin struct {
 	ui         map[string]bool // contribution ids it registered
 	stopping   bool
 	generation int // bumps on every Start/Stop so stale supervisors give up
+
+	evMu   sync.Mutex
+	evq    []func() // ordered notifications waiting to be written
+	evBusy bool
 }
 
 type proc struct {
