@@ -31,6 +31,11 @@ Alcove 核心不含任何 Cloister 代码，也不含日常 bot。
 
 只通过插件和线协议关联，不共享代码库。总览与架构文档见 [Charter](https://github.com/yiyiSmallti/precinct-charter)。
 
+## 文档
+
+- [首期 PRD](docs/PRD.md)
+- [首期执行 Spec](docs/SPEC.md)
+
 ## 状态
 
 设计阶段。MVP 只做 Windows，macOS 为不承诺的开发构建。第一步是为期一周的技术验证：MyGo 原生模式在低配基线机上的表现、中文输入法、VDI 下的 GPU 绘制、dsh 运行时的冷启动与内存、完整构建安装包的体积、插件子进程的常驻开销。
