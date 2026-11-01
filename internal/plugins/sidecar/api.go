@@ -313,7 +313,7 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 				// Windows environment names are case-insensitive.
 				uk := strings.ToUpper(k)
 				for _, r := range reservedEnv {
-					if strings.HasPrefix(uk, r) || k == "" || strings.Contains(k, "=") {
+					if strings.HasPrefix(uk, r) || k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(out.Env[k], 0) {
 						err = fmt.Errorf("launch hook may not set %q", k)
 					}
 				}

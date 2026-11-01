@@ -336,11 +336,15 @@ func (p *plugin) crashed(gen int, cause error) {
 	p.mu.Unlock()
 	p.cleanup()
 	if n >= p.m.maxCrashes() {
-		p.setState(Crashed, cause.Error())
+		if !p.setStateFor(gen, Crashed, cause.Error()) {
+			return
+		}
 		p.log("error", fmt.Sprintf("sidecar crashed %d times in %s; not restarting: %v", n, p.m.crashWindow(), cause))
 		return
 	}
-	p.setState(Backoff, cause.Error())
+	if !p.setStateFor(gen, Backoff, cause.Error()) {
+		return // stopped or restarted during cleanup
+	}
 	p.log("warn", fmt.Sprintf("sidecar crashed (%d/%d): %v", n, p.m.maxCrashes(), cause))
 	delay := p.m.backoff() << (n - 1)
 	time.AfterFunc(delay, func() {
@@ -371,7 +375,17 @@ func (p *plugin) cleanup() {
 }
 
 func (p *plugin) setState(st State, errText string) {
+	p.setStateFor(-1, st, errText)
+}
+
+// setStateFor sets the state only while generation gen is current and not
+// stopping (gen -1: always), checked under the same lock as the update.
+func (p *plugin) setStateFor(gen int, st State, errText string) bool {
 	p.mu.Lock()
+	if gen >= 0 && (gen != p.generation || p.stopping) {
+		p.mu.Unlock()
+		return false
+	}
 	p.state = st
 	if errText != "" {
 		p.lastErr = errText
@@ -381,6 +395,7 @@ func (p *plugin) setState(st State, errText string) {
 	if p.m.OnState != nil {
 		p.m.OnState(p.name, status)
 	}
+	return true
 }
 
 func (p *plugin) statusLocked() Status {
