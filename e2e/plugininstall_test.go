@@ -34,8 +34,9 @@ import (
 )
 
 type report struct {
-	t     *testing.T
-	lines []string
+	t           *testing.T
+	title, file string
+	lines       []string
 }
 
 func (r *report) step(name string, err error, detail string) {
@@ -51,23 +52,16 @@ func (r *report) step(name string, err error, detail string) {
 
 func (r *report) write(env string) {
 	os.MkdirAll("report", 0o755)
-	body := "# 插件包安装链路 e2e（A3 安装与卸载部分）\n\n" + env + "\n\n| 步骤 | 结果 | 说明 |\n| --- | --- | --- |\n" + strings.Join(r.lines, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join("report", "plugin-install.md"), []byte(body), 0o644); err != nil {
+	body := "# " + r.title + "\n\n" + env + "\n\n| 步骤 | 结果 | 说明 |\n| --- | --- | --- |\n" + strings.Join(r.lines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join("report", r.file), []byte(body), 0o644); err != nil {
 		r.t.Log(err)
 	}
 }
 
 func TestPluginInstall(t *testing.T) {
-	node, bin := os.Getenv("ALCOVE_E2E_NODE"), os.Getenv("ALCOVE_E2E_DSH")
-	if node == "" || bin == "" {
-		t.Skip("set ALCOVE_E2E_NODE and ALCOVE_E2E_DSH")
-	}
 	ctx := context.Background()
 	work := t.TempDir()
-	cli := &dsh.CLI{Node: node, Bin: bin, Home: filepath.Join(work, "dsh-home"), Timeout: 3 * time.Minute}
-	if d := os.Getenv("ALCOVE_E2E_TOOLDIR"); d != "" {
-		cli.ToolDirs = []string{d}
-	}
+	cli := testCLI(t, work)
 	dshVersion, err := cli.Version(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +75,7 @@ func TestPluginInstall(t *testing.T) {
 		TrustedKeys:     []ed25519.PublicKey{pub},
 		ResolveProfiles: func(name string) []string { return map[string][]string{"personal": targets}[name] },
 	}
-	r := &report{t: t}
+	r := &report{t: t, title: "插件包安装链路 e2e（A3 安装与卸载部分）", file: "plugin-install.md"}
 	defer r.write(fmt.Sprintf("dsh %s · %s/%s · %s", dshVersion, runtime.GOOS, runtime.GOARCH, time.Now().UTC().Format(time.RFC3339)))
 
 	sidecar := buildSidecar(t, work)
@@ -300,8 +294,16 @@ func clean(cli *dsh.CLI, profile, name string) error {
 	return nil
 }
 
-// buildSidecar cross-compiles a trivial Windows sidecar.
+// buildSidecar cross-compiles a trivial Windows sidecar, or reads a prebuilt
+// one from ALCOVE_E2E_SIDECAR on machines without Go.
 func buildSidecar(t *testing.T, work string) []byte {
+	if p := os.Getenv("ALCOVE_E2E_SIDECAR"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("ALCOVE_E2E_SIDECAR: %v", err)
+		}
+		return b
+	}
 	dir := filepath.Join(work, "sidecar-src")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module sidecar\n\ngo 1.23\n"), 0o644)

@@ -1,0 +1,16 @@
+{
+  "name": "@precinct/alcove-bridge",
+  "version": "0.1.0",
+  "description": "Alcove bridge: answers dsh approval requests and ask_user_question through the Alcove client.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "cordis.patch.yml"],
+  "engines": { "dsh": ">=0.2.1-rc.5 <0.3.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

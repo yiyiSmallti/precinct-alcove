@@ -7,8 +7,13 @@ import (
 	"syscall"
 )
 
-// killTree runs cmd in its own process group and kills the group on cancel.
-func killTree(cmd *exec.Cmd) {
+// OwnProcessGroup makes cmd the leader of a new process group so KillTree
+// can end it together with its descendants.
+func OwnProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+}
+
+// KillTree kills a started cmd and its descendants.
+func KillTree(cmd *exec.Cmd) error {
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
