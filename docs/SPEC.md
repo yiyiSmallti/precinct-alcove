@@ -31,7 +31,7 @@ internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime
 internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
 internal/update            签名增量更新客户端；更新源可配置
-internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。验收 A4：e2e/diag_test.go
+internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB；decisions.jsonl 只留时间、类型、运行时、工具名、结果与问题数，不含理由、问题与回答）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。读不到凭据库（如钥匙串锁着）就不导出。短于 4 字节的值不按值替换（会把正文改得面目全非），靠形状规则兜底。验收 A4：e2e/diag_test.go
 installer/                 安装包脚本、签名流水线
 e2e/                       端到端脚本与报告模板
 ```

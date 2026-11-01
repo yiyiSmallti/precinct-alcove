@@ -68,6 +68,14 @@ func main() {
 	a.Sidecars.OnState = s.OnSidecarState
 
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { a.Close() })
+	// alcove:// links go to the plugins once their sidecars are up.
+	ready := make(chan struct{})
+	deepLink := func(u string) {
+		<-ready
+		if err := a.Sidecars.DeepLink(context.Background(), u); err != nil {
+			log.Printf("deep link %s: %v", u, err)
+		}
+	}
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1100, Height: 760, Content: ui.View(s.View)})
 		s.Post = win.Update
@@ -84,11 +92,7 @@ func main() {
 			bg.show()
 			for _, arg := range args {
 				if strings.HasPrefix(arg, "alcove://") {
-					go func(u string) {
-						if err := a.Sidecars.DeepLink(context.Background(), u); err != nil {
-							log.Printf("deep link %s: %v", u, err)
-						}
-					}(arg)
+					go deepLink(arg)
 				}
 			}
 		})
@@ -110,12 +114,11 @@ func main() {
 				s.StartFailed(err)
 			}
 			s.Load()
+			close(ready)
 			// Started from an alcove:// link.
 			for _, arg := range os.Args[1:] {
 				if strings.HasPrefix(arg, "alcove://") {
-					if err := a.Sidecars.DeepLink(context.Background(), arg); err != nil {
-						log.Printf("deep link %s: %v", arg, err)
-					}
+					deepLink(arg)
 				}
 			}
 		}()

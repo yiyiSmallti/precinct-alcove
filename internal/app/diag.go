@@ -1,14 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/diag"
 )
@@ -47,6 +51,19 @@ func (a *App) ExportDiagnostics(ctx context.Context, w io.Writer) (*diag.Manifes
 	about["sidecars"] = sidecars
 	aboutJSON, _ := json.MarshalIndent(about, "", "  ")
 
+	// Without every stored value the value-based redaction cannot be done:
+	// no bundle then (a locked keychain, say).
+	secrets, err := a.secretValues()
+	if err != nil {
+		return nil, fmt.Errorf("读不到系统凭据库，无法脱敏：%w", err)
+	}
+	extra := map[string][]byte{"about.json": aboutJSON}
+	audit := filepath.Join(a.Layout.Logs(), "decisions.jsonl")
+	if b, err := decisionsSummary(audit); err == nil {
+		extra[rel(audit)] = b // replaces the full log, which holds conversation text
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	home, _ := os.UserHomeDir()
 	return diag.Export(w, diag.Source{
 		Root: a.Layout.Root,
@@ -55,25 +72,81 @@ func (a *App) ExportDiagnostics(ctx context.Context, w io.Writer) (*diag.Manifes
 			rel(filepath.Join(a.Layout.Plugins(), "installed.json")), rel(a.pluginSecretsIndex()),
 		},
 		Dirs:    []string{rel(a.Layout.Logs()), rel(a.Layout.PluginSettings())},
-		Extra:   map[string][]byte{"about.json": aboutJSON},
-		Secrets: a.secretValues(),
+		Extra:   extra,
+		Secrets: secrets,
 		Home:    home,
 	})
 }
 
 // secretValues are all values Alcove keeps in the system credential store.
-func (a *App) secretValues() [][]byte {
-	out := a.Creds.Keys()
+func (a *App) secretValues() ([][]byte, error) {
+	out, err := a.Creds.Keys()
+	if err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
 	idx := map[string][]string{}
-	fsutil.ReadJSON(a.pluginSecretsIndex(), &idx)
+	err = fsutil.ReadJSON(a.pluginSecretsIndex(), &idx)
 	a.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	for plugin, names := range idx {
 		for _, n := range names {
-			if v, err := a.cfg.Secrets.Get(pluginSecretKey(plugin, n)); err == nil {
+			v, err := a.cfg.Secrets.Get(pluginSecretKey(plugin, n))
+			switch {
+			case errors.Is(err, credentials.ErrNotFound):
+			case err != nil:
+				return nil, fmt.Errorf("read %s's secret %s: %w", plugin, n, err)
+			default:
 				out = append(out, v)
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+// decisionsSummary is the approval and question log without what was
+// asked and answered (tool reasons, question text, the user's answers are
+// conversation): per record its time, kind, runtime, tool, outcome and how
+// many questions.
+func decisionsSummary(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec struct {
+			Time    string `json:"time"`
+			Kind    string `json:"kind"`
+			Runtime string `json:"runtime"`
+			Outcome any    `json:"outcome"`
+			Request struct {
+				ToolName  string            `json:"toolName"`
+				Questions []json.RawMessage `json:"questions"`
+			} `json:"request"`
+		}
+		sum := map[string]any{}
+		if json.Unmarshal(line, &rec) != nil {
+			sum["unreadable"] = true
+		} else {
+			sum["time"], sum["kind"], sum["runtime"] = rec.Time, rec.Kind, rec.Runtime
+			if rec.Request.ToolName != "" {
+				sum["toolName"] = rec.Request.ToolName
+			}
+			if rec.Outcome != nil {
+				sum["outcome"] = rec.Outcome
+			}
+			if rec.Kind == "questions" {
+				sum["questions"] = len(rec.Request.Questions)
+			}
+		}
+		l, _ := json.Marshal(sum)
+		out.Write(append(l, '\n'))
+	}
+	return out.Bytes(), nil
 }
