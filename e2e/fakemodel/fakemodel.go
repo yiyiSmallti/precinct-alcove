@@ -27,6 +27,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	requests []string // request paths, in order
+	keys     map[string]bool
 	srv      *http.Server
 }
 
@@ -52,6 +53,13 @@ func (s *Server) Requests() []string {
 	return append([]string(nil), s.requests...)
 }
 
+// SawKey reports whether a request carried key as x-api-key or bearer token.
+func (s *Server) SawKey(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keys[key]
+}
+
 // ToolCall is one scripted tool call.
 type ToolCall struct {
 	Name  string
@@ -75,6 +83,14 @@ type request struct {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, r.Method+" "+r.URL.Path)
+	if s.keys == nil {
+		s.keys = map[string]bool{}
+	}
+	for _, h := range []string{"X-Api-Key", "Authorization"} {
+		if v := strings.TrimPrefix(r.Header.Get(h), "Bearer "); v != "" {
+			s.keys[v] = true
+		}
+	}
 	s.mu.Unlock()
 	if !strings.HasSuffix(r.URL.Path, "/messages") {
 		w.Header().Set("content-type", "application/json")
