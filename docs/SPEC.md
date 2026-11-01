@@ -15,15 +15,16 @@
 ## 2. 模块
 
 ```
-cmd/alcove                 入口、单实例锁、崩溃上报到本地日志
-internal/ui                MyGo 视图：工作区列表、对话视图、审批卡、提问表单、设置、插件页、运行时面板
+cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁、崩溃日志随 PR E
+internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
+internal/ui                （D3b）插件页、插件对话视图、运行时面板、托盘
 internal/ui/declarative    声明式 UI 渲染器：settings_page / sidebar_item / card 三类 schema → MyGo 控件
 internal/core/identity     本地身份、凭据引用、钥匙串读写
 internal/core/workspace    工作区 CRUD、目录校验、每工作区 profile 名
 internal/core/credentials  凭据记录（credentials.json，不含 key）+ 系统凭据库里的 key；拉起时 LaunchEnv 生成 provider 的环境变量
 internal/core/paths        各平台数据目录与文件布局（ALCOVE_DATA_DIR 可覆盖）
 internal/runtime           dsh 进程管理：拉起、就绪探测、JSON-RPC 客户端、空闲计时、停止；一个工作区一个进程
-internal/runtime/events    dsh 事件 → UI 模型（消息、工具调用、审批、提问、子代理、完成/失败）
+internal/runtime/events    dsh 事件 → UI 模型（已实现：用户消息、assistant/live-chunk 流式文本与推理、assistant/message 定稿、工具调用与结果、回合结束原因、标题；按 seq 去重）；子代理待做
 internal/profile           profile 目录生成、bundle add/remove（npm/.tgz）、--dump-config 校验、按归属组装（首期只有个人）
 internal/plugins/host      插件生命周期：签名校验、读 package.json 的 engines.dsh 与 alcove 字段、经 dsh plugin add/remove 安装卸载、边车子进程启动、JSON-RPC、崩溃限频
 internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime_launch_hook, provider_endpoint, background, inbox, deep_link
