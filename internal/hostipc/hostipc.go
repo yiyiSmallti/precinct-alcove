@@ -137,11 +137,12 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) Close() error { return s.ln.Close() }
 
 type connHandler struct {
-	s    *Server
-	nc   net.Conn
-	mu   sync.Mutex
-	att  *Attachment
-	conn *jsonrpc.Conn
+	s     *Server
+	nc    net.Conn
+	mu    sync.Mutex
+	att   *Attachment
+	ended bool // serveConn finished; no more attaching
+	conn  *jsonrpc.Conn
 }
 
 func (s *Server) serveConn(ctx context.Context, c net.Conn) {
@@ -153,15 +154,18 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 	h.conn.Serve(cctx)
 	cancel()
 	c.Close()
+	// Under s.mu (as hello registers), mark the connection ended so a
+	// handshake still in flight cannot attach a dead connection.
+	s.mu.Lock()
 	h.mu.Lock()
 	att := h.att
+	h.ended = true
 	h.mu.Unlock()
+	if att != nil && s.attached[att.Target] == att {
+		delete(s.attached, att.Target)
+	}
+	s.mu.Unlock()
 	if att != nil {
-		s.mu.Lock()
-		if s.attached[att.Target] == att {
-			delete(s.attached, att.Target)
-		}
-		s.mu.Unlock()
 		s.Handler.OnDetach(att)
 	}
 }
@@ -233,12 +237,17 @@ func (h *connHandler) hello(params json.RawMessage) (any, error) {
 		s.mu.Unlock()
 		return nil, &jsonrpc.Error{Code: CodeAlreadyAttached, Message: "already attached"}
 	}
+	h.mu.Lock()
+	if h.ended {
+		h.mu.Unlock()
+		s.mu.Unlock()
+		return nil, jsonrpc.ErrClosed
+	}
 	att := &Attachment{Conn: h.conn, Target: target, Hello: hello}
 	s.attached[target] = att
-	s.mu.Unlock()
-	h.mu.Lock()
 	h.att = att
 	h.mu.Unlock()
+	s.mu.Unlock()
 	s.Handler.OnAttach(att)
 	return map[string]any{"protocol": hello.Protocol}, nil
 }

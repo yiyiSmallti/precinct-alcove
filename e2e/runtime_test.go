@@ -173,7 +173,11 @@ func TestRuntime(t *testing.T) {
 			other = append(other, req)
 		}
 	}
-	r.step("模型请求只打到配置的端点", nil, fmt.Sprintf("%d 次 /v1/messages，其他路径：%v", len(model.Requests())-len(other), other))
+	var routeErr error
+	if len(other) > 0 {
+		routeErr = fmt.Errorf("unexpected model requests: %v", other)
+	}
+	r.step("模型请求只打到配置的端点", routeErr, fmt.Sprintf("%d 次 /v1/messages，其他路径：%v", len(model.Requests())-len(other), other))
 }
 
 func grepTree(root, needle string) error {
