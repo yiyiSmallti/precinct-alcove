@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,7 @@ func TestPluginInstall(t *testing.T) {
 	rec, err := h.Install(ctx, plan)
 	r.step("安装（包仓 + 两个目标 profile + --dump-config）", err, "")
 	if err != nil {
+		keepPluginLogs(t, cli.Home)
 		return
 	}
 	if err = staleErr; err == nil {
@@ -354,4 +356,26 @@ func pack(t *testing.T, work, version string, sidecar []byte, edit func(map[stri
 		t.Fatal(err)
 	}
 	return out
+}
+
+// keepPluginLogs copies dsh's plugin-manager logs out of the temporary dsh
+// home into report/plugin-logs, which outlives the test, so a failed install
+// on a test machine can be diagnosed afterwards.
+func keepPluginLogs(t *testing.T, home string) {
+	dst := filepath.Join("report", "plugin-logs")
+	os.RemoveAll(dst)
+	filepath.WalkDir(filepath.Join(home, "profiles"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.Contains(filepath.ToSlash(path), "/.plugin-manager/") {
+			return nil
+		}
+		rel, _ := filepath.Rel(home, path)
+		b, err := os.ReadFile(path)
+		if err == nil {
+			out := filepath.Join(dst, rel)
+			os.MkdirAll(filepath.Dir(out), 0o755)
+			os.WriteFile(out, b, 0o644)
+		}
+		return nil
+	})
+	t.Logf("plugin-manager files copied to %s", dst)
 }

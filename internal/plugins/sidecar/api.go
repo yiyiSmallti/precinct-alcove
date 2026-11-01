@@ -25,8 +25,10 @@ type Services struct {
 	// Inbox shows an item in the general conversation view (inbox cap).
 	Inbox func(plugin string, item json.RawMessage) error
 	// EnsureRuntime starts dsh for profile in cwd if it is not running
-	// (background cap).
-	EnsureRuntime func(ctx context.Context, plugin, profile, cwd string) error
+	// (background cap), with env (KEY=value, already checked against the
+	// reserved names) added to its environment, and returns the runtime id.
+	// The host decides which profiles a plugin may run.
+	EnsureRuntime func(ctx context.Context, plugin, profile, cwd string, env []string) (string, error)
 	// KeychainRef returns an opaque reference to a stored credential.
 	KeychainRef func(plugin, name string) (string, error)
 	// Log writes a line to the plugin's log.
@@ -78,6 +80,10 @@ var methodCaps = map[string]string{
 
 type api struct{ p *plugin }
 
+// ErrNotPermitted is what a Services function wraps to refuse a call; the
+// sidecar gets CodeNotGranted.
+var ErrNotPermitted = errors.New("not permitted")
+
 func notGranted(format string, a ...any) error {
 	return &jsonrpc.Error{Code: CodeNotGranted, Message: fmt.Sprintf(format, a...)}
 }
@@ -123,14 +129,29 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 		p.mu.Unlock()
 		return map[string]any{}, nil
 	case "runtime.ensure":
-		var q struct{ Profile, Cwd string }
-		if err := json.Unmarshal(raw, &q); err != nil || q.Profile == "" {
+		var q struct {
+			Profile string            `json:"profile"`
+			Cwd     string            `json:"cwd"`
+			Env     map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || q.Profile == "" || q.Cwd == "" {
 			return nil, invalid(errors.New("runtime.ensure needs profile and cwd"))
+		}
+		env, err := checkEnv(q.Env)
+		if err != nil {
+			return nil, invalid(err)
 		}
 		if svc.EnsureRuntime == nil {
 			return nil, unavailable(method)
 		}
-		return map[string]any{}, svc.EnsureRuntime(ctx, p.name, q.Profile, q.Cwd)
+		id, err := svc.EnsureRuntime(ctx, p.name, q.Profile, q.Cwd, env)
+		if errors.Is(err, ErrNotPermitted) {
+			return nil, notGranted("%v", err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"runtimeId": id}, nil
 	case "ui.register":
 		return map[string]any{}, p.register(raw)
 	case "ui.update":
@@ -288,6 +309,31 @@ type LaunchResult struct {
 // and token, and dsh's home.
 var reservedEnv = []string{"ALCOVE_", "DSH_HOME"}
 
+// checkEnv validates plugin-supplied variables and returns them as sorted
+// KEY=value pairs.
+func checkEnv(m map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		// Windows environment names are case-insensitive.
+		uk := strings.ToUpper(k)
+		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {
+			return nil, fmt.Errorf("invalid environment variable %q", k)
+		}
+		for _, r := range reservedEnv {
+			if strings.HasPrefix(uk, r) {
+				return nil, fmt.Errorf("plugins may not set %q", k)
+			}
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+m[k])
+	}
+	return out, nil
+}
+
 // LaunchHooks asks every running sidecar that registered a launch hook for
 // env and profile patches. A hook that fails or exceeds HookTimeout is
 // skipped and reported; it never blocks the launch.
@@ -308,30 +354,16 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 		}
 		err := c.Call(hctx, "launchHook", lc, &out)
 		cancel()
+		var env []string
 		if err == nil {
-			for k := range out.Env {
-				// Windows environment names are case-insensitive.
-				uk := strings.ToUpper(k)
-				for _, r := range reservedEnv {
-					if strings.HasPrefix(uk, r) || k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(out.Env[k], 0) {
-						err = fmt.Errorf("launch hook may not set %q", k)
-					}
-				}
-			}
+			env, err = checkEnv(out.Env)
 		}
 		if err != nil {
 			res.Failed[p.name] = err
 			p.log("warn", "launch hook skipped: "+err.Error())
 			continue
 		}
-		keys := make([]string, 0, len(out.Env))
-		for k := range out.Env {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			res.Env = append(res.Env, k+"="+out.Env[k])
-		}
+		res.Env = append(res.Env, env...)
 		if len(out.ProfilePatch) > 0 && string(out.ProfilePatch) != "null" {
 			res.ProfilePatch = append(res.ProfilePatch, out.ProfilePatch)
 		}
@@ -342,9 +374,13 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 // WorkspaceEvent tells sidecars with workspace_hook that a workspace was
 // opened, closed, created or removed. It does not wait for them.
 func (m *Manager) WorkspaceEvent(ctx context.Context, kind string, ws Workspace) {
+	// Each delivery runs on its own: a sidecar that stops reading its pipe
+	// must not hold up the workspace operation. A stuck write ends when the
+	// sidecar is stopped and its pipe closes.
+	ctx = context.WithoutCancel(ctx)
 	for _, p := range m.running("workspace_hook") {
 		if c := p.conn(); c != nil {
-			c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws})
+			go c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws})
 		}
 	}
 }

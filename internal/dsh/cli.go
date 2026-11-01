@@ -50,6 +50,18 @@ func (e *Error) Error() string {
 	msg := strings.Join(e.Diagnostics(), "; ")
 	if msg == "" {
 		msg = lastLines(e.Stderr, 3)
+	} else {
+		// dsh's own lines can be as vague as "plugin command failed"; keep
+		// the last stderr lines that are not repeats of them.
+		var extra []string
+		for _, l := range e.StderrTail(3) {
+			if !strings.HasPrefix(l, "dsh: ") {
+				extra = append(extra, l)
+			}
+		}
+		if len(extra) > 0 {
+			msg += " | " + strings.Join(extra, " | ")
+		}
 	}
 	return fmt.Sprintf("dsh %s: exit %d: %s", strings.Join(e.Args, " "), e.ExitCode, msg)
 }

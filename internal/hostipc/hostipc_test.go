@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,7 +29,14 @@ func (h ctxHandler) OnDetach(*Attachment)                        {}
 func TestRequestContextEndsWithConnection(t *testing.T) {
 	h := ctxHandler{got: make(chan context.Context, 1)}
 	s := &Server{Protocol: "p", Majors: []string{"1"}, Handler: h}
-	if err := s.Listen(filepath.Join(t.TempDir(), "s.sock")); err != nil {
+	// t.TempDir() under macOS's long $TMPDIR exceeds the 104-byte socket
+	// path limit; a short directory directly in the temp root does not.
+	dir, err := os.MkdirTemp("", "hipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if err := s.Listen(filepath.Join(dir, "s.sock")); err != nil {
 		t.Fatal(err)
 	}
 	go s.Serve(context.Background())
