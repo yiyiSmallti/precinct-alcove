@@ -147,6 +147,7 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 	if p.Alcove != nil {
 		plan.Profiles = h.targets(p.Alcove.Profiles)
 	}
+	plan.Problems = append(plan.Problems, h.profileConflicts(p.Name, plan.Profiles)...)
 	return plan, nil
 }
 
@@ -179,6 +180,27 @@ func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem
 	return out
 }
 
+// profileConflicts reports profiles (the store profile and the targets) that
+// already reference name outside Alcove, e.g. added with dsh plugin add by
+// hand. Alcove does not take them over: rollback would remove them.
+func (h *Host) profileConflicts(name string, targets []string) []pkg.Problem {
+	var out []pkg.Problem
+	for _, prof := range append([]string{StoreProfile}, targets...) {
+		m, err := h.DSH.ReadProfile(prof)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			out = append(out, pkg.Problem{Code: "profile", Message: fmt.Sprintf("cannot read profile %s: %v", prof, err)})
+			continue
+		}
+		if m.HasDependency(name) || m.HasBundle(name) {
+			out = append(out, pkg.Problem{Code: "profile", Message: fmt.Sprintf("profile %s already has %s; remove it there first", prof, name)})
+		}
+	}
+	return out
+}
+
 // Install carries out a confirmed plan. On failure everything already done
 // is undone and the returned *StepError says where it stopped.
 func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
@@ -201,13 +223,20 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	if err != nil {
 		return nil, &StepError{Step: "check", Err: err}
 	}
-	if probs := stateProblems(p, installed); len(probs) > 0 {
+	probs := append(stateProblems(p, installed), h.profileConflicts(p.Name, plan.Profiles)...)
+	if len(probs) > 0 {
 		return nil, &StepError{Step: "check", Err: fmt.Errorf("installed plugins changed after the check: %s", probs[0])}
 	}
 
 	stored := filepath.Join(h.Dir, "packages", storeName(p.Name, p.Version, plan.SHA256))
 	if err := copyFile(plan.Path, stored); err != nil {
 		return nil, &StepError{Step: "store", Err: err}
+	}
+	// The source may change while it is copied: check the copy itself, which
+	// is what dsh installs from.
+	if digest, err := sig.Digest(stored); err != nil || hex.EncodeToString(digest) != plan.SHA256 {
+		os.Remove(stored)
+		return nil, &StepError{Step: "inspect", Err: errors.New("package file changed after it was checked")}
 	}
 
 	var done []string // profiles the package was added to, store profile first
@@ -299,6 +328,15 @@ func (h *Host) Uninstall(ctx context.Context, name string) error {
 		return fmt.Errorf("%s is not installed", name)
 	}
 	if err := h.undo(ctx, name, append([]string{StoreProfile}, rec.Profiles...)); err != nil {
+		// Some profiles may already be clean: the package is no longer
+		// usable as a prerequisite until it is cleaned up and reinstalled.
+		if !rec.Incomplete {
+			rec.Incomplete = true
+			all[name] = rec
+			if serr := h.save(all); serr != nil {
+				return errors.Join(err, serr)
+			}
+		}
 		return err
 	}
 	if err := os.Remove(rec.Stored); err != nil && !errors.Is(err, os.ErrNotExist) {

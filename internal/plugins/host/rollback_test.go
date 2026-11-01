@@ -83,3 +83,27 @@ func TestIncompleteRollbackKeepsRecord(t *testing.T) {
 		t.Fatalf("records left: %+v", list)
 	}
 }
+
+// A package added to a target profile by hand is not taken over or removed.
+func TestPreexistingProfilePackageIsLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "dsh.sh")
+	os.WriteFile(script, []byte(stubDsh), 0o755)
+	cli := &dsh.CLI{Node: "/bin/sh", Bin: script, Home: filepath.Join(dir, "home"), Env: []string{"STUCK=" + filepath.Join(dir, "none")}}
+	h := &Host{DSH: cli, Dir: filepath.Join(dir, "plugins"), AlcoveVersion: "0.1.0", GOOS: "linux"}
+	manual := `{"dependencies":{"@x/p":"1.0.0"},"dsh":{"profile":{"bundles":["@x/p"]}}}`
+	os.MkdirAll(cli.ProfileDir("ok"), 0o755)
+	os.WriteFile(filepath.Join(cli.ProfileDir("ok"), "package.json"), []byte(manual), 0o644)
+
+	tgz := filepath.Join(dir, "p.tgz")
+	os.WriteFile(tgz, []byte("archive"), 0o644)
+	d, _ := sig.Digest(tgz)
+	plan := &Plan{Path: tgz, Package: &pkg.Package{Name: "@x/p", Version: "1.0.0"}, Profiles: []string{"ok"}, SignedBy: -1, SHA256: hex.EncodeToString(d)}
+	_, err := h.Install(context.Background(), plan)
+	if se, ok := err.(*StepError); !ok || se.Step != "check" {
+		t.Fatalf("want a check error, got %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(cli.ProfileDir("ok"), "package.json")); string(got) != manual {
+		t.Fatalf("manual install changed: %s", got)
+	}
+}

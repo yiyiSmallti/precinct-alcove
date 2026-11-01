@@ -187,8 +187,8 @@ func TestPluginInstall(t *testing.T) {
 	err = h.Uninstall(ctx, rec.Name)
 	if err == nil {
 		err = errors.New("uninstall succeeded with an unreadable profile")
-	} else if list, _ := h.List(); len(list) != 1 {
-		err = fmt.Errorf("record dropped: %d records", len(list))
+	} else if list, _ := h.List(); len(list) != 1 || !list[0].Incomplete {
+		err = fmt.Errorf("record dropped or not marked incomplete: %+v", list)
 	} else if _, serr := os.Stat(rec.Stored); serr != nil {
 		err = fmt.Errorf("archive deleted: %w", serr)
 	} else {
