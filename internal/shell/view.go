@@ -35,6 +35,12 @@ func (s *Shell) View(c *ui.Context) {
 					return
 				}
 				s.settingsView(c)
+			case s.page == PagePlugins:
+				s.pluginsView(c)
+			case strings.HasPrefix(s.page, pagePlugin):
+				s.pluginView(c, strings.TrimPrefix(s.page, pagePlugin))
+			case strings.HasPrefix(s.page, pageInbox):
+				s.inboxView(c, strings.TrimPrefix(s.page, pageInbox))
 			default:
 				s.settingsView(c)
 			}
@@ -52,6 +58,14 @@ func (s *Shell) sidebar(c *ui.Context) {
 				item.Children(func() { ui.Badge(c, "目录不在") })
 			}
 		}
+		if nav := s.pluginNav(); len(nav) > 0 {
+			ui.Text(c, "插件").FontSize(12).Bold().TextColor(t.TextMuted).Padding(10, 6, 6)
+			for _, n := range nav {
+				ui.SidebarItem(c, n.page, nil, n.title)
+			}
+		}
+		ui.Divider(c).Margin(6, 12)
+		ui.SidebarItem(c, PagePlugins, nil, "管理插件")
 		ui.SidebarItem(c, PageSettings, nil, "设置")
 	}).Grow(1).Label("页面")
 	if ui.Button(c, "添加工作区…").Margin(8, 12).Clicked() {

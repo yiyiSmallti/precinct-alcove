@@ -106,6 +106,7 @@ func New(cfg Config) (*App, error) {
 			UI:            cfg.SidecarUI,
 			Inbox:         cfg.Inbox,
 			EnsureRuntime: a.ensureForPlugin,
+			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
 		},
 	}
@@ -350,7 +351,10 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 			a.Runtimes.Stop(k)
 		}
 	}
-	return a.Plugins.Uninstall(ctx, name)
+	if err := a.Plugins.Uninstall(ctx, name); err != nil {
+		return err
+	}
+	return a.forgetPluginSecrets(name)
 }
 
 // Settings reads settings.json.

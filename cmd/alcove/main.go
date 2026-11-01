@@ -56,6 +56,7 @@ func main() {
 	}
 	s.App = a
 	a.Runtimes.OnEvent, a.Runtimes.OnExit = s.OnEvent, s.OnExit
+	a.Sidecars.OnState = s.OnSidecarState
 
 	mygo.App.SetName("Alcove")
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { a.Close() })
@@ -68,6 +69,14 @@ func main() {
 				return "", err
 			}
 			return dirs[0], nil
+		}
+		s.PickFile = func() (string, error) {
+			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择插件包",
+				Filters: []mygo.FileFilter{{Name: "Alcove 插件包", Extensions: []string{"tgz"}}}})
+			if err != nil || len(files) == 0 {
+				return "", err
+			}
+			return files[0], nil
 		}
 		go func() {
 			if err := a.Start(context.Background()); err != nil {
