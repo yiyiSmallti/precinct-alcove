@@ -186,6 +186,12 @@ func (p *plugin) launch(ctx context.Context, gen int) error {
 	p.setState(Starting, "")
 	pr, err := p.spawn()
 	if err == nil {
+		// Published before the handshake so Stop can end a start in progress.
+		p.mu.Lock()
+		if gen == p.generation && !p.stopping {
+			p.proc = pr
+		}
+		p.mu.Unlock()
 		err = p.handshake(ctx, pr)
 		if err != nil {
 			pr.kill()
@@ -193,20 +199,27 @@ func (p *plugin) launch(ctx context.Context, gen int) error {
 	}
 	p.mu.Lock()
 	if gen != p.generation || p.stopping {
-		// Stopped while starting.
+		// Stopped while starting: drop the process and anything the
+		// handshake registered after Stop's cleanup.
+		if p.proc == pr {
+			p.proc = nil
+		}
 		p.mu.Unlock()
 		if pr != nil {
 			pr.kill()
 			<-pr.exited
 		}
+		p.cleanup()
 		return ErrNotRunning
 	}
 	if err == nil {
-		p.proc = pr
 		p.mu.Unlock()
 		p.setState(Running, "")
 		go p.supervise(pr, gen)
 		return nil
+	}
+	if p.proc == pr {
+		p.proc = nil
 	}
 	p.mu.Unlock()
 	if pr != nil {
@@ -240,8 +253,13 @@ func (p *plugin) spawn() (*proc, error) {
 	pr.conn = jsonrpc.New(stdout, stdin, &api{p: p})
 	go pr.conn.Serve(context.Background())
 	go func() {
-		<-pr.conn.Done()
+		// Watch the process itself, not stdout: a child that inherited
+		// stdout would keep the connection open after the sidecar died.
+		// Wait closes our end of the stdout pipe once the process exits;
+		// WaitDelay bounds the stderr copy.
 		cmd.Wait()
+		pr.kill() // descendants, and both pipe ends
+		<-pr.conn.Done()
 		close(pr.exited)
 	}()
 	return pr, nil

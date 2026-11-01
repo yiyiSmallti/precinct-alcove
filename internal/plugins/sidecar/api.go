@@ -226,13 +226,14 @@ const PolicyNS = "policy"
 func (p *plugin) mayUse(ns string, write bool) error {
 	name := p.name
 	switch {
-	case ns == name || strings.HasPrefix(ns, name+"/"):
-		return nil
-	case ns == PolicyNS:
+	case ns == PolicyNS || strings.HasPrefix(ns, PolicyNS+"/"):
+		// Checked first: a package named "policy" must not own it.
 		if !write || p.has("policy_write") {
 			return nil
 		}
 		return notGranted("writing the policy namespace needs the policy_write capability")
+	case ns == name || strings.HasPrefix(ns, name+"/"):
+		return nil
 	}
 	return notGranted("namespace %q belongs to another plugin", ns)
 }
@@ -309,8 +310,10 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 		cancel()
 		if err == nil {
 			for k := range out.Env {
+				// Windows environment names are case-insensitive.
+				uk := strings.ToUpper(k)
 				for _, r := range reservedEnv {
-					if strings.HasPrefix(k, r) || k == "" || strings.Contains(k, "=") {
+					if strings.HasPrefix(uk, r) || k == "" || strings.Contains(k, "=") {
 						err = fmt.Errorf("launch hook may not set %q", k)
 					}
 				}

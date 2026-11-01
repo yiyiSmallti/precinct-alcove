@@ -2,9 +2,10 @@
 // speaks host extension protocol v1 on stdio.
 //
 //	FAKE_PLUGIN_NAME   name it reports in ready (default @precinct/alcove-e2e)
-//	FAKE_PLUGIN_MODE   ok | crash (exits soon after ready) | nohello (never
-//	                   answers hello) | stubborn (ignores shutdown and leaves
-//	                   a child process holding stdout)
+//	FAKE_PLUGIN_MODE   comma-separated: crash (exits soon after ready),
+//	                   nohello (never answers hello), slowhello (answers
+//	                   after 1 s), stubborn (ignores shutdown), child (leaves
+//	                   a child process holding stdout); stubborn implies child
 //	FAKE_PLUGIN_CALLS  JSON array of {method, params}; each is called after
 //	                   ready and its outcome sent back as a log line
 //	                   "result <i> ok <json>" or "result <i> err <code>"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/jsonrpc"
@@ -33,9 +35,12 @@ type handler struct {
 func (h *handler) Request(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "hello":
-		if h.mode == "nohello" {
+		if h.is("nohello") {
 			<-ctx.Done()
 			return nil, ctx.Err()
+		}
+		if h.is("slowhello") {
+			time.Sleep(time.Second)
 		}
 		name := os.Getenv("FAKE_PLUGIN_NAME")
 		if name == "" {
@@ -53,7 +58,7 @@ func (h *handler) Request(ctx context.Context, method string, params json.RawMes
 		h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": "uiAction " + string(params)})
 		return map[string]any{}, nil
 	case "shutdown":
-		if h.mode == "stubborn" {
+		if h.is("stubborn") {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
@@ -63,12 +68,21 @@ func (h *handler) Request(ctx context.Context, method string, params json.RawMes
 	return nil, &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: method}
 }
 
+func (h *handler) is(mode string) bool {
+	for _, m := range strings.Split(h.mode, ",") {
+		if m == mode {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *handler) Notify(method string, params json.RawMessage) {}
 
 func main() {
 	h := &handler{mode: os.Getenv("FAKE_PLUGIN_MODE"), ready: make(chan struct{})}
 	h.conn = jsonrpc.New(os.Stdin, os.Stdout, h)
-	if h.mode == "stubborn" {
+	if h.is("stubborn") || h.is("child") {
 		// A child that inherits stdout, like a tool the plugin started.
 		var c *exec.Cmd
 		if runtime.GOOS == "windows" {
@@ -101,7 +115,7 @@ func main() {
 			h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": msg})
 		}
 		h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": "calls done"})
-		if h.mode == "crash" {
+		if h.is("crash") {
 			time.Sleep(100 * time.Millisecond)
 			fmt.Fprintln(os.Stderr, "fake crash")
 			os.Exit(3)

@@ -270,7 +270,58 @@ func TestSidecar(t *testing.T) {
 	}
 	r.step("不理 shutdown 的边车超时后连同子进程一起结束", err, "")
 
-	// 6. Uninstall leaves nothing behind.
+	// 6. A sidecar that dies while its child still holds stdout counts as
+	// a crash, and the child is ended with it.
+	m5 := newManager(&recorder{ui: map[string]sidecar.Contribution{}}, work, "FAKE_PLUGIN_MODE=crash,child")
+	m5.MaxCrashes = 1
+	err = m5.Start(ctx, spec)
+	if err == nil {
+		err = waitFor(func() bool { st, _ := m5.Status(e2ePlugin); return st.State == sidecar.Crashed }, 5*time.Second)
+	}
+	if err == nil {
+		st, _ := m5.Status(e2ePlugin)
+		child = 0
+		if m := regexp.MustCompile(`child (\d+)`).FindStringSubmatch(st.LastError); m != nil {
+			fmt.Sscan(m[1], &child)
+		}
+		if child == 0 {
+			err = fmt.Errorf("no child pid in %q", st.LastError)
+		} else if !pidGone(child) {
+			err = fmt.Errorf("child %d still running", child)
+		}
+	}
+	m5.Stop(ctx, e2ePlugin)
+	r.step("边车退出而子进程仍占着 stdout：照样判崩溃并结束子进程", err, "")
+
+	// 7. Stop during the handshake ends the start and leaves no UI behind.
+	rec6 := &recorder{ui: map[string]sidecar.Contribution{}}
+	m6 := newManager(rec6, work, "FAKE_PLUGIN_MODE=slowhello", "FAKE_PLUGIN_UI="+ui)
+	startErr := make(chan error, 1)
+	go func() { startErr <- m6.Start(ctx, spec) }()
+	time.Sleep(300 * time.Millisecond)
+	start = time.Now()
+	m6.Stop(ctx, e2ePlugin)
+	err = nil
+	select {
+	case e := <-startErr:
+		if e == nil {
+			err = errors.New("Start succeeded after Stop")
+		}
+	case <-time.After(3 * time.Second):
+		err = errors.New("Start still waiting after Stop")
+	}
+	time.Sleep(time.Second)
+	rec6.mu.Lock()
+	if err == nil && len(rec6.ui) != 0 {
+		err = fmt.Errorf("ui left registered: %v", rec6.ui)
+	}
+	rec6.mu.Unlock()
+	if st, _ := m6.Status(e2ePlugin); err == nil && st.State != sidecar.Stopped {
+		err = fmt.Errorf("state %s", st.State)
+	}
+	r.step("握手中途停止：启动随即结束，不留界面登记", err, time.Since(start).Round(100*time.Millisecond).String())
+
+	// 8. Uninstall leaves nothing behind.
 	err = h.Uninstall(ctx, e2ePlugin)
 	if err == nil {
 		if _, serr := os.Stat(exe); serr == nil {
