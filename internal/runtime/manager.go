@@ -56,8 +56,14 @@ func (m *Manager) Ensure(ctx context.Context, spec LaunchSpec) (*Process, error)
 			m.procs, m.starting = map[Key]*Process{}, map[Key]chan struct{}{}
 		}
 		if p := m.procs[k]; p != nil {
-			m.mu.Unlock()
-			return p, nil
+			select {
+			case <-p.Exited():
+				// Stopped or crashed, and watch has not evicted it yet.
+				delete(m.procs, k)
+			default:
+				m.mu.Unlock()
+				return p, nil
+			}
 		}
 		wait, busy := m.starting[k]
 		if !busy {
@@ -151,6 +157,11 @@ func (m *Manager) Stop(k Key) error {
 	}
 	err := p.Stop(DefaultStopGrace)
 	<-p.Exited()
+	m.mu.Lock()
+	if m.procs[k] == p {
+		delete(m.procs, k)
+	}
+	m.mu.Unlock()
 	return err
 }
 

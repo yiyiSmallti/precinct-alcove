@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
@@ -67,6 +68,9 @@ func (a *Assembler) Workspace(ctx context.Context, profile string) (err error) {
 		if err != nil {
 			return err
 		}
+		// Installation order, as existing profiles received them, so bundle
+		// precedence is the same in new and old workspaces.
+		sort.SliceStable(recs, func(i, j int) bool { return recs[i].InstalledAt.Before(recs[j].InstalledAt) })
 		for _, r := range recs {
 			if r.Incomplete || !has(r.Targets, Personal) {
 				continue

@@ -97,7 +97,7 @@ func New(cfg Config) (*App, error) {
 	a.Profiles = &profile.Assembler{DSH: cli, Bridge: cfg.BridgeTgz, Plugins: a.Plugins}
 	a.Plugins.PrepareProfile = a.Profiles.Base
 	a.Bridge = &alrt.Bridge{Answerer: cfg.Answerer, AuditLog: filepath.Join(l.Logs(), "decisions.jsonl")}
-	a.Runtimes = &alrt.Manager{CLI: cli, Bridge: a.Bridge}
+	a.Runtimes = &alrt.Manager{CLI: cli, Bridge: a.Bridge, LocalEnabled: a.localEnabled}
 	a.Sidecars = &sidecar.Manager{
 		AlcoveVersion: cfg.AlcoveVersion,
 		Settings:      &sidecar.Settings{Dir: l.PluginSettings()},
@@ -176,7 +176,35 @@ func (a *App) CreateWorkspace(ctx context.Context, name, dir string) (*workspace
 		a.Workspaces.Remove(w.ID)
 		return nil, err
 	}
+	a.Sidecars.WorkspaceEvent(ctx, "created", sidecarView(w))
 	return w, nil
+}
+
+func sidecarView(w *workspace.Workspace) sidecar.Workspace {
+	return sidecar.Workspace{ID: w.ID, Name: w.Name, Dir: w.Dir, Profile: w.Profile}
+}
+
+// localEnabled reads policy executors.local.enabled (PRD F7) from the
+// protected settings namespace. Absent means enabled; a policy that cannot
+// be read or parsed disables local execution rather than ignoring it.
+func (a *App) localEnabled() bool {
+	raw, err := a.Sidecars.Settings.Read(sidecar.PolicyNS)
+	if err != nil {
+		return false
+	}
+	var pol struct {
+		Executors struct {
+			Local struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"local"`
+		} `json:"executors"`
+	}
+	if string(raw) != "null" && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &pol); err != nil {
+			return false
+		}
+	}
+	return pol.Executors.Local.Enabled == nil || *pol.Executors.Local.Enabled
 }
 
 // RemoveWorkspace stops its runtime, deletes its profile and forgets it.
@@ -193,7 +221,11 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 	if err := a.Profiles.Delete(w.Profile); err != nil {
 		return err
 	}
-	return a.Workspaces.Remove(id)
+	if err := a.Workspaces.Remove(id); err != nil {
+		return err
+	}
+	a.Sidecars.WorkspaceEvent(ctx, "removed", sidecarView(w))
+	return nil
 }
 
 // OpenWorkspace returns the workspace's runtime, starting it with the
@@ -212,7 +244,12 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		// drop it silently.
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
 	}
-	return a.launch(ctx, w.Profile, w.Dir, hooks.Env)
+	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env)
+	if err != nil {
+		return nil, err
+	}
+	a.Sidecars.WorkspaceEvent(ctx, "opened", sidecarView(w))
+	return p, nil
 }
 
 func (a *App) launch(ctx context.Context, prof, cwd string, extra []string) (*alrt.Process, error) {
