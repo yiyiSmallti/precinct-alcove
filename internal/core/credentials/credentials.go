@@ -104,7 +104,7 @@ func (s *Store) List() ([]Credential, error) {
 	return all, err
 }
 
-// Remove deletes the record, then the key.
+// Remove deletes the key, then the record.
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -121,13 +121,12 @@ func (s *Store) Remove(id string) error {
 	if len(keep) == len(all) {
 		return fmt.Errorf("no credential %s", id)
 	}
-	if err := fsutil.WriteJSON(s.Path, keep, 0o600); err != nil {
-		return err
-	}
+	// Key first: if the store refuses, the record stays and Remove can be
+	// retried, so no key is left behind without a record pointing at it.
 	if err := s.Secrets.Delete(secretKey(id)); err != nil && !errors.Is(err, ErrNotFound) {
-		return err
+		return fmt.Errorf("delete key: %w", err)
 	}
-	return nil
+	return fsutil.WriteJSON(s.Path, keep, 0o600)
 }
 
 // LaunchEnv returns the provider id and the KEY=value pairs that give dsh

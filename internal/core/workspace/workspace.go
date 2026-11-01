@@ -175,6 +175,9 @@ func (s *Store) load() ([]Workspace, error) {
 
 // within reports whether p is base or below it.
 func within(p, base string) bool {
+	if caseInsensitiveFS {
+		p, base = strings.ToLower(p), strings.ToLower(base)
+	}
 	rel, err := filepath.Rel(base, p)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
