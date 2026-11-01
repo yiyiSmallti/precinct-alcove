@@ -72,6 +72,7 @@ func main() {
 		go func() {
 			if err := a.Start(context.Background()); err != nil {
 				log.Printf("start: %v", err)
+				s.StartFailed(err)
 			}
 			s.Load()
 		}()

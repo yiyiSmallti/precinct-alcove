@@ -180,6 +180,19 @@ func (s *Session) applyEvent(e event) bool {
 		prefix := fmt.Sprintf("%d/%d/", d.Turn, d.Step)
 		s.dropStreamed(s.think, prefix)
 		live := s.dropStreamed(s.live, prefix)
+		// Entries follow the final message's block order: streamed text
+		// keeps its place, and every other block goes right after the
+		// previous one (or before the first remaining streamed text).
+		var prev *Entry
+		place := func(en *Entry) {
+			switch {
+			case prev != nil:
+				s.moveAfter(prev, en)
+			case len(live) > 0:
+				s.moveBefore(live[0], en)
+			}
+			prev = en
+		}
 		for _, b := range d.Message.Content {
 			switch b.Type {
 			case "text":
@@ -191,11 +204,14 @@ func (s *Session) applyEvent(e event) bool {
 					en := live[0]
 					live = live[1:]
 					en.Text, en.Streaming = b.Text, false
+					prev = en
 					continue
 				}
-				s.add(&Entry{Kind: Assistant, Text: b.Text})
+				en := &Entry{Kind: Assistant, Text: b.Text}
+				s.add(en)
+				place(en)
 			case "tool-call":
-				s.tool(b.ID, b.Name, b.Arguments)
+				place(s.tool(b.ID, b.Name, b.Arguments))
 			}
 		}
 		for _, en := range live {
@@ -275,6 +291,36 @@ func (s *Session) remove(en *Entry) {
 			return
 		}
 	}
+}
+
+// moveAfter moves en to just after at.
+func (s *Session) moveAfter(at, en *Entry) {
+	if at == en {
+		return
+	}
+	s.remove(en)
+	for i, x := range s.Entries {
+		if x == at {
+			s.Entries = append(s.Entries[:i+1], append([]*Entry{en}, s.Entries[i+1:]...)...)
+			return
+		}
+	}
+	s.Entries = append(s.Entries, en)
+}
+
+// moveBefore moves en to just before at.
+func (s *Session) moveBefore(at, en *Entry) {
+	if at == en {
+		return
+	}
+	s.remove(en)
+	for i, x := range s.Entries {
+		if x == at {
+			s.Entries = append(s.Entries[:i], append([]*Entry{en}, s.Entries[i:]...)...)
+			return
+		}
+	}
+	s.Entries = append(s.Entries, en)
 }
 
 func (s *Session) stream(m map[string]*Entry, key string, kind Kind, text string) {

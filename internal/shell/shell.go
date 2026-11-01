@@ -51,6 +51,7 @@ type Shell struct {
 	form       credForm
 	model      string // the model field being edited
 	notice     string // one line shown at the top, e.g. an error
+	startErr   string // why Alcove could not start; tasks are refused
 	contribs   map[string]sidecar.Contribution
 	inbox      map[string][]json.RawMessage
 }
@@ -74,7 +75,8 @@ type approval struct {
 
 type question struct {
 	req    alrt.QuestionRequest
-	choice []int // chosen option per question
+	choice []int    // chosen option per single-select question
+	multi  [][]bool // ticked options per multi-select question
 	custom []string
 	answer chan []alrt.Answer
 	cancel chan struct{}
@@ -112,6 +114,15 @@ func (s *Shell) Load() {
 		default:
 			s.page = pageWS + s.workspaces[0].ID
 		}
+	})
+}
+
+// StartFailed records that the app failed to start: the window still opens
+// (settings stay usable) but tasks are refused and the reason is shown.
+func (s *Shell) StartFailed(err error) {
+	s.post(func() {
+		s.startErr = describe(err)
+		s.notice = "Alcove 没有正常启动：" + s.startErr
 	})
 }
 
@@ -189,6 +200,10 @@ func (s *Shell) view(id string) *wsView {
 
 // send starts the workspace's runtime if needed and queues the message.
 func (s *Shell) send(v *wsView, text string) {
+	if s.startErr != "" {
+		v.err = "Alcove 没有正常启动，暂时不能执行任务：" + s.startErr
+		return
+	}
 	v.starting, v.err = true, ""
 	id := v.ws.ID
 	sid := v.session.ID
@@ -254,8 +269,11 @@ func (s *Shell) dropApproval(runtimeID string, a *approval) {
 
 // AnswerQuestions is the bridge's question form.
 func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.QuestionRequest) ([]alrt.Answer, error) {
-	q := &question{req: req, choice: make([]int, len(req.Questions)), custom: make([]string, len(req.Questions)),
-		answer: make(chan []alrt.Answer, 1), cancel: make(chan struct{})}
+	q := &question{req: req, choice: make([]int, len(req.Questions)), multi: make([][]bool, len(req.Questions)),
+		custom: make([]string, len(req.Questions)), answer: make(chan []alrt.Answer, 1), cancel: make(chan struct{})}
+	for i, qq := range req.Questions {
+		q.multi[i] = make([]bool, len(qq.Options))
+	}
 	ok := false
 	s.post(func() {
 		if v := s.views[s.byRuntime[runtimeID]]; v != nil {

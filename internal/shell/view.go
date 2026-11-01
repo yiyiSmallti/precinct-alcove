@@ -191,7 +191,11 @@ func questionCard(c *ui.Context, q *question) {
 			if qq.Detail != "" {
 				ui.Text(c, qq.Detail)
 			}
-			if len(qq.Options) > 0 {
+			if qq.MultiSelect {
+				for j, o := range qq.Options {
+					ui.Checkbox(c, &q.multi[i][j], o.Label)
+				}
+			} else if len(qq.Options) > 0 {
 				labels := make([]string, len(qq.Options))
 				for j, o := range qq.Options {
 					labels[j] = o.Label
@@ -204,7 +208,14 @@ func questionCard(c *ui.Context, q *question) {
 			var out []alrt.Answer
 			for i, qq := range q.req.Questions {
 				a := alrt.Answer{ID: qq.ID, Custom: strings.TrimSpace(q.custom[i])}
-				if len(qq.Options) > 0 && a.Custom == "" {
+				switch {
+				case qq.MultiSelect:
+					for j, on := range q.multi[i] {
+						if on {
+							a.Selected = append(a.Selected, qq.Options[j].Label)
+						}
+					}
+				case len(qq.Options) > 0 && a.Custom == "":
 					a.Selected = []string{qq.Options[q.choice[i]].Label}
 				}
 				out = append(out, a)

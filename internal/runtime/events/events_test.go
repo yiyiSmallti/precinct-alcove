@@ -96,3 +96,21 @@ func TestStreamingThenFinal(t *testing.T) {
 		t.Errorf("turn end notice %+v", last)
 	}
 }
+
+func TestFinalKeepsBlockOrder(t *testing.T) {
+	s := NewSession("x")
+	apply := func(m string, p json.RawMessage) { s.Apply(m, p) }
+	apply(ev("x", "assistant/live-chunk", 0.5, `{"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"before"}}`))
+	apply(ev("x", "assistant/live-chunk", 0.6, `{"turn":1,"step":1,"chunk":{"type":"text-delta","index":2,"text":"after"}}`))
+	apply(ev("x", "assistant/message", 1, `{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"before"},{"type":"tool-call","id":"c1","name":"bash","arguments":"{}"},{"type":"text","text":"after"}]}}`))
+	if kinds(s) != "assistant,tool,assistant" || s.Entries[0].Text != "before" || s.Entries[2].Text != "after" {
+		t.Fatalf("order: %s", kinds(s))
+	}
+	// A tool call first, before streamed text.
+	s = NewSession("x")
+	apply(ev("x", "assistant/live-chunk", 0.5, `{"turn":1,"step":1,"chunk":{"type":"text-delta","index":1,"text":"done"}}`))
+	apply(ev("x", "assistant/message", 1, `{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"tool-call","id":"c1","name":"bash","arguments":"{}"},{"type":"text","text":"done"}]}}`))
+	if kinds(s) != "tool,assistant" {
+		t.Fatalf("tool first: %s", kinds(s))
+	}
+}

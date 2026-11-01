@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -213,3 +214,43 @@ func TestQuestionForm(t *testing.T) {
 }
 
 var _ = events.User
+
+func TestMultiSelectQuestion(t *testing.T) {
+	s, tt := newShell(t)
+	openWorkspace(s, "rt1")
+	var q alrt.Question
+	json.Unmarshal([]byte(`{"id":"q1","question":"要哪些功能？","multiSelect":true,"options":[{"label":"登录"},{"label":"搜索"},{"label":"导出"}]}`), &q)
+	got := make(chan []alrt.Answer, 1)
+	go func() {
+		ans, _ := s.AnswerQuestions(context.Background(), "rt1", alrt.QuestionRequest{RequestID: "r3", Questions: []alrt.Question{q}})
+		got <- ans
+	}()
+	until(t, tt, s, func() bool { return len(s.views["w1"].questions) == 1 })
+	for _, l := range []string{"登录", "导出"} {
+		if err := tt.Click(l); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+	}
+	if err := tt.Click("提交"); err != nil {
+		t.Fatal(err)
+	}
+	ans := <-got
+	if len(ans) != 1 || strings.Join(ans[0].Selected, ",") != "登录,导出" {
+		t.Errorf("answers %+v", ans)
+	}
+}
+
+func TestStartFailedRefusesTasks(t *testing.T) {
+	s, _ := newShell(t)
+	openWorkspace(s, "rt1")
+	s.StartFailed(errors.New("listen: path too long"))
+	s.mu.Lock()
+	v := s.views["w1"]
+	s.send(v, "hi")
+	starting, msg, notice := v.starting, v.err, s.notice
+	s.mu.Unlock()
+	if starting || !strings.Contains(msg, "path too long") || notice == "" {
+		t.Errorf("starting=%v err=%q notice=%q", starting, msg, notice)
+	}
+}
