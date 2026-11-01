@@ -48,7 +48,7 @@ func main() {
 	}
 	setupLogs(paths.Layout{Root: data}.Logs())
 	log.Printf("alcove %s starting", Version)
-	rt := bundledRuntime()
+	nodeDir, rt := bundledRuntime()
 	node := "node"
 	if runtime.GOOS == "windows" {
 		node = "node.exe"
@@ -56,7 +56,7 @@ func main() {
 	cfg := app.Config{
 		DataDir:       data,
 		AlcoveVersion: Version,
-		Node:          env("ALCOVE_NODE", filepath.Join(rt, node)),
+		Node:          env("ALCOVE_NODE", filepath.Join(nodeDir, node)),
 		DSHBin:        env("ALCOVE_DSH", filepath.Join(rt, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")),
 		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "bin")), rt},
 		BridgeTgz:     env("ALCOVE_BRIDGE_TGZ", filepath.Join(rt, "alcove-bridge.tgz")),
@@ -124,17 +124,24 @@ func main() {
 	}
 }
 
-// bundledRuntime is the runtime directory shipped with the app.
-func bundledRuntime() string {
+// bundledRuntime returns where the shipped node is and the runtime
+// directory (dsh, pnpm shim, bridge); in a built app both are runtime/ in
+// its resources.
+func bundledRuntime() (nodeDir, rt string) {
 	res, err := mygo.App.Path(mygo.PathResources)
 	if err != nil {
-		return "runtime"
+		return "runtime", "runtime"
 	}
 	if rt := filepath.Join(res, "runtime"); exists(rt) {
-		return rt
+		return rt, rt
 	}
-	// go run: resources/ as it is, with the platform directories unmerged.
-	return filepath.Join(res, runtime.GOOS+"-"+runtime.GOARCH, "runtime")
+	// go run: resources/ as stage-runtime.sh left it, platform directories
+	// unmerged; for macOS node is per CPU and the rest in darwin/.
+	plat := filepath.Join(res, runtime.GOOS+"-"+runtime.GOARCH, "runtime")
+	if runtime.GOOS == "darwin" {
+		return plat, filepath.Join(res, "darwin", "runtime")
+	}
+	return plat, plat
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }

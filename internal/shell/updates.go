@@ -25,7 +25,7 @@ type updatesState struct {
 	err        string
 	installing bool
 	progress   float64 // 0..1 while installing
-	installed  bool    // waiting for the restart
+	installed  string  // the version installed, waiting for the restart
 	source     string  // the 更新源 field being edited
 	sourceErr  string
 }
@@ -79,6 +79,7 @@ func (s *Shell) checkUpdates(ctx context.Context) {
 
 func (s *Shell) installUpdate() {
 	s.updates.installing, s.updates.progress, s.updates.err = true, 0, ""
+	version := s.updates.release.Version
 	go func() {
 		err := s.Updater.Install(context.Background(), func(done, total int64) {
 			if total > 0 {
@@ -95,7 +96,7 @@ func (s *Shell) installUpdate() {
 				u.err = "安装更新失败：" + describe(err)
 				return
 			}
-			u.installed = true
+			u.installed = version
 		})
 	}()
 }
@@ -168,7 +169,7 @@ func (s *Shell) updatesView(c *ui.Context) {
 				markdown.View(c, r.Notes, nil)
 			}
 			switch {
-			case u.installed:
+			case u.installed == r.Version:
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, "已下载并装好，重启后生效。").Grow(1)
 					if ui.PrimaryButton(c, "立即重启").Clicked() {

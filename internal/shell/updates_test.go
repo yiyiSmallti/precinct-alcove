@@ -87,7 +87,7 @@ func TestUpdates(t *testing.T) {
 	if err := tt.Click("下载并安装"); err != nil {
 		t.Fatal(err)
 	}
-	until(t, tt, s, func() bool { return s.updates.installed })
+	until(t, tt, s, func() bool { return s.updates.installed == "0.2.0" })
 	if err := tt.Click("立即重启"); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +96,18 @@ func TestUpdates(t *testing.T) {
 	f.mu.Unlock()
 	if !ok {
 		t.Fatal("not installed and relaunched")
+	}
+	// A newer release found while the restart is pending is offered for
+	// download, not shown as installed.
+	f.mu.Lock()
+	f.release = &update.Release{Version: "0.3.0"}
+	f.mu.Unlock()
+	if err := tt.Click("检查更新"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, tt, s, func() bool { return s.updates.release != nil && s.updates.release.Version == "0.3.0" })
+	if !tt.HasText("下载并安装") || tt.HasText("立即重启") {
+		t.Fatalf("0.3.0 shown as installed: %q", tt.Texts())
 	}
 
 	// 更新源: a bad URL is refused and not saved; a mirror is saved and used.
