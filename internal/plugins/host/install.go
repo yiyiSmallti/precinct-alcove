@@ -168,6 +168,10 @@ func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem
 			out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("install %s@%s first", r.Name, r.Range)})
 			continue
 		}
+		if cur.Incomplete {
+			out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("%s is left over from a failed install; uninstall and reinstall it first", r.Name)})
+			continue
+		}
 		if ok, err := pkg.Satisfies(cur.Version, r.Range); err != nil || !ok {
 			out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("needs %s@%s, installed is %s", r.Name, r.Range, cur.Version)})
 		}
@@ -240,10 +244,12 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	}
 
 	for _, prof := range append([]string{StoreProfile}, plan.Profiles...) {
+		// Track the profile before adding: a cancelled or failed add can
+		// leave it half-changed, and undo skips profiles that are clean.
+		done = append(done, prof)
 		if _, err := h.DSH.PluginAdd(ctx, prof, stored); err != nil {
 			return fail("add", prof, err)
 		}
-		done = append(done, prof)
 		m, err := h.DSH.ReadProfile(prof)
 		if err != nil {
 			return fail("verify", prof, err)

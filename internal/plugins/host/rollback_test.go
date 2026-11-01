@@ -67,6 +67,13 @@ func TestIncompleteRollbackKeepsRecord(t *testing.T) {
 		t.Fatalf("Prepare would not see the leftover: %v", probs)
 	}
 
+	// A dependent package must not count the leftover as installed.
+	dep := &pkg.Package{Name: "@x/q", Version: "1.0.0"}
+	dep.Alcove = &pkg.Alcove{Requires: []string{"@x/p@^1.0.0"}}
+	if probs := stateProblems(dep, all); len(probs) != 1 || probs[0].Code != "requires" {
+		t.Fatalf("leftover accepted as a requirement: %v", probs)
+	}
+
 	// Once removal works again, Uninstall cleans up.
 	os.Remove(stuck)
 	if err := h.Uninstall(context.Background(), "@x/p"); err != nil {
