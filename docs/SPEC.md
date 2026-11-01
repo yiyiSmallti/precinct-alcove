@@ -9,6 +9,7 @@
 - 平台：Windows 10+ x64；macOS 13+，arm64 与 amd64 合成通用二进制（`lipo`）。CI 每个 PR 交叉编译两个平台；macOS e2e 不进每次 CI（macOS runner 分钟数贵 10 倍），在 Mac 基线机上发版前跑。
 - 构建：GoReleaser 或自写脚本。Windows x64 安装包（MSIX 或 NSIS，验证周定）。macOS：`Alcove.app`（`Contents/Resources/` 下放对应平台的 Node、dsh 与 pnpm），`codesign` 用 Developer ID、开 hardened runtime，`notarytool` 公证并 staple，装进 `.dmg`。随包 Node 需要 `com.apple.security.cs.allow-jit` 与 `allow-unsigned-executable-memory` 两项 entitlement，否则 V8 起不来。MyGo 的签名增量更新两平台通用。
 - 存储（下文的 `<数据目录>`）：Windows `%LOCALAPPDATA%\Alcove\`，macOS `~/Library/Application Support/Alcove/`。其下 `identity.json`、`workspaces.json`、`settings.json`、`plugins/`、`logs/`；dsh home 在 `<数据目录>/dsh/`，每工作区 profile 在 `dsh/profiles/ws-<id>/`。
+- 本机 IPC 端点（桥接、daily-tools 宿主等回连）：Windows 命名管道；macOS 用 Unix 套接字，放在 `$TMPDIR/alcove-<短随机名>.sock`，不放 `<数据目录>`（macOS 的套接字路径上限 104 字节，`~/Library/Application Support/...` 容易超）。
 - 凭据：经 MyGo `Secrets` 存系统凭据库：Windows Credential Manager，macOS 登录钥匙串（服务名 `Alcove`）。只存 key；其余配置明文 JSON。
 
 ## 2. 模块
