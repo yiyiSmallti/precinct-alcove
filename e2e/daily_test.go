@@ -190,12 +190,22 @@ func TestDaily(t *testing.T) {
 	if err != nil {
 		return
 	}
+	// The reminder must arrive after the turn process is gone and near its
+	// deadline (two minutes after it was asked for), not straight away.
+	if view.has("该喝水了") {
+		r.step("提醒按时出现，由边车自己显示，不拉起回合进程", fmt.Errorf("the reminder arrived %s after it was asked for, before the turn process went idle", time.Since(asked).Round(time.Second)), "")
+		return
+	}
 	launches := strings.Count(sidecarLog(), "turn process attached")
 	err = waitFor(func() bool { return view.has("该喝水了") }, 3*time.Minute)
+	took := time.Since(asked)
+	if err == nil && (took < 110*time.Second || took > 150*time.Second) {
+		err = fmt.Errorf("the reminder arrived %s after it was asked for, want about 2m", took.Round(time.Second))
+	}
 	if err == nil && strings.Count(sidecarLog(), "turn process attached") != launches {
 		err = fmt.Errorf("the turn process was started again for the reminder")
 	}
-	r.step("提醒按时出现，由边车自己显示，不拉起回合进程", err, fmt.Sprintf("创建后 %s 出现", time.Since(asked).Round(time.Second)))
+	r.step("提醒按时出现，由边车自己显示，不拉起回合进程", err, fmt.Sprintf("创建后 %s 出现", took.Round(time.Second)))
 	if err != nil {
 		return
 	}

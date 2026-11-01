@@ -16,7 +16,7 @@ go test -tags e2e ./e2e/ -count=1 -v
 
 ```sh
 plugins/alcove/daily/build.sh && go run ./registry/cli pack -o /tmp/daily plugins/alcove/daily
-DOVETAIL_DAILY_TGZ=/tmp/daily/precinct-daily-*.tgz go test -tags e2e -run TestDaily ./e2e/ -count=1 -v   # 加上面两个变量
+DOVETAIL_DAILY_TGZ=$(ls /tmp/daily/precinct-daily-*.tgz) go test -tags e2e -run TestDaily ./e2e/ -count=1 -v   # 加上面两个变量
 ```
 
 `DAILY_E2E_MODEL_LOG=<文件>` 把每次发给假模型的请求按行记下，排查脚本化回合时用。
