@@ -62,8 +62,13 @@ type App struct {
 	Runtimes   *alrt.Manager
 	Sidecars   *sidecar.Manager
 
+	// OnRuntimeExit is called after a runtime exits (the UI's hook); set it
+	// before Start.
+	OnRuntimeExit func(k alrt.Key, runtimeID string, err error)
+
 	cfg    Config
 	mu     sync.Mutex
+	opened sync.Map // alrt.Key → sidecar.Workspace, for the closed event
 	cancel context.CancelFunc
 }
 
@@ -97,7 +102,7 @@ func New(cfg Config) (*App, error) {
 	a.Profiles = &profile.Assembler{DSH: cli, Bridge: cfg.BridgeTgz, Plugins: a.Plugins}
 	a.Plugins.PrepareProfile = a.Profiles.Base
 	a.Bridge = &alrt.Bridge{Answerer: cfg.Answerer, AuditLog: filepath.Join(l.Logs(), "decisions.jsonl")}
-	a.Runtimes = &alrt.Manager{CLI: cli, Bridge: a.Bridge, LocalEnabled: a.localEnabled}
+	a.Runtimes = &alrt.Manager{CLI: cli, Bridge: a.Bridge, LocalEnabled: a.localEnabled, OnExit: a.runtimeExited}
 	a.Sidecars = &sidecar.Manager{
 		AlcoveVersion: cfg.AlcoveVersion,
 		Settings:      &sidecar.Settings{Dir: l.PluginSettings()},
@@ -247,12 +252,39 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		// drop it silently.
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
 	}
+	running := a.running(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
 	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env)
 	if err != nil {
 		return nil, err
 	}
-	a.Sidecars.WorkspaceEvent(ctx, "opened", sidecarView(w))
+	if !running {
+		// opened pairs with closed: once per runtime start.
+		a.opened.Store(alrt.Key{Profile: w.Profile, Cwd: w.Dir}, sidecarView(w))
+		a.Sidecars.WorkspaceEvent(ctx, "opened", sidecarView(w))
+	}
 	return p, nil
+}
+
+func (a *App) running(k alrt.Key) bool {
+	for _, x := range a.Runtimes.Keys() {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// runtimeExited tells workspace_hook plugins that a workspace's runtime is
+// gone (closed: idle exit, crash or stop), then the UI.
+func (a *App) runtimeExited(k alrt.Key, runtimeID string, err error) {
+	// The record may already be gone (RemoveWorkspace stops the runtime
+	// first): use what was sent with opened.
+	if w, ok := a.opened.LoadAndDelete(k); ok {
+		a.Sidecars.WorkspaceEvent(context.Background(), "closed", w.(sidecar.Workspace))
+	}
+	if a.OnRuntimeExit != nil {
+		a.OnRuntimeExit(k, runtimeID, err)
+	}
 }
 
 func (a *App) launch(ctx context.Context, prof, cwd string, extra []string) (*alrt.Process, error) {

@@ -103,7 +103,7 @@ func TestApp(t *testing.T) {
 	a.Sidecars.Env = []string{"FAKE_PLUGIN_CALLS=" + string(calls)}
 	tgz := pack(t, work, "1.0.0", buildFakePlugin(t, work), func(pj map[string]any) {
 		al := pj["alcove"].(map[string]any)
-		al["capabilities"] = []any{"settings_page", "background"}
+		al["capabilities"] = []any{"settings_page", "background", "workspace_hook"}
 		al["profiles"] = []any{"personal", "daily"}
 		al["sidecar"] = map[string]any{runtime.GOOS: "bin/alcove-e2e.exe"}
 	})
@@ -160,6 +160,24 @@ func TestApp(t *testing.T) {
 	}
 	r.step("之后新建的工作区自动装入 personal 插件", err, "")
 
+	// 4b. workspace_hook: opened once per runtime start, not per message.
+	if err == nil {
+		_, err = a.OpenWorkspace(ctx, w2.ID)
+	}
+	if err == nil {
+		_, err = a.OpenWorkspace(ctx, w2.ID)
+	}
+	if err == nil {
+		err = waitFor(func() bool { _, ok := rec.has("workspace opened " + w2.ID); return ok }, 10*time.Second)
+	}
+	if err == nil {
+		time.Sleep(200 * time.Millisecond)
+		if n := rec.count("workspace opened " + w2.ID); n != 1 {
+			err = fmt.Errorf("opened sent %d times", n)
+		}
+	}
+	r.step("工作区事件：运行时启动时发一次 opened", err, "")
+
 	// 5. Removing a workspace deletes its profile, keeps its files, and the
 	// plugin record forgets the profile.
 	err = a.RemoveWorkspace(ctx, w1.ID)
@@ -183,7 +201,14 @@ func TestApp(t *testing.T) {
 			}
 		}
 	}
-	r.step("移除工作区：停运行时、删 profile、保留文件，插件记录同步", err, "")
+	if err == nil {
+		err = waitFor(func() bool {
+			_, closed := rec.has("workspace closed " + w1.ID)
+			_, removed := rec.has("workspace removed " + w1.ID)
+			return closed && removed
+		}, 10*time.Second)
+	}
+	r.step("移除工作区：停运行时、删 profile、保留文件，插件记录同步，插件收到 closed 与 removed", err, "")
 
 	// 6. Uninstalling the plugin stops its sidecar and leaves no copies.
 	err = a.UninstallPlugin(ctx, e2ePlugin)

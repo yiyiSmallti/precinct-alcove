@@ -80,7 +80,18 @@ func (h *handler) is(mode string) bool {
 	return false
 }
 
-func (h *handler) Notify(method string, params json.RawMessage) {}
+func (h *handler) Notify(method string, params json.RawMessage) {
+	if method == "onWorkspaceEvent" {
+		var e struct {
+			Kind      string `json:"kind"`
+			Workspace struct {
+				ID string `json:"id"`
+			} `json:"workspace"`
+		}
+		json.Unmarshal(params, &e)
+		h.conn.Notify(context.Background(), "log", map[string]string{"level": "info", "msg": "workspace " + e.Kind + " " + e.Workspace.ID})
+	}
+}
 
 func main() {
 	h := &handler{mode: os.Getenv("FAKE_PLUGIN_MODE"), ready: make(chan struct{})}

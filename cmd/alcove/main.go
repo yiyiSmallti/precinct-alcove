@@ -55,7 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 	s.App = a
-	a.Runtimes.OnEvent, a.Runtimes.OnExit = s.OnEvent, s.OnExit
+	a.Runtimes.OnEvent, a.OnRuntimeExit = s.OnEvent, s.OnExit
 	a.Sidecars.OnState = s.OnSidecarState
 
 	mygo.App.SetName("Alcove")
@@ -63,6 +63,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1100, Height: 760, Content: ui.View(s.View)})
 		s.Post = win.Update
+		s.OnBackground = newBackground(win).set
 		s.PickFolder = func() (string, error) {
 			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择工作区文件夹", Directory: true, CreateDirectories: true})
 			if err != nil || len(dirs) == 0 {
