@@ -4,8 +4,8 @@
 
 ## 1. 技术栈
 
-- Go 1.23+，MyGo（原生模式；`internal/ui/webview` 作为页面级回退）。纯 Go，无 cgo。
-- dsh 运行时：Node 24 LTS 便携版 + `@deepseek-ai/dsh`（锁版本）+ `dsh-base` + `dsh-sdk-app`，随包。
+- Go 1.27+（MyGo v0.7.x 的要求），MyGo（原生模式；`internal/ui/webview` 作为页面级回退）。纯 Go，无 cgo。
+- dsh 运行时：Node 24 LTS 便携版 + `@deepseek-ai/dsh`（锁版本）+ `dsh-base` + `dsh-sdk-app` + pnpm（`dsh plugin` 调用 PATH 上的 `pnpm`，Alcove 拉起 dsh 时把随包 pnpm 放进 PATH），随包。
 - 构建：GoReleaser 或自写脚本产出 Windows x64 安装包（MSIX 或 NSIS，验证周定）；MyGo 的签名增量更新。
 - 存储：`%LOCALAPPDATA%\Alcove\`：`identity.json`、`workspaces.json`、`settings.json`、`plugins\`、`logs\`；dsh home 在 `%LOCALAPPDATA%\Alcove\dsh\`，每工作区 profile 在 `dsh\profiles\ws-<id>\`。
 - 凭据：Windows Credential Manager（`wincred`），只存 key；其余配置明文 JSON。
@@ -37,6 +37,8 @@ e2e/                       端到端脚本与报告模板
 
 - 启动：`node dsh.js --profile <ws-profile> --dsh-home <home>`，cwd = 工作区目录，env 注入 `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`（或 provider 对应变量），由 `runtime_launch_hook` 允许插件追加 env 与 profile patch。
 - 就绪：JSON-RPC `initialize` 成功；超时 15 s 判失败并展示 stderr 尾部。
+- 审批与提问：`dsh-sdk-app`（rc.5）没有审批通道，审批请求直接判 `unavailable`（验证报告第 4 节）。Alcove 随包带第一方 bundle `@precinct/alcove-bridge`，装进每个工作区 profile：挂 `approval/request` 终端监听器与 `ctx.userQuestions` 回答方，经本机 IPC（Windows 命名管道；地址与一次性令牌经环境变量注入，约定同 Charter protocols.md 的宿主回调约定）回连 Alcove；同一 patch 关掉 `session-log-deepseek`。
+- 模型端点：dsh 自带 DeepSeek 适配器讲 Anthropic Messages API。指向 OpenAI 兼容端点（含本机 Gatehouse，`http://127.0.0.1:7788/v1`）时，在 profile patch 里配 `@deepseek-ai/dsh-llm-pi-ai` 的 `openai-completions` 路由，静态请求头 `X-Gatehouse-Source: alcove`。
 - 空闲：最后一个会话事件后计时，默认 600 s；钉住则不退。
 - 退出：先 `shutdown` RPC，5 s 后强杀；记录会话 JSONL 是否完整（文件尾校验）。
 
@@ -48,11 +50,11 @@ e2e/                       端到端脚本与报告模板
 
 ```
 <name>-<version>.tgz          标准 npm 包，可直接 dsh plugin add
-<name>-<version>.tgz.sig      Ed25519 分离签名，签 .tgz 的 sha256
+<name>-<version>.tgz.sig      Ed25519 分离签名：一行标准 base64，内容为对 .tgz 的 32 字节 SHA-256 摘要的 64 字节签名
 package.json
   name, version, description
   engines.dsh                 dsh 原生兼容校验，与随包 dsh 版本比对
-  组合包 patch                 按 dsh 约定声明（字段名以验证周核实为准）；无运行时内能力也声明空 patch
+  dsh.bundle.patch            组合包 patch 路径（验证周核实）；无运行时内能力也声明空 patch `[]`
   dependencies                其它 dsh 包（如 daily-tools），pnpm 解析
   alcove:
     protocol: 1
@@ -70,12 +72,14 @@ package.json
 **安装流程（F5）**
 
 1. 选择 `.tgz`（同目录需有 `.sig`）→ 校验签名。
-2. 读包内 `package.json`：`engines.dsh` 不覆盖随包 dsh 版本即拒绝（不走 dsh 的版本豁免）；`alcove.host` 不覆盖当前 Alcove 版本即拒绝；`alcove.requires` 未满足即提示先装依赖。
+2. 读包内 `package.json`：没有 `dsh.bundle.patch` 即拒绝（dsh CLI 对这种包不回滚，只当普通依赖装上）；`engines.dsh` 不覆盖随包 dsh 版本即拒绝（不走 dsh 的版本豁免；dsh 安装时会再判一次，以 dsh 为准）；`alcove.host` 不覆盖当前 Alcove 版本即拒绝；带 install 类脚本即拒绝；`alcove.requires` 未满足即提示先装依赖；同名包已安装即提示先卸载。
 3. 展示能力清单，用户确认。
-4. `dsh plugin --profile alcove-plugins add <tgz>`：保留 profile，只作包仓，永不启动；边车从这里的 `node_modules/<name>/` 拉起。
-5. 对 `alcove.profiles` 覆盖的每个 profile 执行 `dsh plugin --profile <p> add <tgz>`，再 `--dump-config` 校验。
-6. 任一步失败：已完成的 profile 逐个 `dsh plugin remove`，包仓同样移除，界面展示 dsh 诊断原文。
-7. 卸载顺序相反：停边车 → 各 profile remove → 包仓 remove。
+4. 把 `.tgz` 复制到 `%LOCALAPPDATA%\Alcove\plugins\packages\`，后续一律用这份副本安装（profile 记录的是 `.tgz` 绝对路径，原文件被挪走后该 profile 的后续安装都会失败），卸载时才删除。
+5. `dsh plugin --profile alcove-plugins add <副本>`：保留 profile，只作包仓，永不启动；边车从这里的 `node_modules/<name>/` 拉起。
+6. 对 `alcove.profiles` 覆盖的每个 profile 执行 `dsh plugin --profile <p> add <副本>`，确认已选入 `dsh.profile.bundles`，再 `--dump-config` 校验。
+7. 任一步失败：已完成的 profile 逐个 `dsh plugin remove`，包仓同样移除，删除副本，界面展示 dsh 诊断原文。
+8. 卸载顺序相反：停边车 → 各 profile remove → 包仓 remove → 删除副本。pnpm 留下的空作用域目录一并删除。
+9. 安装记录在 `plugins\installed.json`。实现：`internal/plugins/host`、`internal/plugins/pkg`、`internal/plugins/sig`、`internal/dsh`；e2e：`e2e/plugininstall_test.go`。
 
 **宿主扩展协议 v1（边车，JSON-RPC 2.0 over stdio）**
 

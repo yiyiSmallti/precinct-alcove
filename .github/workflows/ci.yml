@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./... && go vet -tags e2e ./...
+      - run: go build ./...
+      - name: Cross-compile for Windows (no cgo)
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pnpm and the locked dsh runtime
+        run: |
+          npm i -g pnpm@10.28.0
+          mkdir -p "$RUNNER_TEMP/dsh" && cd "$RUNNER_TEMP/dsh"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5
+      - name: Plugin install e2e
+        env:
+          ALCOVE_E2E_DSH: ${{ runner.temp }}/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js
+        run: ALCOVE_E2E_NODE=$(command -v node) go test -tags e2e ./e2e/ -count=1 -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-report
+          path: e2e/report/
