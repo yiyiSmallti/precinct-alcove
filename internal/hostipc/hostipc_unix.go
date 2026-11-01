@@ -3,6 +3,7 @@
 package hostipc
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,11 @@ func listen(name string) (net.Listener, string, error) {
 	path := name
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(os.TempDir(), name+".sock")
+	}
+	// macOS caps sun_path at 104 bytes (Linux at 108); fail clearly instead
+	// of binding a truncated path.
+	if len(path) > 103 {
+		return nil, "", fmt.Errorf("socket path too long (%d bytes, max 103): %s", len(path), path)
 	}
 	os.Remove(path)
 	old := umask(0o177)

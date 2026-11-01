@@ -20,6 +20,8 @@ internal/ui                MyGo 视图：工作区列表、对话视图、审批
 internal/ui/declarative    声明式 UI 渲染器：settings_page / sidebar_item / card 三类 schema → MyGo 控件
 internal/core/identity     本地身份、凭据引用、钥匙串读写
 internal/core/workspace    工作区 CRUD、目录校验、每工作区 profile 名
+internal/core/credentials  凭据记录（credentials.json，不含 key）+ 系统凭据库里的 key；拉起时 LaunchEnv 生成 provider 的环境变量
+internal/core/paths        各平台数据目录与文件布局（ALCOVE_DATA_DIR 可覆盖）
 internal/runtime           dsh 进程管理：拉起、就绪探测、JSON-RPC 客户端、空闲计时、停止；一个工作区一个进程
 internal/runtime/events    dsh 事件 → UI 模型（消息、工具调用、审批、提问、子代理、完成/失败）
 internal/profile           profile 目录生成、bundle add/remove（npm/.tgz）、--dump-config 校验、按归属组装（首期只有个人）
