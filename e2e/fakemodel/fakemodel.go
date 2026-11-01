@@ -8,6 +8,7 @@ package fakemodel
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -24,6 +25,9 @@ type Server struct {
 	// Script, when set, replaces the default turn: call i answers with
 	// Script[i] while i < len(Script), then plain text.
 	Script []ToolCall
+	// Respond, when set, decides each answer from the raw request body:
+	// a tool call when it returns one, else the returned text.
+	Respond func(body []byte) (*ToolCall, string)
 
 	mu       sync.Mutex
 	requests []string // request paths, in order
@@ -97,8 +101,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":[]}`))
 		return
 	}
+	body, _ := io.ReadAll(r.Body)
 	var req request
-	json.NewDecoder(r.Body).Decode(&req)
+	json.Unmarshal(body, &req)
 	done := 0
 	for _, m := range req.Messages {
 		var blocks []block
@@ -135,7 +140,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	var name string
 	var input map[string]any
+	text := fmt.Sprintf("done after %d tool calls", done)
+	respond := s.Respond
 	switch {
+	case respond != nil:
+		call, t := respond(body)
+		if call != nil {
+			name, input = call.Name, call.Input
+		} else {
+			text = t
+		}
 	case script != nil && done < len(script):
 		name, input = script[done].Name, script[done].Input
 	case script == nil && done < s.ToolCalls && (shell != "" || write != ""):
@@ -151,7 +165,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		stop = "tool_use"
 	} else {
 		ev("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
-		ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": fmt.Sprintf("done after %d tool calls", done)}})
+		ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": text}})
 	}
 	ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 	ev("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop}, "usage": map[string]int{"output_tokens": 5}})
