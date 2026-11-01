@@ -274,6 +274,12 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	if err != nil {
 		return nil, &StepError{Step: "check", Err: err}
 	}
+	// Workspaces may have been created or removed since Prepare: resolve
+	// the targets again so new ones get the plugin and removed ones are
+	// not recreated.
+	if p.Alcove != nil {
+		plan.Profiles = h.targets(p.Alcove.Profiles)
+	}
 	probs := append(stateProblems(p, installed), h.profileConflicts(p.Name, plan.Profiles)...)
 	if len(probs) > 0 {
 		return nil, &StepError{Step: "check", Err: fmt.Errorf("installed plugins changed after the check: %s", probs[0])}

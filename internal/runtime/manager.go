@@ -131,9 +131,21 @@ func (m *Manager) List() []Info {
 	return out
 }
 
-// Stop stops the runtime for k, if any.
+// Stop stops the runtime for k, if any. A start still in progress for k is
+// waited for and then stopped, so nothing for k is left running on return.
 func (m *Manager) Stop(k Key) error {
-	p := m.Get(k)
+	m.mu.Lock()
+	for {
+		wait, busy := m.starting[k]
+		if !busy {
+			break
+		}
+		m.mu.Unlock()
+		<-wait
+		m.mu.Lock()
+	}
+	p := m.procs[k]
+	m.mu.Unlock()
 	if p == nil {
 		return nil
 	}
@@ -146,9 +158,14 @@ func (m *Manager) Stop(k Key) error {
 // turns local execution off.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
-	keys := make([]Key, 0, len(m.procs))
+	keys := make([]Key, 0, len(m.procs)+len(m.starting))
 	for k := range m.procs {
 		keys = append(keys, k)
+	}
+	for k := range m.starting {
+		if m.procs[k] == nil {
+			keys = append(keys, k)
+		}
 	}
 	m.mu.Unlock()
 	var wg sync.WaitGroup

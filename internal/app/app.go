@@ -207,6 +207,11 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		return nil, fmt.Errorf("workspace folder %s is gone", w.Dir)
 	}
 	hooks := a.Sidecars.LaunchHooks(ctx, sidecar.LaunchContext{WorkspaceID: w.ID, Profile: w.Profile, Cwd: w.Dir})
+	if len(hooks.ProfilePatch) > 0 {
+		// Phase one reserves profilePatch (SPEC 3.2): say so rather than
+		// drop it silently.
+		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
+	}
 	return a.launch(ctx, w.Profile, w.Dir, hooks.Env)
 }
 

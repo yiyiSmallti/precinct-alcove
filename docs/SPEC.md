@@ -107,7 +107,7 @@ package.json
   inbox.post(item)                         需要 inbox；向通用对话视图投递卡片
   log(level, msg)
 插件提供（宿主可调）
-  launchHook(ctx) → { env, profilePatch }
+  launchHook(ctx) → { env, profilePatch }   一期只应用 env；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn
   onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed
   onUiAction(contributionId, action, payload)
   onDeepLink(url)                          需要 deep_link
