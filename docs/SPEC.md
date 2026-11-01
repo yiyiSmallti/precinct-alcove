@@ -16,9 +16,8 @@
 
 ```
 cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁、崩溃日志随 PR E
-internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
-internal/ui                （D3b）插件页、插件对话视图、运行时面板、托盘
-internal/ui/declarative    声明式 UI 渲染器：settings_page / sidebar_item / card 三类 schema → MyGo 控件
+internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；插件页（从文件安装：计划、问题、确认；卸载二次确认；边车状态、最后错误与 stderr 尾部、重新启动）；插件详情页渲染 settings_page；侧栏渲染 sidebar_item；持 inbox 的插件各有一个对话视图（消息、卡片、card 贡献、输入未送达标记与重发）。兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
+（待做）                    托盘 / 菜单栏、工作区 closed 事件、运行时面板
 internal/core/identity     本地身份、凭据引用、钥匙串读写
 internal/core/workspace    工作区 CRUD、目录校验、每工作区 profile 名
 internal/core/credentials  凭据记录（credentials.json，不含 key）+ 系统凭据库里的 key；拉起时 LaunchEnv 生成 provider 的环境变量
@@ -117,7 +116,12 @@ package.json
 ```
 
 - 没有 `alcove.sidecar` 的插件只有运行时内能力与声明式 UI，不起子进程。
-- 声明式 UI schema v1：`settings_page{ sections[]{ fields[]: text|secretRef|toggle|select|button } }`、`sidebar_item{ title, icon, viewId }`、`card{ title, body(markdown 子集), actions[]{ id, label, style } }`。
+- 声明式 UI schema v1：`settings_page{ sections[]{ fields[]: text|secretRef|toggle|select|button } }`、`sidebar_item{ title, icon, viewId }`、`card{ title, body(markdown 子集), actions[]{ id, label, style } }`。实现：`internal/shell/declarative.go`、`plugins_view.go`。
+  - `settings_page{ id, type, title?, sections[]{ title?, description?, fields[] } }`；字段 `{ id, type, label, help?, placeholder?, value?, options?, style? }`。`text` 的 value 为字符串；`toggle` 为布尔；`select` 的 options 为字符串或 `{ value, label }`，value 为选中项的 value；`secretRef` 的 value 只表示"已存过"（任意非空值），宿主不显示；`button` 的 style 为 `primary`/`danger`。未知字段类型宿主跳过。
+  - 交互全走 `onUiAction(contributionId, action, payload)`：页面的"保存"按钮 action 为 `submit`，`button` 字段 action 为字段 id；两者 payload 都是 `{ values: { <字段 id>: 值 } }`，text 为字符串、toggle 为布尔、select 为 option 的 value。`secretRef` 只在用户输入了新值时出现，形如 `{ ref }`：明文由宿主存进系统凭据库（键 `plugin/<包名>/<字段 id>`），插件只拿到引用；之后 `keychain.ref(name)` 可取回同一引用，卸载插件时一并删除。插件在 onUiAction 里返回错误时，宿主在表单下显示。插件想刷新表单就 `ui.update` 整个贡献（用户有未保存的改动时宿主保留改动）。
+  - `sidebar_item{ id, type, title, icon?, viewId? }`：显示在侧栏"插件"分组；`viewId` 为 `inbox` 且插件持 inbox 时打开该插件的对话视图，否则打开插件详情页（其 settings_page）。持 inbox 而没有指向对话视图的侧栏项的插件，宿主自动加一个以包名末段命名的入口。
+  - `card{ id, type, title, body, actions[] }` 贡献固定显示在该插件对话视图顶部；按钮走 `onUiAction(contributionId=card id, action=按钮 id, payload={})`。
+  - 对话视图的输入：每条输入生成一个随机 id 调 `onInboxInput`；15 秒内未应答或边车不在运行即标"未送达"，用户可重发，边车回到 running 时宿主自动按原 id 重发。
 
 **边车运行（实现：`internal/plugins/sidecar`；e2e：`e2e/sidecar_test.go`）**
 

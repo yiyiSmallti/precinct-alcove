@@ -106,6 +106,7 @@ func New(cfg Config) (*App, error) {
 			UI:            cfg.SidecarUI,
 			Inbox:         cfg.Inbox,
 			EnsureRuntime: a.ensureForPlugin,
+			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
 		},
 	}
@@ -349,6 +350,11 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 		if own[k.Profile] {
 			a.Runtimes.Stop(k)
 		}
+	}
+	// Secrets go first: if the credential store refuses, the plugin stays
+	// installed and uninstalling again retries the cleanup.
+	if err := a.forgetPluginSecrets(name); err != nil {
+		return fmt.Errorf("remove %s's secrets: %w", name, err)
 	}
 	return a.Plugins.Uninstall(ctx, name)
 }

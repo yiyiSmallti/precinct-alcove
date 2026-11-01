@@ -38,6 +38,8 @@ type Shell struct {
 	Post func(fn func())
 	// PickFolder asks the user for a directory; "" means cancelled.
 	PickFolder func() (string, error)
+	// PickFile asks the user for a plugin package (.tgz); "" means cancelled.
+	PickFile func() (string, error)
 	// Lang picks displayReason texts ("zh", "en").
 	Lang string
 
@@ -53,7 +55,9 @@ type Shell struct {
 	notice     string // one line shown at the top, e.g. an error
 	startErr   string // why Alcove could not start; tasks are refused
 	contribs   map[string]sidecar.Contribution
-	inbox      map[string][]json.RawMessage
+
+	pluginsState
+	sidecarCalls sidecarCalls // nil: App.Sidecars
 }
 
 // wsView is one workspace's conversation.
@@ -90,7 +94,9 @@ type credForm struct {
 // New returns a shell for a; call Load once a is started.
 func New(a *app.App) *Shell {
 	return &Shell{App: a, Lang: "zh", views: map[string]*wsView{}, byRuntime: map[string]string{},
-		contribs: map[string]sidecar.Contribution{}, inbox: map[string][]json.RawMessage{}}
+		contribs: map[string]sidecar.Contribution{},
+		pluginsState: pluginsState{sidecars: map[string]sidecar.Status{}, busy: map[string]bool{},
+			forms: map[string]*settingsForm{}, chats: map[string]*chat{}, cards: map[string]*contribCard{}}}
 }
 
 func (s *Shell) post(fn func()) {
@@ -127,6 +133,7 @@ func (s *Shell) StartFailed(err error) {
 }
 
 func (s *Shell) reload() {
+	s.reloadPlugins()
 	wss, err1 := s.App.Workspaces.All()
 	creds, err2 := s.App.Creds.List()
 	st, err3 := s.App.Settings()
@@ -323,30 +330,6 @@ func (s *Shell) Update(plugin, id string, data json.RawMessage) error {
 
 func (s *Shell) Unregister(plugin, id string) {
 	s.post(func() { delete(s.contribs, plugin+"#"+id) })
-}
-
-// Inbox keeps a plugin's conversation items; a repeated id replaces the
-// earlier item.
-func (s *Shell) Inbox(plugin string, item json.RawMessage) error {
-	var head struct {
-		ID string `json:"id"`
-	}
-	json.Unmarshal(item, &head)
-	s.post(func() {
-		items := s.inbox[plugin]
-		for i, it := range items {
-			var h struct {
-				ID string `json:"id"`
-			}
-			json.Unmarshal(it, &h)
-			if h.ID == head.ID {
-				items[i] = item
-				return
-			}
-		}
-		s.inbox[plugin] = append(items, item)
-	})
-	return nil
 }
 
 // createWorkspace asks for a folder and adds it.
