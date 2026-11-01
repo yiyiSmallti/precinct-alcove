@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -35,6 +36,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	mygo.App.SetName("Alcove")
+	// A second start hands its arguments (e.g. an alcove:// link) to the
+	// running one and exits.
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+	setupLogs(paths.Layout{Root: data}.Logs())
+	log.Printf("alcove %s starting", Version)
 	rt := bundledRuntime()
 	node := "node"
 	if runtime.GOOS == "windows" {
@@ -58,18 +67,34 @@ func main() {
 	a.Runtimes.OnEvent, a.OnRuntimeExit = s.OnEvent, s.OnExit
 	a.Sidecars.OnState = s.OnSidecarState
 
-	mygo.App.SetName("Alcove")
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { a.Close() })
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1100, Height: 760, Content: ui.View(s.View)})
 		s.Post = win.Update
-		s.OnBackground = newBackground(win).set
 		s.PickFolder = func() (string, error) {
 			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择工作区文件夹", Directory: true, CreateDirectories: true})
 			if err != nil || len(dirs) == 0 {
 				return "", err
 			}
 			return dirs[0], nil
+		}
+		bg := newBackground(win)
+		s.OnBackground = bg.set
+		mygo.App.OnSecondInstance(func(args []string, _ string) {
+			bg.show()
+			for _, arg := range args {
+				if strings.HasPrefix(arg, "alcove://") {
+					go func(u string) {
+						if err := a.Sidecars.DeepLink(context.Background(), u); err != nil {
+							log.Printf("deep link %s: %v", u, err)
+						}
+					}(arg)
+				}
+			}
+		})
+		s.SaveFile = func(name string) (string, error) {
+			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出诊断包", DefaultPath: name,
+				Filters: []mygo.FileFilter{{Name: "Zip", Extensions: []string{"zip"}}}})
 		}
 		s.PickFile = func() (string, error) {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择插件包",
@@ -85,6 +110,14 @@ func main() {
 				s.StartFailed(err)
 			}
 			s.Load()
+			// Started from an alcove:// link.
+			for _, arg := range os.Args[1:] {
+				if strings.HasPrefix(arg, "alcove://") {
+					if err := a.Sidecars.DeepLink(context.Background(), arg); err != nil {
+						log.Printf("deep link %s: %v", arg, err)
+					}
+				}
+			}
 		}()
 	})
 	if err := mygo.App.Run(); err != nil {

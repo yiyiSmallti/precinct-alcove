@@ -104,6 +104,21 @@ func (s *Store) List() ([]Credential, error) {
 	return all, err
 }
 
+// Keys returns every stored key, for the diagnostics bundle to take out.
+// Keys the secret store cannot read are skipped.
+func (s *Store) Keys() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, _ := s.load()
+	var out [][]byte
+	for _, c := range all {
+		if v, err := s.Secrets.Get(secretKey(c.ID)); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Remove deletes the key, then the record.
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()

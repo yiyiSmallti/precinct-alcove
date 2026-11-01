@@ -13,8 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
@@ -40,6 +42,8 @@ type Shell struct {
 	PickFolder func() (string, error)
 	// PickFile asks the user for a plugin package (.tgz); "" means cancelled.
 	PickFile func() (string, error)
+	// SaveFile asks where to save a file named name; "" means cancelled.
+	SaveFile func(name string) (string, error)
 	// OnBackground is called (on the UI thread) when Alcove starts or stops
 	// having a plugin that runs in the background: the window then hides to
 	// the tray / menu bar on close instead of quitting (SPEC 3.2 常驻).
@@ -58,6 +62,8 @@ type Shell struct {
 	model      string // the model field being edited
 	notice     string // one line shown at the top, e.g. an error
 	startErr   string // why Alcove could not start; tasks are refused
+	diagBusy   bool
+	diagStatus string
 	contribs   map[string]sidecar.Contribution
 
 	pluginsState
@@ -447,4 +453,43 @@ func describe(err error) string {
 		return "本地执行已被策略关闭"
 	}
 	return fmt.Sprint(err)
+}
+
+// exportDiagnostics asks where to save the diagnostics bundle and writes it.
+func (s *Shell) exportDiagnostics() {
+	if s.SaveFile == nil {
+		return
+	}
+	name := "alcove-diagnostics-" + time.Now().Format("20060102-150405") + ".zip"
+	go func() {
+		path, err := s.SaveFile(name)
+		if err != nil || path == "" {
+			return
+		}
+		s.post(func() { s.diagBusy, s.diagStatus = true, "" })
+		err = writeDiagnostics(s.App, path)
+		s.post(func() {
+			s.diagBusy = false
+			if err != nil {
+				s.diagStatus = "导出失败：" + describe(err)
+				return
+			}
+			s.diagStatus = "已导出到 " + path
+		})
+	}()
+}
+
+func writeDiagnostics(a *app.App, path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = a.ExportDiagnostics(context.Background(), f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(path)
+	}
+	return err
 }

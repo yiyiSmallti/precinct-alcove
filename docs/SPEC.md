@@ -15,7 +15,7 @@
 ## 2. 模块
 
 ```
-cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁、崩溃日志随 PR E
+cmd/alcove                 入口：找随包运行时（可执行文件旁 runtime/，macOS 为 Contents/Resources/runtime；开发时 ALCOVE_NODE/ALCOVE_DSH/ALCOVE_TOOLDIR/ALCOVE_BRIDGE_TGZ 覆盖）、装配 app 与窗口；单实例锁（第二次启动把参数交给已开的实例，alcove:// 链接转给持 deep_link 的插件）；日志写 logs/alcove.log（超 5 MB 启动时轮转），Go 崩溃报告写 logs/crash.log
 internal/shell             MyGo 原生视图（已实现）：工作区侧栏、对话视图、审批卡、提问表单、凭据与模型设置；插件页（从文件安装：计划、问题、确认；卸载二次确认；边车状态、最后错误与 stderr 尾部、重新启动）；插件详情页渲染 settings_page；侧栏渲染 sidebar_item；持 inbox 的插件各有一个对话视图（消息、卡片、card 贡献、输入未送达标记与重发）。兼作审批应答方、边车 UI 接收方与 inbox。状态在 Shell 里，视图在 mu 下构建，外部事件经 Post 进 UI 线程；ui.Tester 无头测试
 cmd/alcove/tray.go         常驻：装有 background 插件时出现托盘（Windows）/ 菜单栏（macOS）图标，关窗口只隐藏，菜单"打开 Alcove""退出 Alcove"；卸掉最后一个 background 插件即撤图标、关窗口即退出
 （待做）                    运行时面板
@@ -31,7 +31,7 @@ internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime
 internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
 internal/update            签名增量更新客户端；更新源可配置
-internal/diag              诊断包导出与脱敏
+internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。验收 A4：e2e/diag_test.go
 installer/                 安装包脚本、签名流水线
 e2e/                       端到端脚本与报告模板
 ```
