@@ -68,6 +68,9 @@ type Installed struct {
 	Sidecar      string    `json:"sidecar,omitempty"` // relative path for this OS
 	SignedBy     int       `json:"signedBy"`          // index into TrustedKeys, -1 when unsigned
 	InstalledAt  time.Time `json:"installedAt"`
+	// Incomplete marks a failed install whose rollback did not finish: the
+	// archive and Profiles are what is left behind. Uninstall cleans it up.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // Plan is what the install dialog shows before the user confirms.
@@ -152,7 +155,11 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem {
 	var out []pkg.Problem
 	if cur, ok := installed[p.Name]; ok {
-		out = append(out, pkg.Problem{Code: "already-installed", Message: fmt.Sprintf("%s %s is installed; uninstall it first", cur.Name, cur.Version)})
+		msg := fmt.Sprintf("%s %s is installed; uninstall it first", cur.Name, cur.Version)
+		if cur.Incomplete {
+			msg = fmt.Sprintf("%s %s is left over from a failed install; uninstall it first", cur.Name, cur.Version)
+		}
+		out = append(out, pkg.Problem{Code: "already-installed", Message: msg})
 	}
 	reqs, _ := p.Requirements()
 	for _, r := range reqs {
@@ -212,6 +219,22 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 		se.RolledBack = h.undo(context.WithoutCancel(ctx), p.Name, done) == nil
 		if se.RolledBack {
 			os.Remove(stored)
+			return nil, se
+		}
+		// Keep a record of what is left so List shows it and Uninstall can
+		// retry the cleanup.
+		var targets []string
+		for _, prof := range done {
+			if prof != StoreProfile {
+				targets = append(targets, prof)
+			}
+		}
+		if all, err := h.load(); err == nil {
+			all[p.Name] = Installed{
+				Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
+				Profiles: targets, SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(), Incomplete: true,
+			}
+			h.save(all)
 		}
 		return nil, se
 	}

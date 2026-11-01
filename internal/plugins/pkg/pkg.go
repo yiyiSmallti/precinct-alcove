@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
@@ -210,19 +211,39 @@ func satisfies(version, rng string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if c.Check(v) {
-		return true, nil
-	}
-	// npm admits a prerelease when a comparator in the range names a
-	// prerelease of the same major.minor.patch (">=0.2.1-rc.5" admits
-	// 0.2.1-rc.5). Masterminds already does this for most ranges; retry with
-	// prereleases enabled only when the range itself mentions one.
-	if v.Prerelease() != "" && strings.Contains(rng, "-") {
-		c.IncludePrerelease = true
+	if v.Prerelease() == "" {
 		return c.Check(v), nil
+	}
+	// npm admits a prerelease only when a comparator in the same "||" set
+	// names a prerelease of the same major.minor.patch (">=0.2.1-rc.5 <0.3.0"
+	// admits 0.2.1-rc.7 but not 0.2.2-rc.1; "1.0.0 - 2.0.0" admits none).
+	// Masterminds is looser, so check only those sets, prereleases enabled.
+	for _, set := range strings.Split(rng, "||") {
+		eligible := false
+		for _, m := range prereleaseRe.FindAllStringSubmatch(set, -1) {
+			if pv, err := semver.NewVersion(m[1]); err == nil &&
+				pv.Major() == v.Major() && pv.Minor() == v.Minor() && pv.Patch() == v.Patch() {
+				eligible = true
+			}
+		}
+		if !eligible {
+			continue
+		}
+		sc, err := semver.NewConstraint(set)
+		if err != nil {
+			return false, err
+		}
+		sc.IncludePrerelease = true
+		if sc.Check(v) {
+			return true, nil
+		}
 	}
 	return false, nil
 }
+
+// prereleaseRe finds versions carrying a prerelease tag ("0.2.1-rc.5"); the
+// spaced " - " of a hyphen range does not match.
+var prereleaseRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+-[0-9A-Za-z.-]+)`)
 
 func safeRel(p string) bool {
 	if p == "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) || strings.Contains(p, ":") {
