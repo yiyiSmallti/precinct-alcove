@@ -29,7 +29,7 @@ import (
 
 func TestApp(t *testing.T) {
 	ctx := context.Background()
-	work := t.TempDir()
+	work := shortTemp(t)
 	base := testCLI(t, work)
 	ver, _ := base.Version(ctx)
 	r := &report{t: t, title: "Alcove 核心装配 e2e：工作区 profile、插件后台运行时、清理（SPEC 3.3）", file: "app.md"}

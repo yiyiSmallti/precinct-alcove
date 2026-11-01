@@ -62,7 +62,7 @@ func (s *memSecrets) Delete(k string) error {
 
 func TestCore(t *testing.T) {
 	ctx := context.Background()
-	work := t.TempDir()
+	work := shortTemp(t)
 	cli := testCLI(t, work)
 	ver, _ := cli.Version(ctx)
 	r := &report{t: t, title: "本地核心 e2e：身份、凭据、工作区（PRD 3.2、3.3、F2）", file: "core.md"}

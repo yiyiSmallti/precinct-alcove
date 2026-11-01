@@ -104,11 +104,12 @@ package.json
   ui.update(id, data)                      刷新卡片/侧栏数据
   settings.read(ns) / settings.write(ns, v) 命名空间隔离，策略段只有带 policy_write 能力的插件可写
   keychain.ref(name) / keychain.resolveForRuntime(ref)  值只在拉起 dsh 时由宿主注入，插件拿不到明文
-  inbox.post(item)                         需要 inbox；向通用对话视图投递卡片
+  inbox.post(item)                         需要 inbox；向通用对话视图投递。item = { id, kind:"message", text, ts, replyTo? } 或 { id, kind:"card", card:{ title, body, actions:[{ id, label, style?:"primary"|"danger" }] } }；id 必填（缺失 -32602），同 id 再投视为更新；text/body 为 markdown 子集（段落、粗斜体、行内代码、代码块、链接、列表）；卡片按钮走 onUiAction(contributionId=item.id, action=按钮 id, payload={})
   log(level, msg)
 插件提供（宿主可调）
   launchHook(ctx) → { env, profilePatch }   一期只应用 env；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn
   onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed
+  onInboxInput{ id, text, ts }              需要 inbox；用户在该插件的对话视图里输入。插件落盘后应答 {}；宿主按 id 幂等重发（超时、断连、边车重启后），插件见重复 id 直接应答 {}；未应答的输入在视图标"未送达"。ts 为 RFC 3339 UTC
   onUiAction(contributionId, action, payload)
   onDeepLink(url)                          需要 deep_link
   shutdown()
@@ -124,6 +125,7 @@ package.json
 - 把关：`runtime.registerLaunchHook` 需 `runtime_launch_hook`，`runtime.ensure` 需 `background`，`inbox.post` 需 `inbox`；界面贡献 `settings_page`、`sidebar_item` 需同名能力，`card` 需 `inbox`；`ui.update` 只能改自己登记过的贡献。设置命名空间：插件拥有与包名同名的命名空间及其下 `<name>/...`；`policy` 段人人可读，只有 `policy_write` 可写；其他插件的命名空间一律拒绝。
 - 错误码：`-32030` 能力或命名空间未授权；`-32031` 宿主暂未提供该服务（如 `keychain.resolveForRuntime`，随凭据 PR 提供）；`-32602` 参数错误；`-32601` 未知方法。`log` 既可作请求也可作通知。
 - 拉起钩子：每次拉起 dsh 前按插件名顺序调用已登记插件的 `launchHook(ctx{ workspaceId, profile, cwd })`，每个限时 3 秒；失败、超时或想设置保留变量（`ALCOVE_*`、`DSH_HOME`）的钩子被跳过并记日志，不阻塞拉起。
+- 常驻：Alcove 运行期间边车一律常驻，宿主不按空闲停边车；`background` 只决定能否调 `runtime.ensure`。有插件声明 `background` 时，关窗口最小化到托盘（Windows）/ 菜单栏（macOS），边车继续跑（D3 界面实现）。
 - 停止：`shutdown` 请求后等 3 秒，再结束整个进程树；插件登记的界面贡献与拉起钩子随之撤销。
 - 崩溃限频：未经宿主要求的退出（含握手失败）算一次崩溃，按 1 s、2 s、4 s… 退避重启；10 分钟内满 3 次即停在 `crashed`，插件页显示最后错误与 stderr 尾部，用户手动启动时清零计数。
 

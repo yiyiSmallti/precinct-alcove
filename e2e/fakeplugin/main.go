@@ -57,6 +57,9 @@ func (h *handler) Request(ctx context.Context, method string, params json.RawMes
 	case "onUiAction":
 		h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": "uiAction " + string(params)})
 		return map[string]any{}, nil
+	case "onInboxInput":
+		h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": "inboxInput " + string(params)})
+		return map[string]any{}, nil
 	case "shutdown":
 		if h.is("stubborn") {
 			<-ctx.Done()

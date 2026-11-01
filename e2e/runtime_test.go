@@ -35,7 +35,7 @@ func testCLI(t *testing.T, work string) *dsh.CLI {
 }
 
 func TestRuntime(t *testing.T) {
-	work := t.TempDir()
+	work := shortTemp(t)
 	cli := testCLI(t, work)
 	ctx := context.Background()
 	model, err := fakemodel.Start(3)
@@ -198,4 +198,18 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// shortTemp is t.TempDir() with a short name directly in the temp root.
+// macOS's $TMPDIR is already ~49 characters; t.TempDir() adds the test name,
+// and pnpm's store index file for a local tarball embeds the whole tarball
+// path in one file name, which then passes macOS's 255-byte limit
+// (ERR_PNPM_ENAMETOOLONG).
+func shortTemp(t *testing.T) string {
+	dir, err := os.MkdirTemp("", "ae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
