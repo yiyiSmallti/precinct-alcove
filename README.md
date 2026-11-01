@@ -17,11 +17,11 @@ Precinct 系列 · 基于 dsh（DeepSeek Harness）的轻量桌面客户端 + �
 
 ## 插件机制
 
-- 插件包 = manifest + 可执行文件（任意语言，推荐 Go）+ 可选 dsh bundle + 签名。
-- 子进程，JSON-RPC over stdio；宿主握手校验 manifest 与协议版本，按 manifest 声明的能力授权（设置页、工作区钩子、运行时启动钩子、provider 端点、后台、信箱、深链）。
+- 插件包就是标准 dsh 插件 npm 包（`.tgz` + Ed25519 签名），遵循 dsh 官方插件协议：`engines.dsh` 版本范围、组合包 patch，经 `dsh plugin add` 安装（[ADR 0001](https://github.com/yiyiSmallti/precinct-charter/blob/main/docs/adr/0001-plugin-packages-are-dsh-packages.md)）。
+- 宿主侧能力在 `package.json` 的 `alcove` 字段声明：Alcove 版本范围、能力（设置页、工作区钩子、运行时启动钩子、provider 端点、后台、信箱、深链）、目标 profile、声明式 UI、可选边车可执行文件。
+- 边车是子进程，JSON-RPC over stdio；宿主握手校验协议版本，按声明的能力授权。
 - UI 为声明式贡献（设置页、侧栏项、卡片模板），由 Alcove 用 MyGo 渲染，插件不画像素。
-- 插件携带的 dsh bundle 由 Alcove 装进运行时 profile，`--dump-config` 校验后在下次拉起 dsh 时生效。
-- 参考模式：hashicorp/go-plugin（子进程 + RPC、握手、版本协商），改用 JSON-RPC over stdio 与 dsh 运行时一致。
+- 边车的参考模式：hashicorp/go-plugin（子进程 + RPC、握手、版本协商），改用 JSON-RPC over stdio 与 dsh 运行时一致。
 
 两层插件：Alcove 插件（子进程，第一方）管宿主侧能力；dsh bundle（Node 内，开放生态）管运行时内能力。profile 在每次拉起 dsh 时按工作区归属组装，组织工作区只载入策略白名单内的 bundle。
 

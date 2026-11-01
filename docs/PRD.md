@@ -22,7 +22,7 @@
 4. 对话与任务：通用 dsh 事件视图：消息、工具调用摘要与展开、审批卡（允许/拒绝/总是允许）、提问表单、子代理进度、会话列表与续跑、按会话选模型与思考强度；非流式整条消息。
 5. 运行时生命周期：按需拉起、空闲退出（默认 10 分钟，可钉住）、运行中列表、手动停止；一个工作区一个进程。
 6. profile 与 dsh bundle 管理：每工作区 profile；从 npm registry 或本地 .tgz 添加 bundle；`--dump-config` 校验；错误可读。
-7. 插件宿主：从文件安装插件包；manifest 与签名校验；子进程 JSON-RPC；能力授权并在安装时展示；声明式 UI 渲染（设置页、侧栏项、卡片模板）；崩溃重启限频；卸载。
+7. 插件宿主：从文件安装插件包（插件包即标准 dsh 插件 npm 包，经 `dsh plugin add` 安装，见 Charter ADR 0001）；签名、`engines.dsh` 与 `alcove` 字段校验；边车子进程 JSON-RPC；能力授权并在安装时展示；声明式 UI 渲染（设置页、侧栏项、卡片模板）；崩溃重启限频；卸载。
 8. 诊断：一键导出脱敏日志包。
 9. 策略开关（供 `cloister` 插件写入，Alcove 读取）：`executors.local.enabled`、更新源、插件白名单与强制列表、签名要求。
 
@@ -34,7 +34,7 @@
 - F2 凭据不落盘明文；导出日志包不含 key；dsh 进程退出后 key 不残留在任何文件。
 - F3 对话视图对 dsh 的审批与提问事件做到"不丢、不重复、可追溯"，每个审批决定有本地记录。
 - F4 运行时异常退出时，会话 JSONL 不损坏，重开工作区可续跑。
-- F5 插件安装流程：选择文件 → 校验签名与 `hosts.alcove` 版本范围 → 展示能力清单 → 用户确认 → 安装 → 若携带 dsh bundle 则写入 profile 并校验。任一步失败回滚。
+- F5 插件安装流程：选择文件 → 校验签名、`engines.dsh` 与 `alcove.host` 版本范围 → 展示能力清单 → 用户确认 → 经 `dsh plugin add` 装入包仓与 `alcove.profiles` 列出的 profile → `--dump-config` 校验。任一步失败回滚。同一个包不经 Alcove、直接用 `dsh plugin add` 也能装进任意 dsh profile（只缺宿主侧能力）。
 - F6 插件崩溃 3 次/分钟自动停用并提示。
 - F7 `executors.local.enabled=false` 时，拉起运行时的所有入口不可用并说明原因，运行时文件保留。
 
@@ -49,7 +49,7 @@
 
 - dsh：`@deepseek-ai/dsh` 锁版本，`dsh-sdk-app` JSON-RPC；`sdk-minimal` 沙盒为 `danger-full-access`，Alcove 不另做隔离，文档如实说明。
 - MyGo：原生模式为主，页面级 webview 回退。
-- 对插件暴露：Alcove 插件协议 v1（见 SPEC）。
+- 对插件：包格式遵循 dsh 官方插件协议；宿主侧能力走 Alcove 宿主扩展协议 v1（见 SPEC 3.2）。
 - 对模型：OpenAI 兼容端点；可指向本机 Gatehouse。
 
 ## 7. 验收标准（端到端）
@@ -58,6 +58,6 @@
 
 - A1 干净的基线机安装 → 配置一个 API → 新建工作区 → 发起一个含文件写入与审批的任务 → 审批 → 完成 → 10 分钟后运行时自动退出；全程抓包只有模型端点流量。
 - A2 添加一个社区 dsh bundle（.tgz）到个人工作区 → `--dump-config` 通过 → 下次拉起可见其命令。
-- A3 安装一个测试插件（Go 空插件，带设置页声明）→ 设置页可见 → 让插件崩溃 3 次 → 自动停用 → 卸载干净。
+- A3 安装一个测试插件包（空组合包 patch + Go 边车，带设置页声明）→ 包出现在目标 profile 的 `dsh.profile.bundles` 且 `--dump-config` 通过 → 设置页可见 → 让边车崩溃 3 次 → 自动停用 → 卸载后各 profile 与包仓都无残留；另把 `engines.dsh` 改成不兼容范围重打包 → 安装被拒。
 - A4 导出诊断包 → 用脚本扫描确认不含 key 字样与凭据。
 - A5 增量更新：从 N 版升到 N+1 版，运行时版本同步变化，工作区与设置保留。
