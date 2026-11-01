@@ -47,6 +47,9 @@ type Settings struct {
 	DefaultCredential string `json:"defaultCredential,omitempty"`
 	Model             string `json:"model,omitempty"`
 	ReasoningEffort   string `json:"reasoningEffort,omitempty"`
+	// UpdateSource is a mirror of the release files (an https directory);
+	// "" is the feed built into the app.
+	UpdateSource string `json:"updateSource,omitempty"`
 }
 
 // App is one running Alcove.

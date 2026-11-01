@@ -24,6 +24,7 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 	"github.com/yiyiSmallti/precinct-alcove/internal/runtime/events"
+	"github.com/yiyiSmallti/precinct-alcove/internal/update"
 )
 
 // Page ids in the sidebar. Workspaces use "ws:<id>".
@@ -50,6 +51,10 @@ type Shell struct {
 	OnBackground func(on bool)
 	// Lang picks displayReason texts ("zh", "en").
 	Lang string
+	// Version is Alcove's version, shown in settings.
+	Version string
+	// Updater checks for and installs new versions; nil hides updates.
+	Updater update.Updater
 
 	mu         sync.Mutex
 	page       string
@@ -65,6 +70,7 @@ type Shell struct {
 	diagBusy   bool
 	diagStatus string
 	contribs   map[string]sidecar.Contribution
+	updates    updatesState
 
 	pluginsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars

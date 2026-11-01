@@ -1,9 +1,10 @@
 // Command alcove is the desktop app: it loads Alcove's state, starts the
 // bridge and the plugins' sidecars, and opens the window.
 //
-// The bundled runtime is found next to the executable (runtime/ beside it,
-// or Contents/Resources/runtime in a macOS .app). For development these
-// variables point at a runtime elsewhere:
+// The bundled runtime is runtime/ in the app's resources (next to the
+// executable on Windows, Contents/Resources in the macOS .app), staged by
+// installer/stage-runtime.sh. For development these variables point at a
+// runtime elsewhere:
 //
 //	ALCOVE_NODE        node executable
 //	ALCOVE_DSH         dsh entry script (node_modules/@deepseek-ai/dsh/lib/bin.js)
@@ -18,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -26,9 +26,10 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/paths"
 	"github.com/yiyiSmallti/precinct-alcove/internal/shell"
+	"github.com/yiyiSmallti/precinct-alcove/internal/update"
 )
 
-// Version is set at build time (-ldflags "-X main.Version=...").
+// Version is the version of a build without mygo.json's (go run).
 var Version = "0.1.0-dev"
 
 func main() {
@@ -37,8 +38,11 @@ func main() {
 		log.Fatal(err)
 	}
 	mygo.App.SetName("Alcove")
+	if v := mygo.App.Version(); v != "" {
+		Version = v
+	}
 	// A second start hands its arguments (e.g. an alcove:// link) to the
-	// running one and exits.
+	// running one, whose OnOpenURL gets it, and exits.
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
@@ -54,10 +58,11 @@ func main() {
 		AlcoveVersion: Version,
 		Node:          env("ALCOVE_NODE", filepath.Join(rt, node)),
 		DSHBin:        env("ALCOVE_DSH", filepath.Join(rt, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")),
-		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "node_modules", ".bin"))},
+		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "bin")), rt},
 		BridgeTgz:     env("ALCOVE_BRIDGE_TGZ", filepath.Join(rt, "alcove-bridge.tgz")),
 	}
 	s := shell.New(nil)
+	s.Version, s.Updater = Version, &update.MyGo{}
 	cfg.Answerer, cfg.SidecarUI, cfg.Inbox = s, s, s.Inbox
 	a, err := app.New(cfg)
 	if err != nil {
@@ -68,14 +73,17 @@ func main() {
 	a.Sidecars.OnState = s.OnSidecarState
 
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { a.Close() })
-	// alcove:// links go to the plugins once their sidecars are up.
+	// alcove:// links: the one Alcove was started with, and those of later
+	// starts. They go to the plugins once their sidecars are up.
 	ready := make(chan struct{})
-	deepLink := func(u string) {
-		<-ready
-		if err := a.Sidecars.DeepLink(context.Background(), u); err != nil {
-			log.Printf("deep link %s: %v", u, err)
-		}
-	}
+	mygo.App.OnOpenURL(func(u string) {
+		go func() {
+			<-ready
+			if err := a.Sidecars.DeepLink(context.Background(), u); err != nil {
+				log.Printf("deep link %s: %v", u, err)
+			}
+		}()
+	})
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1100, Height: 760, Content: ui.View(s.View)})
 		s.Post = win.Update
@@ -88,14 +96,7 @@ func main() {
 		}
 		bg := newBackground(win)
 		s.OnBackground = bg.set
-		mygo.App.OnSecondInstance(func(args []string, _ string) {
-			bg.show()
-			for _, arg := range args {
-				if strings.HasPrefix(arg, "alcove://") {
-					go deepLink(arg)
-				}
-			}
-		})
+		mygo.App.OnSecondInstance(func([]string, string) { bg.show() })
 		s.SaveFile = func(name string) (string, error) {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出诊断包", DefaultPath: name,
 				Filters: []mygo.FileFilter{{Name: "Zip", Extensions: []string{"zip"}}}})
@@ -115,12 +116,7 @@ func main() {
 			}
 			s.Load()
 			close(ready)
-			// Started from an alcove:// link.
-			for _, arg := range os.Args[1:] {
-				if strings.HasPrefix(arg, "alcove://") {
-					deepLink(arg)
-				}
-			}
+			s.StartUpdates(context.Background())
 		}()
 	})
 	if err := mygo.App.Run(); err != nil {
@@ -130,18 +126,15 @@ func main() {
 
 // bundledRuntime is the runtime directory shipped with the app.
 func bundledRuntime() string {
-	exe, err := os.Executable()
+	res, err := mygo.App.Path(mygo.PathResources)
 	if err != nil {
 		return "runtime"
 	}
-	dir := filepath.Dir(exe)
-	if runtime.GOOS == "darwin" {
-		// Alcove.app/Contents/MacOS/alcove → Contents/Resources/runtime
-		if res := filepath.Join(dir, "..", "Resources", "runtime"); exists(res) {
-			return res
-		}
+	if rt := filepath.Join(res, "runtime"); exists(rt) {
+		return rt
 	}
-	return filepath.Join(dir, "runtime")
+	// go run: resources/ as it is, with the platform directories unmerged.
+	return filepath.Join(res, runtime.GOOS+"-"+runtime.GOARCH, "runtime")
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
