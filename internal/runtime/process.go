@@ -64,6 +64,7 @@ type Process struct {
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+	stdout io.ReadCloser
 	conn   *jsonrpc.Conn
 	stderr *tailBuffer
 	events chan Event
@@ -90,6 +91,10 @@ func Launch(ctx context.Context, cli *dsh.CLI, spec LaunchSpec) (*Process, error
 	}
 	cmd := exec.Command(cli.Node, cli.Bin, "--profile", spec.Profile)
 	cmd.Dir = spec.Cwd
+	// Own process group, so a kill also ends tool subprocesses; and bound the
+	// wait for stderr a stray descendant may still hold.
+	dsh.OwnProcessGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second
 	id := randomID()
 	cmd.Env = append(cli.Environ(), spec.Env...)
 	if spec.Bridge != nil {
@@ -104,7 +109,7 @@ func Launch(ctx context.Context, cli *dsh.CLI, spec LaunchSpec) (*Process, error
 		return nil, err
 	}
 	p := &Process{
-		Spec: spec, ID: id, cmd: cmd, stdin: stdin,
+		Spec: spec, ID: id, cmd: cmd, stdin: stdin, stdout: stdout,
 		stderr: &tailBuffer{max: 16 << 10},
 		events: make(chan Event, 1024),
 		busy:   map[string]bool{},
@@ -237,10 +242,14 @@ func (p *Process) Stop(grace time.Duration) error {
 	}
 }
 
+// kill ends the runtime and its descendants, and closes our pipe ends so the
+// reader stops even if a descendant that escaped the tree still holds them.
 func (p *Process) kill() {
 	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		dsh.KillTree(p.cmd)
 	}
+	p.stdin.Close()
+	p.stdout.Close()
 }
 
 // touch restarts the idle timer unless pinned or a session is running.

@@ -58,7 +58,7 @@ type Conn struct {
 	r       io.Reader
 	handler Handler
 
-	wmu     sync.Mutex
+	wq      chan writeReq // to the single writer goroutine
 	mu      sync.Mutex
 	nextID  int64
 	pending map[int64]chan message
@@ -67,9 +67,28 @@ type Conn struct {
 	err     error
 }
 
-// New wraps r and w. Nothing is read until Serve runs.
+type writeReq struct {
+	b   []byte
+	res chan error
+}
+
+// New wraps r and w. Nothing is read until Serve runs. Writes go through one
+// goroutine so a peer that stops reading cannot block callers past their
+// context; closing the transport ends a stuck write.
 func New(r io.Reader, w io.Writer, h Handler) *Conn {
-	return &Conn{r: r, w: w, handler: h, pending: map[int64]chan message{}, done: make(chan struct{})}
+	c := &Conn{r: r, w: w, handler: h, pending: map[int64]chan message{}, done: make(chan struct{}), wq: make(chan writeReq)}
+	go c.writer()
+	return c
+}
+
+func (c *Conn) writer() {
+	var failed error
+	for req := range c.wq {
+		if failed == nil {
+			_, failed = c.w.Write(req.b)
+		}
+		req.res <- failed
+	}
 }
 
 // Serve reads until r ends or fails, then fails every pending call. It
@@ -144,19 +163,29 @@ func (c *Conn) answer(ctx context.Context, m message) {
 			resp.Result = b
 		}
 	}
-	c.write(resp)
+	c.write(ctx, resp)
 }
 
-func (c *Conn) write(m message) error {
+func (c *Conn) write(ctx context.Context, m message) error {
 	m.JSONRPC = "2.0"
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	_, err = c.w.Write(append(b, '\n'))
-	return err
+	req := writeReq{b: append(b, '\n'), res: make(chan error, 1)}
+	select {
+	case c.wq <- req:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return ErrClosed
+	}
+	select {
+	case err := <-req.res:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Call sends a request and decodes the result into out (which may be nil).
@@ -181,7 +210,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, out any) error {
 		}
 		req.Params = b
 	}
-	if err := c.write(req); err != nil {
+	if err := c.write(ctx, req); err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
@@ -207,8 +236,8 @@ func (c *Conn) Call(ctx context.Context, method string, params, out any) error {
 	}
 }
 
-// Notify sends a notification.
-func (c *Conn) Notify(method string, params any) error {
+// Notify sends a notification; ctx bounds the write.
+func (c *Conn) Notify(ctx context.Context, method string, params any) error {
 	m := message{Method: method}
 	if params != nil {
 		b, err := json.Marshal(params)
@@ -217,5 +246,5 @@ func (c *Conn) Notify(method string, params any) error {
 		}
 		m.Params = b
 	}
-	return c.write(m)
+	return c.write(ctx, m)
 }

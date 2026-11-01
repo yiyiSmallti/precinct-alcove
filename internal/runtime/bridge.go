@@ -27,7 +27,10 @@ type Bridge struct {
 	srv     hostipc.Server
 	mu      sync.Mutex
 	cancels map[string]pendingReq // requestId → open card
-	logMu   sync.Mutex
+	// early holds request.cancel notifications that overtook their request
+	// (requests are served on goroutines, notifications in order).
+	early map[string]time.Time
+	logMu sync.Mutex
 }
 
 // Approval outcomes the bundle accepts.
@@ -124,6 +127,7 @@ const BridgeProtocol = "alcove-bridge"
 func (b *Bridge) Start(ctx context.Context, name string) error {
 	b.srv = hostipc.Server{Protocol: BridgeProtocol, Majors: []string{"1"}, Handler: b}
 	b.cancels = map[string]pendingReq{}
+	b.early = map[string]time.Time{}
 	if err := b.srv.Listen(name); err != nil {
 		return fmt.Errorf("bridge: %w", err)
 	}
@@ -169,7 +173,11 @@ func (b *Bridge) Request(ctx context.Context, a *hostipc.Attachment, method stri
 		if outcome != AllowedOnce && outcome != Rejected && outcome != Cancelled {
 			outcome = Rejected
 		}
-		b.audit(map[string]any{"kind": "approval", "runtime": a.Target, "request": req, "outcome": outcome})
+		// No record, no grant (PRD F3): the bundle turns an error into
+		// "unavailable", which dsh treats as not allowed.
+		if err := b.audit(map[string]any{"kind": "approval", "runtime": a.Target, "request": req, "outcome": outcome}); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternal, Message: "cannot record the decision: " + err.Error()}
+		}
 		return map[string]string{"outcome": outcome}, nil
 	case "questions.ask":
 		var req QuestionRequest
@@ -182,7 +190,9 @@ func (b *Bridge) Request(ctx context.Context, a *hostipc.Attachment, method stri
 		if err != nil {
 			return nil, err
 		}
-		b.audit(map[string]any{"kind": "questions", "runtime": a.Target, "request": req, "answers": answers})
+		if err := b.audit(map[string]any{"kind": "questions", "runtime": a.Target, "request": req, "answers": answers}); err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternal, Message: "cannot record the answers: " + err.Error()}
+		}
 		return map[string]any{"answers": answers}, nil
 	}
 	return nil, &jsonrpc.Error{Code: hostipc.CodeUnsupported, Message: "unsupported: " + method}
@@ -195,13 +205,23 @@ func (b *Bridge) Notify(a *hostipc.Attachment, method string, params json.RawMes
 	var p struct {
 		RequestID string `json:"requestId"`
 	}
-	if json.Unmarshal(params, &p) == nil {
-		b.mu.Lock()
-		pr, ok := b.cancels[p.RequestID]
-		b.mu.Unlock()
-		if ok {
-			pr.cancel()
+	if json.Unmarshal(params, &p) != nil || p.RequestID == "" {
+		return
+	}
+	b.mu.Lock()
+	pr, ok := b.cancels[p.RequestID]
+	if !ok {
+		now := time.Now()
+		for id, t := range b.early {
+			if now.Sub(t) > time.Minute {
+				delete(b.early, id)
+			}
 		}
+		b.early[p.RequestID] = now
+	}
+	b.mu.Unlock()
+	if ok {
+		pr.cancel()
 	}
 }
 
@@ -228,6 +248,10 @@ func (b *Bridge) track(ctx context.Context, runtime, id string) (context.Context
 	ctx, cancel := context.WithCancel(ctx)
 	b.mu.Lock()
 	b.cancels[id] = pendingReq{runtime: runtime, cancel: cancel}
+	if _, ok := b.early[id]; ok {
+		delete(b.early, id)
+		cancel() // withdrawn before it got here
+	}
 	b.mu.Unlock()
 	return ctx, func() {
 		b.mu.Lock()
@@ -237,24 +261,35 @@ func (b *Bridge) track(ctx context.Context, runtime, id string) (context.Context
 	}
 }
 
-func (b *Bridge) audit(rec map[string]any) {
+// audit appends rec to AuditLog and syncs it; an error means the record may
+// be lost.
+func (b *Bridge) audit(rec map[string]any) error {
 	if b.AuditLog == "" {
-		return
+		return nil
 	}
 	rec["time"] = time.Now().UTC().Format(time.RFC3339Nano)
 	line, err := json.Marshal(rec)
 	if err != nil {
-		return
+		return err
 	}
 	b.logMu.Lock()
 	defer b.logMu.Unlock()
-	os.MkdirAll(filepath.Dir(b.AuditLog), 0o755)
+	if err := os.MkdirAll(filepath.Dir(b.AuditLog), 0o755); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(b.AuditLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
 	}
-	defer f.Close()
-	f.Write(append(line, '\n'))
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func randomID() string {

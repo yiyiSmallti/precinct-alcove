@@ -110,7 +110,8 @@ func (c *CLI) Run(ctx context.Context, args ...string) (Result, error) {
 	cmd.Stdin = nil // closed: dsh must not prompt
 	// On timeout, end the whole process tree (dsh runs pnpm), and stop
 	// waiting for output pipes a stray descendant may still hold.
-	killTree(cmd)
+	OwnProcessGroup(cmd)
+	cmd.Cancel = func() error { return KillTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

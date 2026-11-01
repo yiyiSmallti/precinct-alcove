@@ -105,6 +105,9 @@ function connect (endpoint, token) {
 async function ask (peerP, method, params, signal) {
   const peer = await peerP
   if (!peer || peer.closed) return undefined
+  // Withdrawn while we waited for the connection: an abort event that already
+  // fired is not replayed, so never send it.
+  if (signal?.aborted) return undefined
   const requestId = randomUUID()
   const onAbort = () => peer.notify('request.cancel', { requestId })
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -145,11 +148,17 @@ export function apply (ctx) {
   })
 
   ctx.on('user-questions/request', async (request, next) => {
-    const res = await ask(peerP, 'questions.ask', {
-      sessionId: request.agent?.session?.id,
-      callId: request.wait?.callId,
-      questions: request.questions
-    }, request.signal)
+    let res
+    try {
+      res = await ask(peerP, 'questions.ask', {
+        sessionId: request.agent?.session?.id,
+        callId: request.wait?.callId,
+        questions: request.questions
+      }, request.signal)
+    } catch (err) {
+      warn(`questions.ask failed: ${err.message}`)
+      return next()
+    }
     if (res === undefined) return next()
     return { answers: Array.isArray(res?.answers) ? res.answers : [] }
   })
