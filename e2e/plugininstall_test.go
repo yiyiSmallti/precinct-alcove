@@ -135,11 +135,28 @@ func TestPluginInstall(t *testing.T) {
 	if err != nil {
 		return
 	}
+	// A second plan for the same package, prepared before the first install.
+	stale := mk("1.0.3", nil)
+	signWith(stale, priv)
+	stalePlan, staleErr := h.Prepare(ctx, stale)
 	rec, err := h.Install(ctx, plan)
 	r.step("安装（包仓 + 两个目标 profile + --dump-config）", err, "")
 	if err != nil {
 		return
 	}
+	if err = staleErr; err == nil {
+		var se *host.StepError
+		_, err = h.Install(ctx, stalePlan)
+		switch {
+		case err == nil:
+			err = errors.New("stale plan installed over the first install")
+		case !errors.As(err, &se) || se.Step != "check":
+			err = fmt.Errorf("unexpected error: %w", err)
+		default:
+			err = nil
+		}
+	}
+	r.step("预检后状态变化：执行时重新检查，拒绝过期计划", err, "")
 	for _, p := range append([]string{host.StoreProfile}, targets...) {
 		m, err := cli.ReadProfile(p)
 		if err == nil && !m.HasBundle(rec.Name) {
@@ -161,6 +178,24 @@ func TestPluginInstall(t *testing.T) {
 		err = expectProblem(plan2, "already-installed")
 	}
 	r.step("同名包已安装时拒绝重复安装", err, "")
+
+	// An unreadable target manifest is not "already removed": uninstall must
+	// fail and keep the archive and the record.
+	manifest := filepath.Join(cli.ProfileDir(targets[0]), "package.json")
+	orig, _ := os.ReadFile(manifest)
+	os.WriteFile(manifest, []byte("{"), 0o644)
+	err = h.Uninstall(ctx, rec.Name)
+	if err == nil {
+		err = errors.New("uninstall succeeded with an unreadable profile")
+	} else if list, _ := h.List(); len(list) != 1 {
+		err = fmt.Errorf("record dropped: %d records", len(list))
+	} else if _, serr := os.Stat(rec.Stored); serr != nil {
+		err = fmt.Errorf("archive deleted: %w", serr)
+	} else {
+		err = nil
+	}
+	os.WriteFile(manifest, orig, 0o644)
+	r.step("profile 清单损坏时卸载报错并保留记录与包", err, "")
 
 	// 4. Uninstall leaves nothing behind.
 	err = h.Uninstall(ctx, rec.Name)

@@ -108,6 +108,10 @@ func (c *CLI) Run(ctx context.Context, args ...string) (Result, error) {
 	cmd := exec.CommandContext(ctx, c.Node, append([]string{c.Bin}, args...)...)
 	cmd.Env = c.environ()
 	cmd.Stdin = nil // closed: dsh must not prompt
+	// On timeout, end the whole process tree (dsh runs pnpm), and stop
+	// waiting for output pipes a stray descendant may still hold.
+	killTree(cmd)
+	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

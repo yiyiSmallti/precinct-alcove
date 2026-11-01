@@ -140,24 +140,32 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	plan.Problems = append(plan.Problems, stateProblems(p, installed)...)
+	if p.Alcove != nil {
+		plan.Profiles = h.targets(p.Alcove.Profiles)
+	}
+	return plan, nil
+}
+
+// stateProblems checks p against the installed records: not installed yet,
+// and every required plugin present in a satisfying version.
+func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem {
+	var out []pkg.Problem
 	if cur, ok := installed[p.Name]; ok {
-		plan.Problems = append(plan.Problems, pkg.Problem{Code: "already-installed", Message: fmt.Sprintf("%s %s is installed; uninstall it first", cur.Name, cur.Version)})
+		out = append(out, pkg.Problem{Code: "already-installed", Message: fmt.Sprintf("%s %s is installed; uninstall it first", cur.Name, cur.Version)})
 	}
 	reqs, _ := p.Requirements()
 	for _, r := range reqs {
 		cur, ok := installed[r.Name]
 		if !ok {
-			plan.Problems = append(plan.Problems, pkg.Problem{Code: "requires", Message: fmt.Sprintf("install %s@%s first", r.Name, r.Range)})
+			out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("install %s@%s first", r.Name, r.Range)})
 			continue
 		}
 		if ok, err := pkg.Satisfies(cur.Version, r.Range); err != nil || !ok {
-			plan.Problems = append(plan.Problems, pkg.Problem{Code: "requires", Message: fmt.Sprintf("needs %s@%s, installed is %s", r.Name, r.Range, cur.Version)})
+			out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("needs %s@%s, installed is %s", r.Name, r.Range, cur.Version)})
 		}
 	}
-	if p.Alcove != nil {
-		plan.Profiles = h.targets(p.Alcove.Profiles)
-	}
-	return plan, nil
+	return out
 }
 
 // Install carries out a confirmed plan. On failure everything already done
@@ -176,7 +184,17 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 		return nil, &StepError{Step: "inspect", Err: errors.New("package file changed after it was checked")}
 	}
 
-	stored := filepath.Join(h.Dir, "packages", storeName(p.Name, p.Version))
+	// Another install or uninstall may have run since Prepare: re-check the
+	// installed state under the lock before touching files or profiles.
+	installed, err := h.load()
+	if err != nil {
+		return nil, &StepError{Step: "check", Err: err}
+	}
+	if probs := stateProblems(p, installed); len(probs) > 0 {
+		return nil, &StepError{Step: "check", Err: fmt.Errorf("installed plugins changed after the check: %s", probs[0])}
+	}
+
+	stored := filepath.Join(h.Dir, "packages", storeName(p.Name, p.Version, plan.SHA256))
 	if err := copyFile(plan.Path, stored); err != nil {
 		return nil, &StepError{Step: "store", Err: err}
 	}
@@ -293,7 +311,18 @@ func (h *Host) undo(ctx context.Context, name string, profiles []string) error {
 	for i := len(profiles) - 1; i >= 0; i-- {
 		prof := profiles[i]
 		m, err := h.DSH.ReadProfile(prof)
-		if err != nil || !(m.HasDependency(name) || m.HasBundle(name)) {
+		if errors.Is(err, os.ErrNotExist) {
+			continue // profile gone: nothing to remove
+		}
+		if err != nil {
+			// Unreadable is not absent: report it so the caller keeps the
+			// stored archive and the record for a later retry.
+			if first == nil {
+				first = fmt.Errorf("read %s: %w", prof, err)
+			}
+			continue
+		}
+		if !(m.HasDependency(name) || m.HasBundle(name)) {
 			continue
 		}
 		if _, err := h.DSH.PluginRemove(ctx, prof, name); err != nil && first == nil {
@@ -357,10 +386,15 @@ func (h *Host) save(all map[string]Installed) error {
 	return os.Rename(tmp, h.recordsPath())
 }
 
-// storeName turns "@scope/name" + version into "scope__name-version.tgz".
-func storeName(name, version string) string {
+// storeName turns "@scope/name" + version into
+// "scope__name-version-<sha256 prefix>.tgz". The readable part can collide
+// ("@foo/bar" and "foo__bar"); the digest prefix keeps distinct archives apart.
+func storeName(name, version, sha256 string) string {
 	n := strings.ReplaceAll(strings.TrimPrefix(name, "@"), "/", "__")
-	return n + "-" + version + ".tgz"
+	if len(sha256) > 16 {
+		sha256 = sha256[:16]
+	}
+	return n + "-" + version + "-" + sha256 + ".tgz"
 }
 
 func copyFile(src, dst string) error {
