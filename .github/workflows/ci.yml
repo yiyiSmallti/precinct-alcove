@@ -24,11 +24,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: gofmt, vet, build, Windows cross-compile
+      - name: gofmt, vet, build, Windows and macOS cross-compile
         run: |
           test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
           go vet ./... && go vet -tags e2e ./...
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+          for arch in arm64 amd64; do
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=0 go build ./...
+            GOOS=darwin GOARCH=$arch go vet -tags e2e ./...
+          done
       - uses: actions/setup-node@v4
         with:
           node-version: 24
