@@ -1,0 +1,51 @@
+name: ci
+
+# CI minutes are limited: run only on pull requests that touch code, cancel
+# superseded runs, and keep it to one job. Docs-only changes do not trigger it.
+on:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'bridge/**'
+      - '.github/workflows/ci.yml'
+
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt, vet, build, Windows cross-compile
+        run: |
+          test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+          go vet ./... && go vet -tags e2e ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Cache the locked dsh runtime
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dsh
+          key: dsh-0.2.1-rc.5-pnpm-10.28.0
+      - name: Install pnpm and dsh 0.2.1-rc.5
+        run: |
+          npm i -g pnpm@10.28.0
+          if [ ! -f "$RUNNER_TEMP/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
+            mkdir -p "$RUNNER_TEMP/dsh" && cd "$RUNNER_TEMP/dsh"
+            npm init -y >/dev/null
+            npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5
+          fi
+      - name: e2e
+        env:
+          ALCOVE_E2E_DSH: ${{ runner.temp }}/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js
+        run: ALCOVE_E2E_NODE=$(command -v node) go test -tags e2e ./e2e/ -count=1
