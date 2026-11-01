@@ -48,13 +48,20 @@ func Verify(tgz, sigPath string, keys []ed25519.PublicKey) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	s, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil || len(s) != ed25519.SignatureSize {
-		return -1, fmt.Errorf("%s: not a base64 Ed25519 signature", sigPath)
-	}
 	digest, err := Digest(tgz)
 	if err != nil {
 		return -1, err
+	}
+	return VerifyDigest(digest, raw, sigPath, keys)
+}
+
+// VerifyDigest checks a .sig file's contents (sigRaw, read from sigPath)
+// against an already computed digest, so the caller can bind the signature
+// to the exact bytes it hashed.
+func VerifyDigest(digest, sigRaw []byte, sigPath string, keys []ed25519.PublicKey) (int, error) {
+	s, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigRaw)))
+	if err != nil || len(s) != ed25519.SignatureSize {
+		return -1, fmt.Errorf("%s: not a base64 Ed25519 signature", sigPath)
 	}
 	for i, k := range keys {
 		if len(k) == ed25519.PublicKeySize && ed25519.Verify(k, digest, s) {

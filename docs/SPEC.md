@@ -71,14 +71,14 @@ package.json
 
 **安装流程（F5）**
 
-1. 选择 `.tgz`（同目录需有 `.sig`）→ 校验签名。
-2. 读包内 `package.json`：没有 `dsh.bundle.patch` 即拒绝（dsh CLI 对这种包不回滚，只当普通依赖装上）；`engines.dsh` 不覆盖随包 dsh 版本即拒绝（不走 dsh 的版本豁免；dsh 安装时会再判一次，以 dsh 为准）；`alcove.host` 不覆盖当前 Alcove 版本即拒绝；带 install 类脚本即拒绝；`alcove.requires` 未满足即提示先装依赖；同名包已安装即提示先卸载。
+1. 选择 `.tgz`（同目录需有 `.sig`）→ 先复制一份快照到 `plugins\staging\`，对快照算摘要、按摘要校验签名，之后的检查与安装都只用这份快照，源文件再改也不影响。
+2. 读包内 `package.json`：没有 `dsh.bundle.patch` 即拒绝（dsh CLI 对这种包不回滚，只当普通依赖装上）；`engines.dsh` 不覆盖随包 dsh 版本即拒绝（不走 dsh 的版本豁免；dsh 安装时会再判一次，以 dsh 为准）；`alcove.host` 不覆盖当前 Alcove 版本即拒绝；带 install 类脚本即拒绝；`alcove.requires` 未满足即提示先装依赖；同名包已安装（含上次失败留下的未完成记录）即提示先卸载；包仓或目标 profile 里已有用户手工装的同名包即拒绝（不接管，回滚也不会动它）。
 3. 展示能力清单，用户确认。
-4. 把 `.tgz` 复制到 `%LOCALAPPDATA%\Alcove\plugins\packages\`，后续一律用这份副本安装（profile 记录的是 `.tgz` 绝对路径，原文件被挪走后该 profile 的后续安装都会失败），卸载时才删除。
+4. 确认后在锁内重查已装记录、依赖与 profile 冲突；把快照复制到 `%LOCALAPPDATA%\Alcove\plugins\packages\<name>-<version>-<摘要前缀>.tgz` 并核对摘要，后续一律用这份副本安装（profile 记录的是 `.tgz` 绝对路径，原文件被挪走后该 profile 的后续安装都会失败），卸载时才删除。
 5. `dsh plugin --profile alcove-plugins add <副本>`：保留 profile，只作包仓，永不启动；边车从这里的 `node_modules/<name>/` 拉起。
 6. 对 `alcove.profiles` 覆盖的每个 profile 执行 `dsh plugin --profile <p> add <副本>`，确认已选入 `dsh.profile.bundles`，再 `--dump-config` 校验。
-7. 任一步失败：已完成的 profile 逐个 `dsh plugin remove`，包仓同样移除，删除副本，界面展示 dsh 诊断原文。
-8. 卸载顺序相反：停边车 → 各 profile remove → 包仓 remove → 删除副本。pnpm 留下的空作用域目录一并删除。
+7. 任一步失败：已动过的 profile（含失败的那个）逐个 `dsh plugin remove`，包仓同样移除，删除副本，界面展示 dsh 诊断原文。回滚本身失败时保留副本，写一条 `incomplete` 记录，列表可见，可经卸载重试清理；未完成记录不满足其他包的 `requires`。dsh 子进程超时按进程树结束。
+8. 卸载顺序相反：停边车 → 记录先标 `incomplete` → 各 profile remove → 包仓 remove → 删除副本 → 删记录。中途失败则留下 `incomplete` 记录；profile 清单读不出不算已移除。pnpm 留下的空作用域目录一并删除。
 9. 安装记录在 `plugins\installed.json`。实现：`internal/plugins/host`、`internal/plugins/pkg`、`internal/plugins/sig`、`internal/dsh`；e2e：`e2e/plugininstall_test.go`。
 
 **宿主扩展协议 v1（边车，JSON-RPC 2.0 over stdio）**

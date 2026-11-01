@@ -112,20 +112,38 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &Plan{Path: tgz, SignedBy: -1}
-	digest, err := sig.Digest(tgz)
+	// Work on a private snapshot: the signature check, inspection and
+	// install all see the same bytes even if the source changes meanwhile.
+	snap, err := h.snapshot(tgz)
+	if err != nil {
+		return nil, &StepError{Step: "inspect", Err: err}
+	}
+	plan := &Plan{Path: snap, SignedBy: -1}
+	ok := false
+	defer func() {
+		if !ok {
+			os.Remove(snap)
+		}
+	}()
+	digest, err := sig.Digest(snap)
 	if err != nil {
 		return nil, &StepError{Step: "inspect", Err: err}
 	}
 	plan.SHA256 = hex.EncodeToString(digest)
 
-	if i, err := sig.Verify(tgz, tgz+".sig", h.TrustedKeys); err == nil {
+	i, err := -1, error(sig.ErrUnsigned)
+	if raw, rerr := os.ReadFile(tgz + ".sig"); rerr == nil {
+		i, err = sig.VerifyDigest(digest, raw, tgz+".sig", h.TrustedKeys)
+	} else if !errors.Is(rerr, os.ErrNotExist) {
+		err = rerr
+	}
+	if err == nil {
 		plan.SignedBy = i
 	} else if !h.AllowUnsigned {
 		return nil, &StepError{Step: "signature", Err: err}
 	}
 
-	p, err := pkg.Inspect(tgz)
+	p, err := pkg.Inspect(snap)
 	if err != nil {
 		return nil, &StepError{Step: "inspect", Err: err}
 	}
@@ -148,7 +166,34 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 		plan.Profiles = h.targets(p.Alcove.Profiles)
 	}
 	plan.Problems = append(plan.Problems, h.profileConflicts(p.Name, plan.Profiles)...)
+	ok = true
 	return plan, nil
+}
+
+// snapshot copies src into Dir/staging and returns the copy's path.
+func (h *Host) snapshot(src string) (string, error) {
+	dir := filepath.Join(h.Dir, "staging")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "pkg-*.tgz")
+	if err != nil {
+		return "", err
+	}
+	f.Close()
+	if err := copyFile(src, f.Name()); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// Discard drops a plan that will not be installed. Install discards its plan
+// itself, whatever the outcome.
+func (h *Host) Discard(plan *Plan) {
+	if plan != nil && filepath.Dir(plan.Path) == filepath.Join(h.Dir, "staging") {
+		os.Remove(plan.Path)
+	}
 }
 
 // stateProblems checks p against the installed records: not installed yet,
@@ -204,6 +249,7 @@ func (h *Host) profileConflicts(name string, targets []string) []pkg.Problem {
 // Install carries out a confirmed plan. On failure everything already done
 // is undone and the returned *StepError says where it stopped.
 func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
+	defer h.Discard(plan)
 	if !plan.OK() {
 		return nil, &StepError{Step: "check", Err: fmt.Errorf("%d problem(s): %s", len(plan.Problems), plan.Problems[0])}
 	}
@@ -327,16 +373,16 @@ func (h *Host) Uninstall(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("%s is not installed", name)
 	}
-	if err := h.undo(ctx, name, append([]string{StoreProfile}, rec.Profiles...)); err != nil {
-		// Some profiles may already be clean: the package is no longer
-		// usable as a prerequisite until it is cleaned up and reinstalled.
-		if !rec.Incomplete {
-			rec.Incomplete = true
-			all[name] = rec
-			if serr := h.save(all); serr != nil {
-				return errors.Join(err, serr)
-			}
+	// From here on the package stops being usable as a prerequisite: record
+	// that first, so any later failure leaves an incomplete record behind.
+	if !rec.Incomplete {
+		rec.Incomplete = true
+		all[name] = rec
+		if err := h.save(all); err != nil {
+			return err
 		}
+	}
+	if err := h.undo(ctx, name, append([]string{StoreProfile}, rec.Profiles...)); err != nil {
 		return err
 	}
 	if err := os.Remove(rec.Stored); err != nil && !errors.Is(err, os.ErrNotExist) {
