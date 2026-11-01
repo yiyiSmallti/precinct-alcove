@@ -82,7 +82,13 @@ common() {
     cat > "$out/bin/pnpm" <<'SH'
 #!/bin/sh
 d=$(dirname "$0")
-exec "$d/../node" "$d/../node_modules/pnpm/bin/pnpm.cjs" "$@"
+node=$d/../node
+# go run from the staged resources/: node is per CPU, next to darwin/.
+if [ ! -x "$node" ]; then
+  case $(uname -m) in arm64) cpu=arm64 ;; *) cpu=amd64 ;; esac
+  node=$d/../../../darwin-$cpu/runtime/node
+fi
+exec "$node" "$d/../node_modules/pnpm/bin/pnpm.cjs" "$@"
 SH
     chmod +x "$out/bin/pnpm"
   fi
