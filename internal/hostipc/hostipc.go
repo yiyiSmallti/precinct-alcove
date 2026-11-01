@@ -147,7 +147,11 @@ type connHandler struct {
 func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 	h := &connHandler{s: s, nc: c}
 	h.conn = jsonrpc.New(c, c, h)
-	h.conn.Serve(ctx)
+	// Requests run under a context that ends with the connection, so a
+	// handler that starts after the peer left still sees it gone.
+	cctx, cancel := context.WithCancel(ctx)
+	h.conn.Serve(cctx)
+	cancel()
 	c.Close()
 	h.mu.Lock()
 	att := h.att

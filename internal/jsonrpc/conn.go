@@ -81,13 +81,20 @@ func New(r io.Reader, w io.Writer, h Handler) *Conn {
 	return c
 }
 
+// writer serves writes until the connection stops reading. A write stuck in
+// the transport keeps it until the transport is closed.
 func (c *Conn) writer() {
 	var failed error
-	for req := range c.wq {
-		if failed == nil {
-			_, failed = c.w.Write(req.b)
+	for {
+		select {
+		case req := <-c.wq:
+			if failed == nil {
+				_, failed = c.w.Write(req.b)
+			}
+			req.res <- failed
+		case <-c.done:
+			return
 		}
-		req.res <- failed
 	}
 }
 

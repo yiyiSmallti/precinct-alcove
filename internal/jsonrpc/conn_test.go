@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -25,5 +26,22 @@ func TestCallRespectsDeadlineWhenWriteBlocks(t *testing.T) {
 		if d := time.Since(start); d > time.Second {
 			t.Fatalf("call %d took %v", i, d)
 		}
+	}
+}
+
+// Closed connections must not leave their writer goroutine behind.
+func TestWriterExitsOnClose(t *testing.T) {
+	before := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		r, w := io.Pipe()
+		c := New(r, io.Discard, nil)
+		done := make(chan struct{})
+		go func() { c.Serve(context.Background()); close(done) }()
+		w.Close()
+		<-done
+	}
+	time.Sleep(100 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > before+5 {
+		t.Fatalf("goroutines: %d before, %d after 50 closed connections", before, after)
 	}
 }

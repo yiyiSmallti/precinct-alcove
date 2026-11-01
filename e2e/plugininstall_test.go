@@ -294,8 +294,16 @@ func clean(cli *dsh.CLI, profile, name string) error {
 	return nil
 }
 
-// buildSidecar cross-compiles a trivial Windows sidecar.
+// buildSidecar cross-compiles a trivial Windows sidecar, or reads a prebuilt
+// one from ALCOVE_E2E_SIDECAR on machines without Go.
 func buildSidecar(t *testing.T, work string) []byte {
+	if p := os.Getenv("ALCOVE_E2E_SIDECAR"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("ALCOVE_E2E_SIDECAR: %v", err)
+		}
+		return b
+	}
 	dir := filepath.Join(work, "sidecar-src")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module sidecar\n\ngo 1.23\n"), 0o644)
