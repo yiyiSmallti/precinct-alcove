@@ -19,8 +19,8 @@ var jobs sync.Map // *exec.Cmd -> windows.Handle
 // descendants even after cmd itself has exited (taskkill /T can only walk
 // the tree from a live parent). The job is set to kill on close, so the
 // tree also goes if Alcove dies. Children spawned before Contain runs, in
-// the moment after Start, are not in the job; taskkill still covers them
-// while cmd lives.
+// the moment after Start, are not in the job; KillTree's taskkill covers
+// them while cmd lives.
 func Contain(cmd *exec.Cmd) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -46,19 +46,22 @@ func Contain(cmd *exec.Cmd) {
 	jobs.Store(cmd, job)
 }
 
-// KillTree kills a started cmd and its descendants: its job object if
-// Contain made one, else taskkill /T. Safe to call again, and after cmd
+// KillTree kills a started cmd and its descendants: taskkill /T for the
+// tree under a live cmd (this also catches a child spawned in the moment
+// before Contain), then the job object for whatever is left, which covers
+// descendants orphaned by cmd's exit. Safe to call again, and after cmd
 // has exited.
 func KillTree(cmd *exec.Cmd) error {
+	err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 	if j, ok := jobs.LoadAndDelete(cmd); ok {
 		job := j.(windows.Handle)
-		err := windows.TerminateJobObject(job, 1)
+		jerr := windows.TerminateJobObject(job, 1)
 		windows.CloseHandle(job)
-		if err == nil {
+		if jerr == nil {
 			return nil
 		}
 	}
-	if err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run(); err != nil {
+	if err != nil {
 		return cmd.Process.Kill()
 	}
 	return nil
