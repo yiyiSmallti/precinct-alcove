@@ -445,6 +445,36 @@ func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
 	return nil
 }
 
+// RemoveFromProfile takes an installed package out of one profile it was
+// added to with AddToProfile. A profile it is not recorded in is left alone.
+func (h *Host) RemoveFromProfile(ctx context.Context, name, profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	rec, ok := all[name]
+	if !ok {
+		return nil
+	}
+	keep := rec.Profiles[:0:0]
+	for _, p := range rec.Profiles {
+		if p != profile {
+			keep = append(keep, p)
+		}
+	}
+	if len(keep) == len(rec.Profiles) {
+		return nil
+	}
+	if err := h.undo(ctx, name, []string{profile}); err != nil {
+		return err
+	}
+	rec.Profiles = keep
+	all[name] = rec
+	return h.save(all)
+}
+
 // ForgetProfile drops profile from every record after the caller deleted
 // the profile itself (a removed workspace).
 func (h *Host) ForgetProfile(profile string) error {

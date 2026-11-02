@@ -117,6 +117,8 @@ func New(cfg Config) (*App, error) {
 			UI:            cfg.SidecarUI,
 			Inbox:         cfg.Inbox,
 			EnsureRuntime: a.ensureForPlugin,
+			Attach:        a.attachWorkspace,
+			Detach:        a.detachWorkspace,
 			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
 		},
@@ -193,7 +195,7 @@ func (a *App) CreateWorkspace(ctx context.Context, name, dir string) (*workspace
 }
 
 func sidecarView(w *workspace.Workspace) sidecar.Workspace {
-	return sidecar.Workspace{ID: w.ID, Name: w.Name, Dir: w.Dir, Profile: w.Profile}
+	return sidecar.Workspace{ID: w.ID, Name: w.Name, Dir: w.Dir, Profile: w.Profile, Owner: w.OwnerName()}
 }
 
 // localEnabled reads policy executors.local.enabled (PRD F7) from the
@@ -259,7 +261,23 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		// drop it silently.
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
 	}
-	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env)
+	var route *sidecar.Provider
+	if owner := w.OwnerName(); owner != workspace.Personal {
+		// An attached workspace runs only on its owner's route, never on
+		// the personal credential: no route, no launch.
+		pr, ok := hooks.Providers[owner]
+		if !ok {
+			why := "its launch hook gave no model route"
+			if err := hooks.Failed[owner]; err != nil {
+				why = "its launch hook failed: " + err.Error()
+			}
+			return nil, fmt.Errorf("workspace %s belongs to %s, and %s", w.Name, owner, why)
+		}
+		route = &pr
+	} else if len(hooks.Providers) > 0 {
+		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s is personal: launch-hook model routes ignored", w.ID))
+	}
+	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env, route)
 	if err != nil {
 		return nil, err
 	}
@@ -331,10 +349,19 @@ func (a *App) runtimeExited(k alrt.Key, runtimeID string, err error) {
 	}
 }
 
-func (a *App) launch(ctx context.Context, prof, cwd string, extra []string) (*alrt.Process, error) {
+// launch starts (or returns) the runtime of prof in cwd with the plugin
+// variables extra. With a route, the runtime uses it and gets no personal
+// credential; otherwise it uses the default credential.
+func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, route *sidecar.Provider) (*alrt.Process, error) {
 	s, err := a.Settings()
 	if err != nil {
 		return nil, err
+	}
+	if route != nil {
+		return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
+			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: s.ReasoningEffort,
+			Env: append([]string(nil), extra...),
+		})
 	}
 	credID := s.DefaultCredential
 	if credID == "" {
@@ -387,11 +414,69 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() || !filepath.IsAbs(cwd) {
 		return "", fmt.Errorf("runtime.ensure: %q is not an existing absolute directory", cwd)
 	}
-	p, err := a.launch(ctx, prof, cwd, env)
+	p, err := a.launch(ctx, prof, cwd, env, nil)
 	if err != nil {
 		return "", err
 	}
 	return p.ID, nil
+}
+
+// attachWorkspace is workspace.attach: plugin becomes the workspace's owner
+// and its package joins the workspace profile. A runtime already open is
+// stopped, so the next open uses the owner's route.
+func (a *App) attachWorkspace(ctx context.Context, plugin, id string) error {
+	w, err := a.Workspaces.Find(id)
+	if err != nil {
+		return err
+	}
+	if o := w.OwnerName(); o != workspace.Personal && o != plugin {
+		return fmt.Errorf("%w: workspace %s belongs to %s", sidecar.ErrNotPermitted, w.ID, o)
+	}
+	a.Runtimes.Stop(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
+	// Owner first: if adding the package fails, launches still refuse the
+	// personal credential, and detach cleans up.
+	if err := a.Workspaces.SetOwner(id, plugin); err != nil {
+		return err
+	}
+	return a.Plugins.AddToProfile(ctx, plugin, w.Profile)
+}
+
+// detachWorkspace is workspace.detach: the workspace goes back to personal
+// and the package leaves its profile (unless the plugin is installed into
+// every personal workspace anyway). Unknown workspaces are fine.
+func (a *App) detachWorkspace(ctx context.Context, plugin, id string) error {
+	w, err := a.Workspaces.Find(id)
+	if errors.Is(err, workspace.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if o := w.OwnerName(); o != plugin {
+		if o == workspace.Personal {
+			return nil
+		}
+		return fmt.Errorf("%w: workspace %s belongs to %s", sidecar.ErrNotPermitted, w.ID, o)
+	}
+	a.Runtimes.Stop(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
+	personal := false
+	recs, err := a.Plugins.List()
+	if err != nil {
+		return err
+	}
+	for _, r := range recs {
+		if r.Name == plugin {
+			for _, t := range r.Targets {
+				personal = personal || t == profile.Personal
+			}
+		}
+	}
+	if !personal {
+		if err := a.Plugins.RemoveFromProfile(ctx, plugin, w.Profile); err != nil {
+			return err
+		}
+	}
+	return a.Workspaces.SetOwner(id, workspace.Personal)
 }
 
 // InstallPlugin installs a checked plan and starts its sidecar.
