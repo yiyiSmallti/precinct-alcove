@@ -254,6 +254,7 @@ func (p *plugin) spawn() (*proc, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sidecar: %w", err)
 	}
+	dsh.Contain(cmd)
 	pr.conn = jsonrpc.New(stdout, stdin, &api{p: p})
 	go pr.conn.Serve(context.Background())
 	go func() {
