@@ -321,7 +321,9 @@ func (a *App) openOnce(ctx context.Context, w *workspace.Workspace) (*alrt.Proce
 	} else if len(hooks.Providers) > 0 {
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s is personal: launch-hook model routes ignored", w.ID))
 	}
-	return a.launch(ctx, w.Profile, w.Dir, hooks.Env, route, owner)
+	// The owner's variables win over other plugins' (e.g. the same model
+	// endpoint variables pointing somewhere else).
+	return a.launch(ctx, w.Profile, w.Dir, hooks.EnvFor(owner), route, owner)
 }
 
 func (a *App) pluginInstalled(name string) bool {
@@ -490,6 +492,11 @@ func (a *App) attachWorkspace(ctx context.Context, plugin, id string) error {
 	}
 	if o := w.OwnerName(); o != workspace.Personal && o != plugin {
 		return fmt.Errorf("%w: workspace %s belongs to %s", sidecar.ErrNotPermitted, w.ID, o)
+	}
+	// A package of the same name the user put there themselves is not
+	// ours to take over (or later remove).
+	if err := a.Plugins.CanAdd(plugin, w.Profile); err != nil {
+		return err
 	}
 	a.Runtimes.Stop(alrt.Key{Profile: w.Profile, Cwd: w.Dir})
 	// Owner first: if adding the package fails, launches still refuse the

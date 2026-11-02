@@ -352,6 +352,30 @@ type LaunchResult struct {
 	// Providers holds the model routes of plugins with provider_endpoint,
 	// by plugin name. The host uses only the one of the workspace's owner.
 	Providers map[string]Provider
+	// EnvBy is Env split by plugin name, so the host can let one plugin's
+	// values win (the owner's, for an attached workspace).
+	EnvBy map[string][]string
+}
+
+// EnvFor is Env with owner's variables taking precedence: any variable the
+// owner sets drops every other plugin's value for it.
+func (r LaunchResult) EnvFor(owner string) []string {
+	own := r.EnvBy[owner]
+	if len(own) == 0 {
+		return r.Env
+	}
+	set := map[string]bool{}
+	for _, kv := range own {
+		k, _, _ := strings.Cut(kv, "=")
+		set[k] = true
+	}
+	var out []string
+	for _, kv := range r.Env {
+		if k, _, _ := strings.Cut(kv, "="); !set[k] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, own...)
 }
 
 // Provider is a model route a launch hook asks for: an SDK provider route
@@ -394,7 +418,7 @@ func checkEnv(m map[string]string) ([]string, error) {
 // env and profile patches. A hook that fails or exceeds HookTimeout is
 // skipped and reported; it never blocks the launch.
 func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResult {
-	res := LaunchResult{Failed: map[string]error{}, Providers: map[string]Provider{}}
+	res := LaunchResult{Failed: map[string]error{}, Providers: map[string]Provider{}, EnvBy: map[string][]string{}}
 	for _, p := range m.running("runtime_launch_hook") {
 		p.mu.Lock()
 		hook := p.hook
@@ -433,6 +457,7 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 			}
 		}
 		res.Env = append(res.Env, env...)
+		res.EnvBy[p.name] = env
 		if len(out.ProfilePatch) > 0 && string(out.ProfilePatch) != "null" {
 			res.ProfilePatch = append(res.ProfilePatch, out.ProfilePatch)
 		}

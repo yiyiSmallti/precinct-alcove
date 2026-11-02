@@ -430,6 +430,9 @@ func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
 			return nil
 		}
 	}
+	if err := h.canAdd(name, profile); err != nil {
+		return err
+	}
 	rec.Profiles = append(rec.Profiles, profile)
 	all[name] = rec
 	if err := h.save(all); err != nil {
@@ -441,6 +444,41 @@ func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
 		all[name] = rec
 		h.save(all)
 		return &StepError{Step: "add", Profile: profile, Err: err}
+	}
+	return nil
+}
+
+// CanAdd reports whether AddToProfile may add name to profile: not when the
+// profile already has a package by that name that Alcove did not put there.
+func (h *Host) CanAdd(name, profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.canAdd(name, profile)
+}
+
+func (h *Host) canAdd(name, profile string) error {
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	rec, ok := all[name]
+	if !ok || rec.Incomplete {
+		return fmt.Errorf("%s is not installed", name)
+	}
+	for _, p := range rec.Profiles {
+		if p == profile {
+			return nil
+		}
+	}
+	m, err := h.DSH.ReadProfile(profile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read profile %s: %w", profile, err)
+	}
+	if m.HasDependency(name) || m.HasBundle(name) {
+		return fmt.Errorf("profile %s already has %s; remove it there first", profile, name)
 	}
 	return nil
 }
