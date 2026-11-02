@@ -47,6 +47,7 @@ e2e/                       端到端脚本与报告模板
   - bridge → 宿主 `approval.ask { requestId, sessionId, toolName, callId?, reason, displayReason? }` → `{ outcome: "allowed-once" | "rejected" | "cancelled" }`。`displayReason` 是 dsh 多语言文本（字符串或 `{ en, zh }`），界面按语言取，`reason` 是给模型看的原文。
   - bridge → 宿主 `questions.ask { requestId, sessionId, callId?, questions[] }` → `{ answers: [{ id, selected[], custom? }] }`
   - bridge → 宿主通知 `request.cancel { requestId }`：dsh 撤回了请求（回合取消等），界面关掉对应卡片。连接断开时宿主同样关掉该运行时的所有卡片。
+  - 宿主 → bridge 请求 `session.cancel { sessionId }` → `{ cancelled }`：取消该会话正在跑的回合并丢掉排队的消息（插件会话的 `session.cancel`）；会话不在本进程回 `cancelled: false`。
   - 宿主不可达或握手失败时监听器交给下一个（即 dsh 默认的 `unavailable`），不放行。
   - 每个审批结果与回答追加一行到 `<数据目录>/logs/decisions.jsonl`（PRD F3）。
 - 模型端点：dsh 自带 DeepSeek 适配器讲 Anthropic Messages API。指向 OpenAI 兼容端点（含本机 Gatehouse，`http://127.0.0.1:7788/v1`）时，在 profile patch 里配 `@deepseek-ai/dsh-llm-pi-ai` 的 `openai-completions` 路由，静态请求头 `X-Gatehouse-Source: alcove`。
@@ -101,6 +102,8 @@ package.json
   workspace.list() / workspace.get(id)     结果含 owner："personal" 或 attach 了它的插件名
   workspace.attach({workspaceId})          需要 provider_endpoint；工作区归本插件，本插件包装进该工作区 profile（卸载插件时一并移除）；已打开的运行时被停掉，下次打开按新归属拉起；已归别的插件 → -32030
   workspace.detach({workspaceId})          需要 provider_endpoint；工作区回到 personal，插件包移出 profile（插件本身声明了 personal 的除外），停掉已打开的运行时；未知或已移除的工作区直接成功
+  session.prompt({workspaceId, sessionId, text}) → { messageId }  需要 workspace_session；在本插件 attach 的工作区里给插件自己的会话（id 形如 task-<id>，不能是工作区自己的 main-… 对话）排一条消息，按正常路径拉起该工作区运行时（launch hook、owner 路由）；审批与提问照常弹在该工作区。会话空闲后宿主发 onSessionIdle。不归本插件的工作区或别的 id → -32030
+  session.cancel({workspaceId, sessionId}) → { cancelled }  需要 workspace_session；经 alcove-bridge 取消该会话正在跑的回合并丢掉排队的消息；会话不在运行回 cancelled:false
   runtime.registerLaunchHook()            需要 runtime_launch_hook；之后宿主在每次拉起前调 plugin.launchHook(ctx) 取 env/profilePatch
   runtime.ensure(profile, cwd, env?) → { runtimeId }  需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）。只允许插件自己装入的非工作区 profile（如 daily），cwd 须为已存在的绝对目录；env 是插件给的变量（如 DAILY_TOOLS_HOST/_TOKEN），保留名（ALCOVE_*、DSH_HOME）被拒（-32602）；凭据由宿主注入。卸载插件时一并停掉这些运行时。
   ui.register(contribution)               需要 settings_page 等能力；contribution 为声明式 schema
@@ -115,6 +118,7 @@ package.json
   onInboxInput{ id, text, ts }              需要 inbox；用户在该插件的对话视图里输入。插件落盘后应答 {}；宿主按 id 幂等重发（超时、断连、边车重启后），插件见重复 id 直接应答 {}；未应答的输入在视图标"未送达"。ts 为 RFC 3339 UTC
   onUiAction(contributionId, action, payload)
   onDeepLink(url)                          需要 deep_link
+  onSessionIdle{ workspaceId, sessionId, text, error? }  session.prompt 的会话空闲（含其子代理）时的通知；text 为最后一个回合的最终回答，回合没正常结束（取消、出错）或运行时退出时带 error
   shutdown()
 ```
 
@@ -130,7 +134,7 @@ package.json
 
 - 拉起：可执行文件取包仓 profile `node_modules/<name>/` 下 `alcove.sidecar[<GOOS>]`，工作目录为其所在目录，独立进程组（Windows 按进程树结束，macOS 按进程组结束）。包里缺当前平台的边车即安装被拒（`sidecar` 问题）。pnpm 解包的文件不带 `com.apple.quarantine`，不触发 Gatekeeper；第一方边车仍用 Developer ID 签名，社区包至少要 ad-hoc 签名（Apple Silicon 不跑未签名代码，Go 链接器默认会 ad-hoc 签）。
 - 握手：宿主发请求 `hello{ protocol, alcoveVersion, dshVersion, grantedCaps[] }`，插件以结果 `ready{ name, version, uiContributions[] }` 应答；10 秒内未应答、`name` 与包名不符、或 ready 里的界面贡献未获授权，都算握手失败。
-- 把关：`runtime.registerLaunchHook` 需 `runtime_launch_hook`，`runtime.ensure` 需 `background`，`inbox.post` 需 `inbox`；界面贡献 `settings_page`、`sidebar_item` 需同名能力，`card` 需 `inbox`；`ui.update` 只能改自己登记过的贡献。设置命名空间：插件拥有与包名同名的命名空间及其下 `<name>/...`；`policy` 段人人可读，只有 `policy_write` 可写；其他插件的命名空间一律拒绝。
+- 把关：`session.prompt`、`session.cancel` 需 `workspace_session`，`runtime.registerLaunchHook` 需 `runtime_launch_hook`，`runtime.ensure` 需 `background`，`inbox.post` 需 `inbox`；界面贡献 `settings_page`、`sidebar_item` 需同名能力，`card` 需 `inbox`；`ui.update` 只能改自己登记过的贡献。设置命名空间：插件拥有与包名同名的命名空间及其下 `<name>/...`；`policy` 段人人可读，只有 `policy_write` 可写；其他插件的命名空间一律拒绝。
 - 错误码：`-32030` 能力或命名空间未授权；`-32031` 宿主暂未提供该服务（如 `keychain.resolveForRuntime`，随凭据 PR 提供）；`-32602` 参数错误；`-32601` 未知方法。`log` 既可作请求也可作通知。
 - 拉起钩子：每次拉起 dsh 前按插件名顺序调用已登记插件的 `launchHook(ctx{ workspaceId, profile, cwd })`，每个限时 3 秒；失败、超时或想设置保留变量（`ALCOVE_*`、`DSH_HOME`）的钩子被跳过并记日志，不阻塞拉起。例外是归插件的工作区（`workspace.attach`）：只用 owner 钩子给的 provider 路由与模型，不注入个人凭据；owner 的钩子失败、超时或没给 provider 时拒绝拉起，绝不退回个人凭据；拉起期间归属若被 attach/detach 改变，拉起后按新归属核对，不符就停掉重拉。owner 插件被卸载后工作区保留归属并拒绝拉起（文件夹里可能有组织数据），提示重装插件或移除工作区。个人工作区忽略钩子给的 provider。
 - 常驻：Alcove 运行期间边车一律常驻，宿主不按空闲停边车；`background` 只决定能否调 `runtime.ensure`。有插件声明 `background` 时，关窗口最小化到托盘（Windows）/ 菜单栏（macOS），边车继续跑（D3 界面实现）。

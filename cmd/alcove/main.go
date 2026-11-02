@@ -69,7 +69,7 @@ func main() {
 		log.Fatal(err)
 	}
 	s.App = a
-	a.Runtimes.OnEvent, a.OnRuntimeExit = s.OnEvent, s.OnExit
+	a.OnEvent, a.OnRuntimeExit = s.OnEvent, s.OnExit
 	a.Sidecars.OnState = s.OnSidecarState
 
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { a.Close() })

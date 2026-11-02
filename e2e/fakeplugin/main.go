@@ -90,6 +90,10 @@ func (h *handler) is(mode string) bool {
 }
 
 func (h *handler) Notify(method string, params json.RawMessage) {
+	if method == "onSessionIdle" {
+		h.conn.Notify(context.Background(), "log", map[string]string{"level": "info", "msg": "sessionIdle " + string(params)})
+		return
+	}
 	if method == "onWorkspaceEvent" {
 		var e struct {
 			Kind      string `json:"kind"`

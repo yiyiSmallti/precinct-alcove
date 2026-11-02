@@ -68,6 +68,9 @@ type App struct {
 	// OnRuntimeExit is called after a runtime exits (the UI's hook); set it
 	// before Start.
 	OnRuntimeExit func(k alrt.Key, runtimeID string, err error)
+	// OnEvent receives every runtime notification (the UI's hook); set it
+	// before Start.
+	OnEvent func(runtimeID string, e alrt.Event)
 
 	cfg Config
 	mu  sync.Mutex
@@ -79,6 +82,8 @@ type App struct {
 	// check and the change it allows cannot interleave with another.
 	ownMu  sync.Mutex
 	cancel context.CancelFunc
+	// sessions are plugin sessions (session.prompt), by workspace and id.
+	sessions pluginSessions
 }
 
 // DefaultModel is used until the user picks one.
@@ -112,6 +117,12 @@ func New(cfg Config) (*App, error) {
 	a.Plugins.PrepareProfile = a.Profiles.Base
 	a.Bridge = &alrt.Bridge{Answerer: cfg.Answerer, AuditLog: filepath.Join(l.Logs(), "decisions.jsonl")}
 	a.Runtimes = &alrt.Manager{CLI: cli, Bridge: a.Bridge, LocalEnabled: a.localEnabled, OnExit: a.runtimeExited}
+	a.Runtimes.OnEvent = func(id string, e alrt.Event) {
+		a.tapEvent(id, e)
+		if a.OnEvent != nil {
+			a.OnEvent(id, e)
+		}
+	}
 	a.Sidecars = &sidecar.Manager{
 		AlcoveVersion: cfg.AlcoveVersion,
 		Settings:      &sidecar.Settings{Dir: l.PluginSettings()},
@@ -122,6 +133,8 @@ func New(cfg Config) (*App, error) {
 			EnsureRuntime: a.ensureForPlugin,
 			Attach:        a.attachWorkspace,
 			Detach:        a.detachWorkspace,
+			PromptSession: a.promptForPlugin,
+			CancelSession: a.cancelForPlugin,
 			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
 		},

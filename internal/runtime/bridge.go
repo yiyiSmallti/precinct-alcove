@@ -144,6 +144,15 @@ func (b *Bridge) launchEnv(runtimeID string) []string {
 	}
 }
 
+// Call sends runtimeID's bundle a request (e.g. session.cancel).
+func (b *Bridge) Call(ctx context.Context, runtimeID, method string, params, out any) error {
+	a := b.srv.Attachment(runtimeID)
+	if a == nil {
+		return fmt.Errorf("the bridge of runtime %s is not connected", runtimeID)
+	}
+	return a.Conn.Call(ctx, method, params, out)
+}
+
 // Endpoint is the address bundles dial.
 func (b *Bridge) Endpoint() string { return b.srv.Endpoint() }
 

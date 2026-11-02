@@ -16,6 +16,8 @@
 //   bridge → host  questions.ask { requestId, sessionId, callId?, questions[] }
 //                    → { answers: [{ id, selected[], custom? }] }
 //   bridge → host  request.cancel { requestId }   (notification: dsh withdrew the request)
+//   host → bridge  session.cancel { sessionId } → { cancelled }   cancels the session's running turn and
+//                    drops its queued messages (plugin sessions, Alcove session.cancel)
 import net from 'node:net'
 import { randomUUID } from 'node:crypto'
 
@@ -23,8 +25,9 @@ export const name = 'alcove-bridge'
 export const PROTOCOL = 'alcove-bridge/1'
 
 class Peer {
-  constructor (socket) {
+  constructor (socket, serve) {
     this.socket = socket
+    this.serve = serve
     this.nextId = 0
     this.pending = new Map()
     this.closed = false
@@ -45,8 +48,13 @@ class Peer {
           if (m.error) p.reject(Object.assign(new Error(m.error.message), { code: m.error.code }))
           else p.resolve(m.result)
         } else if (m.id !== undefined) {
-          // The bridge serves no host requests in protocol 1.
-          this.send({ jsonrpc: '2.0', id: m.id, error: { code: -32021, message: 'unsupported' } })
+          const id = m.id
+          Promise.resolve()
+            .then(() => this.serve(m.method, m.params ?? {}))
+            .then(
+              (result) => this.send({ jsonrpc: '2.0', id, result }),
+              (err) => this.send({ jsonrpc: '2.0', id, error: { code: err?.code ?? -32603, message: String(err?.message ?? err) } })
+            )
         }
       }
     })
@@ -80,7 +88,7 @@ class Peer {
 // stdout is reserved for the SDK protocol; diagnostics go to stderr.
 const warn = (msg) => process.stderr.write(`alcove-bridge: ${msg}\n`)
 
-function connect (endpoint, token) {
+function connect (endpoint, token, serve) {
   return new Promise((resolve) => {
     const socket = net.connect(endpoint)
     socket.once('error', (err) => {
@@ -88,7 +96,7 @@ function connect (endpoint, token) {
       resolve(undefined)
     })
     socket.once('connect', async () => {
-      const peer = new Peer(socket)
+      const peer = new Peer(socket, serve)
       try {
         await peer.request('host.hello', { protocol: PROTOCOL, token, pid: process.pid })
         resolve(peer)
@@ -127,7 +135,15 @@ export function apply (ctx) {
   // Connect once per process; the token is single-use, so drop it from the
   // environment that tools and child processes inherit.
   delete process.env.ALCOVE_BRIDGE_HOST_TOKEN
-  const peerP = connect(endpoint, token)
+  const peerP = connect(endpoint, token, async (method, params) => {
+    if (method === 'session.cancel') {
+      const agent = typeof params.sessionId === 'string' ? ctx.get('agents')?.get(params.sessionId) : undefined
+      if (!agent) return { cancelled: false }
+      await agent.cancel({ kind: 'user' }, { keepInbox: false })
+      return { cancelled: true }
+    }
+    throw Object.assign(new Error(`unsupported: ${method}`), { code: -32021 })
+  })
 
   ctx.on('approval/request', async (request, next) => {
     let res

@@ -5,11 +5,17 @@
 package profile
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
@@ -28,6 +34,74 @@ type Assembler struct {
 	Bridge string
 	// Plugins, when set, supplies the installed plugins to add.
 	Plugins *host.Host
+
+	verOnce sync.Once
+	ver     string
+	verErr  error
+}
+
+// RefreshBridge installs the shipped bridge into an existing profile whose
+// bridge is older (profiles keep the bridge they were made with). It
+// reports whether it changed anything; the profile's runtime must not be
+// running.
+func (a *Assembler) RefreshBridge(ctx context.Context, profile string) (bool, error) {
+	if a.Bridge == "" {
+		return false, nil
+	}
+	want, err := a.bridgeVersion()
+	if err != nil {
+		return false, err
+	}
+	var have struct {
+		Version string `json:"version"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(a.DSH.PackageDir(profile, BridgePackage), "package.json")); err == nil {
+		json.Unmarshal(raw, &have)
+	}
+	if have.Version == want {
+		return false, nil
+	}
+	if _, err := a.DSH.PluginAdd(ctx, profile, a.Bridge); err != nil {
+		return false, fmt.Errorf("add the bridge to %s: %w", profile, err)
+	}
+	return true, nil
+}
+
+// bridgeVersion reads package/package.json from the bridge .tgz once.
+func (a *Assembler) bridgeVersion() (string, error) {
+	a.verOnce.Do(func() {
+		f, err := os.Open(a.Bridge)
+		if err != nil {
+			a.verErr = err
+			return
+		}
+		defer f.Close()
+		zr, err := gzip.NewReader(f)
+		if err != nil {
+			a.verErr = err
+			return
+		}
+		tr := tar.NewReader(zr)
+		for {
+			h, err := tr.Next()
+			if err != nil {
+				a.verErr = fmt.Errorf("%s: no package.json: %w", a.Bridge, err)
+				return
+			}
+			if h.Name == "package/package.json" {
+				var pj struct {
+					Version string `json:"version"`
+				}
+				raw, _ := io.ReadAll(io.LimitReader(tr, 1<<20))
+				if err := json.Unmarshal(raw, &pj); err != nil || pj.Version == "" {
+					a.verErr = fmt.Errorf("%s: package.json has no version", a.Bridge)
+				}
+				a.ver = pj.Version
+				return
+			}
+		}
+	})
+	return a.ver, a.verErr
 }
 
 // Base creates profile from the sdk template plus the bridge. It refuses an
