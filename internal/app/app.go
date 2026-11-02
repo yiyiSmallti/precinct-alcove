@@ -75,6 +75,9 @@ type App struct {
 	// workspace runtime gets one opened and one closed, in that order.
 	lifeMu sync.Mutex
 	life   map[string]*lifecycle
+	// ownMu serializes workspace.attach and workspace.detach, so an owner
+	// check and the change it allows cannot interleave with another.
+	ownMu  sync.Mutex
 	cancel context.CancelFunc
 }
 
@@ -474,6 +477,13 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 // and its package joins the workspace profile. A runtime already open is
 // stopped, so the next open uses the owner's route.
 func (a *App) attachWorkspace(ctx context.Context, plugin, id string) error {
+	if plugin == workspace.Personal {
+		// The owner "personal" means unowned; a plugin by that name could
+		// otherwise attach and run on the personal credential.
+		return fmt.Errorf("%w: a plugin named %q cannot own workspaces", sidecar.ErrNotPermitted, plugin)
+	}
+	a.ownMu.Lock()
+	defer a.ownMu.Unlock()
 	w, err := a.Workspaces.Find(id)
 	if err != nil {
 		return err
@@ -494,6 +504,8 @@ func (a *App) attachWorkspace(ctx context.Context, plugin, id string) error {
 // and the package leaves its profile (unless the plugin is installed into
 // every personal workspace anyway). Unknown workspaces are fine.
 func (a *App) detachWorkspace(ctx context.Context, plugin, id string) error {
+	a.ownMu.Lock()
+	defer a.ownMu.Unlock()
 	w, err := a.Workspaces.Find(id)
 	if errors.Is(err, workspace.ErrNotFound) {
 		return nil
