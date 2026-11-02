@@ -44,7 +44,7 @@
 
 ## 5. 非功能需求
 
-- 基线机：Windows（4 核 8 GB 集成显卡 Win10）与 Mac（Apple Silicon 8 GB，macOS 13+，先以用户的 Mac mini 为准；Intel Mac 跑通 A1 即可）。Alcove 空闲 RSS ≤ 60 MB；dsh 冷启动 ≤ 3 s；安装包 ≤ 400 MB（macOS 通用包另计，≤ 500 MB）。数字以验证周结论为准。
+- 基线机：Windows（4 核 8 GB 集成显卡 Win10）与 Mac（Apple Silicon 8 GB，macOS 13+，先以用户的 Mac mini 为准；Intel Mac 跑通 A1 即可）。Alcove 空闲内存 ≤ 60 MB（口径为进程自身占用：macOS 的 physical footprint，即活动监视器“内存”列；Windows 的专用工作集，即任务管理器“内存”列。不用 RSS，因为它主要是各应用共用的系统库；不含打开工作区后的 dsh 运行时）；dsh 冷启动 ≤ 3 s；安装包 ≤ 400 MB（macOS 通用包另计，≤ 500 MB）。数字以验证周结论为准。
 - 中文输入法（Windows 微软拼音、macOS 系统拼音）无阻断缺陷；Windows VDI 下可用（原生或 webview 回退）。
 - 无任何对外网络请求，除用户配置的模型端点与更新源。
 - 签名：安装包、更新包、插件包三类签名链独立可轮换。
