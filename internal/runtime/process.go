@@ -119,12 +119,16 @@ func Launch(ctx context.Context, cli *dsh.CLI, spec LaunchSpec) (*Process, error
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start dsh: %w", err)
 	}
+	dsh.Contain(cmd)
 	p.conn = jsonrpc.New(stdout, stdin, p)
 	go p.conn.Serve(context.Background())
 	go func() {
 		// Wait must follow the last read from stdout; Serve returns at EOF.
 		<-p.conn.Done()
 		p.exitErr = cmd.Wait()
+		// End what dsh left running (tool subprocesses), and on Windows
+		// release its job object.
+		dsh.KillTree(cmd)
 		p.mu.Lock()
 		if p.idle != nil {
 			p.idle.Stop()

@@ -6,6 +6,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/egoist/mygo v0.7.4
+	golang.org/x/sys v0.49.0
 )
 
 require (
@@ -13,7 +14,6 @@ require (
 	github.com/go-text/typesetting v0.3.5 // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
 
