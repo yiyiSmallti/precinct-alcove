@@ -46,6 +46,10 @@ type LaunchSpec struct {
 	Provider, Model string
 	// ReasoningEffort is optional.
 	ReasoningEffort string
+	// Owner records whose route this launch uses (the workspace owner, or
+	// empty for the personal credential). Launch ignores it; callers
+	// compare it to catch a runtime started before an ownership change.
+	Owner string
 	// Bridge, when set, lets the alcove-bridge bundle in this process connect
 	// back for approvals and questions.
 	Bridge       *Bridge

@@ -246,12 +246,48 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 }
 
 // OpenWorkspace returns the workspace's runtime, starting it with the
-// default credential and the plugins' launch hooks.
+// default credential and the plugins' launch hooks. An attached workspace
+// runs only on its owner's route.
 func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, error) {
-	w, err := a.Workspaces.Find(id)
-	if err != nil {
-		return nil, err
+	// attach/detach can change the owner while a launch is in flight (they
+	// stop the runtime, but the launch may not have reached the runtime
+	// manager yet). Check the runtime against the owner afterwards and
+	// start again if they differ.
+	for try := 0; ; try++ {
+		w, err := a.Workspaces.Find(id)
+		if err != nil {
+			return nil, err
+		}
+		p, err := a.openOnce(ctx, w)
+		if err != nil {
+			return nil, err
+		}
+		k := alrt.Key{Profile: w.Profile, Cwd: w.Dir}
+		now, err := a.Workspaces.Find(id)
+		if err != nil {
+			a.Runtimes.Stop(k)
+			return nil, err
+		}
+		if p.Spec.Owner == ownerKey(now) {
+			a.opened(p, k, sidecarView(now))
+			return p, nil
+		}
+		a.Runtimes.Stop(k)
+		if try == 2 {
+			return nil, fmt.Errorf("workspace %s changed owner while opening; try again", w.Name)
+		}
 	}
+}
+
+// ownerKey is LaunchSpec.Owner for w: empty when personal.
+func ownerKey(w *workspace.Workspace) string {
+	if o := w.OwnerName(); o != workspace.Personal {
+		return o
+	}
+	return ""
+}
+
+func (a *App) openOnce(ctx context.Context, w *workspace.Workspace) (*alrt.Process, error) {
 	if w.Missing() {
 		return nil, fmt.Errorf("workspace folder %s is gone", w.Dir)
 	}
@@ -261,8 +297,9 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 		// drop it silently.
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: %d launch-hook profilePatch value(s) ignored; profilePatch is reserved in phase one", w.ID, len(hooks.ProfilePatch)))
 	}
+	owner := ownerKey(w)
 	var route *sidecar.Provider
-	if owner := w.OwnerName(); owner != workspace.Personal {
+	if owner != "" {
 		// An attached workspace runs only on its owner's route, never on
 		// the personal credential: no route, no launch.
 		pr, ok := hooks.Providers[owner]
@@ -270,6 +307,10 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 			why := "its launch hook gave no model route"
 			if err := hooks.Failed[owner]; err != nil {
 				why = "its launch hook failed: " + err.Error()
+			} else if !a.pluginInstalled(owner) {
+				// Kept on purpose: the folder may hold the owner's data,
+				// which must not reach the personal credential.
+				why = "that plugin is no longer installed; reinstall it, or remove the workspace"
 			}
 			return nil, fmt.Errorf("workspace %s belongs to %s, and %s", w.Name, owner, why)
 		}
@@ -277,12 +318,20 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 	} else if len(hooks.Providers) > 0 {
 		a.pluginLog("host", "warn", fmt.Sprintf("workspace %s is personal: launch-hook model routes ignored", w.ID))
 	}
-	p, err := a.launch(ctx, w.Profile, w.Dir, hooks.Env, route)
+	return a.launch(ctx, w.Profile, w.Dir, hooks.Env, route, owner)
+}
+
+func (a *App) pluginInstalled(name string) bool {
+	recs, err := a.Plugins.List()
 	if err != nil {
-		return nil, err
+		return true // unknown: do not claim it is gone
 	}
-	a.opened(p, alrt.Key{Profile: w.Profile, Cwd: w.Dir}, sidecarView(w))
-	return p, nil
+	for _, r := range recs {
+		if r.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 type lifecycle struct {
@@ -352,7 +401,7 @@ func (a *App) runtimeExited(k alrt.Key, runtimeID string, err error) {
 // launch starts (or returns) the runtime of prof in cwd with the plugin
 // variables extra. With a route, the runtime uses it and gets no personal
 // credential; otherwise it uses the default credential.
-func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, route *sidecar.Provider) (*alrt.Process, error) {
+func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, route *sidecar.Provider, owner string) (*alrt.Process, error) {
 	s, err := a.Settings()
 	if err != nil {
 		return nil, err
@@ -360,7 +409,7 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 	if route != nil {
 		return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
 			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: s.ReasoningEffort,
-			Env: append([]string(nil), extra...),
+			Owner: owner, Env: append([]string(nil), extra...),
 		})
 	}
 	credID := s.DefaultCredential
@@ -414,7 +463,7 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() || !filepath.IsAbs(cwd) {
 		return "", fmt.Errorf("runtime.ensure: %q is not an existing absolute directory", cwd)
 	}
-	p, err := a.launch(ctx, prof, cwd, env, nil)
+	p, err := a.launch(ctx, prof, cwd, env, nil, "")
 	if err != nil {
 		return "", err
 	}

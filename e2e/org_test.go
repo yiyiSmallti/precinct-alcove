@@ -176,6 +176,37 @@ func TestOrgWorkspace(t *testing.T) {
 		}
 	}
 	r.step("workspace.detach：停掉运行时，工作区回到个人，插件包移出 profile", err, "")
+
+	// A runtime started before an ownership change (as when attach lands
+	// while an open is in flight) is not handed out: OpenWorkspace checks
+	// the runtime against the owner and starts again.
+	p, err = a.OpenWorkspace(ctx, w.ID)
+	if err == nil {
+		err = a.Workspaces.SetOwner(w.ID, e2ePlugin) // no Stop: the stale runtime stays
+	}
+	if err == nil {
+		p, err = a.OpenWorkspace(ctx, w.ID)
+	}
+	if err == nil && (p.Spec.Owner != e2ePlugin || p.Spec.Model != "deepseek-v4-flash") {
+		err = fmt.Errorf("got runtime owner %q model %q", p.Spec.Owner, p.Spec.Model)
+	}
+	r.step("归属变化时已有的个人运行时不复用：按新 owner 重新拉起", err, "")
+
+	// Uninstalling the owner leaves the workspace refusing to start (its
+	// folder may hold org data), with a way out named, and removable.
+	err = a.UninstallPlugin(ctx, e2ePlugin)
+	if err == nil {
+		_, err = a.OpenWorkspace(ctx, w.ID)
+		if err == nil {
+			err = errors.New("opened after its owner was uninstalled")
+		} else if strings.Contains(err.Error(), "no longer installed") {
+			err = nil
+		}
+	}
+	if err == nil {
+		err = a.RemoveWorkspace(ctx, w.ID)
+	}
+	r.step("卸载 owner 插件：工作区拒绝拉起并提示重装或移除，可移除", err, "")
 }
 
 func owner(a *app.App, id, want string) error {
