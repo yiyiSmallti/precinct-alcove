@@ -30,7 +30,7 @@ internal/plugins/host      插件生命周期：签名校验、读 package.json 
 internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime_launch_hook, provider_endpoint, background, inbox, deep_link
 internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
-internal/update            更新（已实现，A5）：包一层 mygo.Updater（mygo build 产出的签名归档、差量包与 update-<平台>.json，ed25519 验签）；Mirror 是"更新源"：从企业镜像目录取清单，清单里的文件按文件名从同一目录取，验签不变。设置页"更新"：当前版本、检查更新（启动时与每 24 小时自动）、更新说明、下载并安装（进度）、立即重启、更新源（https，存 settings.json 的 updateSource）
+internal/update            更新（已实现；首期发布不配 updates，故不启用，见 PRD 0.3）：包一层 mygo.Updater（mygo build 产出的签名归档、差量包与 update-<平台>.json，ed25519 验签）；Mirror 是"更新源"：从企业镜像目录取清单，清单里的文件按文件名从同一目录取，验签不变。设置页"更新"：当前版本、检查更新（启动时与每 24 小时自动）、更新说明、下载并安装（进度）、立即重启、更新源（https，存 settings.json 的 updateSource）
 internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB；decisions.jsonl 只留时间、类型、运行时、工具名、结果与问题数，不含理由、问题与回答）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。读不到凭据库（如钥匙串锁着）就不导出。短于 4 字节的值不按值替换（会把正文改得面目全非），靠形状规则兜底。验收 A4：e2e/diag_test.go
 installer/                 stage-runtime.sh 备随包运行时（darwin-universal、windows-amd64），build.sh 打包，node.entitlements.plist；签名与更新密钥见 README.dev.md
 e2e/                       端到端脚本与报告模板
@@ -146,7 +146,7 @@ package.json
 - M2 完整对话（2 周）：审批卡、提问表单、子代理、会话列表与续跑、模型/思考强度选择；运行时面板；诊断包。验收 A1、A4。
 - M3 profile 与 bundle（1 周）：npm/.tgz 添加、校验、回退。验收 A2。
 - M4 插件宿主（3 周）：dsh 插件包安装链路、宿主扩展协议 v1、能力授权、声明式 UI、签名、崩溃限频、卸载；策略段读取；提供最小样例包（空组合包 patch + Go 边车）与 SDK（`alcove-plugin-go` 小包，仅 RPC 封装）。验收 A3。
-- M5 安装与更新（2 周）：两平台完整构建打包、签名、macOS 公证、增量更新、更新源配置。验收 A5。
+- M5 安装与更新（2 周）：两平台完整构建打包、签名、macOS 公证。验收 A5（安装包）。增量更新与更新源代码已在，首期不启用。
 - 各里程碑的验收在 Windows 与 Mac 两台基线机上都跑，平台差异（凭据库、数据目录、进程树、输入法）随所在里程碑做，不单列。
 - 合计约 10.5 周，单人全栈节奏；并行两人可压到 7 周（UI 与 runtime/plugins 分开）。
 
