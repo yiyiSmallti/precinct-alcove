@@ -169,7 +169,7 @@ func (s *Shell) reload() {
 	})
 }
 
-// OnEvent is Runtimes.OnEvent: it folds the event into the workspace whose
+// OnEvent is App.OnEvent: it folds the event into the workspace whose
 // runtime sent it.
 func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
 	s.post(func() {
@@ -202,6 +202,33 @@ func (s *Shell) OnExit(k alrt.Key, runtimeID string, err error) {
 		}
 		v.approvals, v.questions = nil, nil
 	})
+}
+
+func (s *Shell) runtimeWorkspace(runtimeID string) string {
+	if s.App == nil {
+		return ""
+	}
+	return s.App.RuntimeWorkspace(runtimeID)
+}
+
+// runtimeView is the view of the workspace runtimeID belongs to. A runtime
+// a plugin started (session.prompt) is adopted, so its approvals and
+// questions reach the user on that workspace.
+func (s *Shell) runtimeView(runtimeID, ws string) *wsView {
+	if id := s.byRuntime[runtimeID]; id != "" {
+		return s.views[id]
+	}
+	if ws == "" {
+		return nil
+	}
+	v := s.view(ws)
+	if v != nil {
+		s.byRuntime[runtimeID] = ws
+		if v.runtimeID == "" {
+			v.runtimeID = runtimeID
+		}
+	}
+	return v
 }
 
 // sessionID is the one conversation each workspace keeps; dsh persists it,
@@ -256,8 +283,9 @@ func (s *Shell) send(v *wsView, text string) {
 func (s *Shell) Approve(ctx context.Context, runtimeID string, req alrt.ApprovalRequest) (string, error) {
 	a := &approval{req: req, answer: make(chan string, 1)}
 	ok := false
+	ws := s.runtimeWorkspace(runtimeID)
 	s.post(func() {
-		if v := s.views[s.byRuntime[runtimeID]]; v != nil {
+		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.approvals = append(v.approvals, a)
 			ok = true
 		}
@@ -298,8 +326,9 @@ func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.
 		q.multi[i] = make([]bool, len(qq.Options))
 	}
 	ok := false
+	ws := s.runtimeWorkspace(runtimeID)
 	s.post(func() {
-		if v := s.views[s.byRuntime[runtimeID]]; v != nil {
+		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.questions = append(v.questions, q)
 			ok = true
 		}

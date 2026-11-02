@@ -403,6 +403,7 @@ var capNames = map[string]string{
 	"runtime_launch_hook": "在运行时启动前设置环境变量",
 	"workspace_hook":      "知道工作区的创建、打开与移除",
 	"provider_endpoint":   "提供模型服务地址",
+	"workspace_session":   "在自己管理的工作区里运行任务",
 	"deep_link":           "处理 alcove:// 链接",
 	"policy_write":        "修改策略设置（例如关闭本地执行）",
 }

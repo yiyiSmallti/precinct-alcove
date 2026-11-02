@@ -34,6 +34,12 @@ type Services struct {
 	// package to its profile; Detach undoes that (provider_endpoint cap).
 	// Detach of an unknown workspace succeeds.
 	Attach, Detach func(ctx context.Context, plugin, workspaceID string) error
+	// PromptSession queues text on the plugin's own session (task-<id>) in
+	// a workspace it owns and returns the message id; the plugin hears
+	// onSessionIdle once the session is idle. CancelSession cancels its
+	// running turn (workspace_session cap).
+	PromptSession func(ctx context.Context, plugin, workspaceID, sessionID, text string) (string, error)
+	CancelSession func(ctx context.Context, plugin, workspaceID, sessionID string) (bool, error)
 	// KeychainRef returns an opaque reference to a stored credential.
 	KeychainRef func(plugin, name string) (string, error)
 	// Log writes a line to the plugin's log.
@@ -84,6 +90,8 @@ var methodCaps = map[string]string{
 	"inbox.post":                 "inbox",
 	"workspace.attach":           "provider_endpoint",
 	"workspace.detach":           "provider_endpoint",
+	"session.prompt":             "workspace_session",
+	"session.cancel":             "workspace_session",
 }
 
 type api struct{ p *plugin }
@@ -153,6 +161,39 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 			return nil, err
 		}
 		return map[string]any{}, nil
+	case "session.prompt", "session.cancel":
+		var q struct {
+			WorkspaceID string `json:"workspaceId"`
+			SessionID   string `json:"sessionId"`
+			Text        string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || q.WorkspaceID == "" || q.SessionID == "" || (method == "session.prompt" && q.Text == "") {
+			return nil, invalid(fmt.Errorf("%s needs workspaceId, sessionId%s", method, map[bool]string{true: " and text"}[method == "session.prompt"]))
+		}
+		var res any
+		var err error
+		if method == "session.prompt" {
+			if svc.PromptSession == nil {
+				return nil, unavailable(method)
+			}
+			var msg string
+			msg, err = svc.PromptSession(ctx, p.name, q.WorkspaceID, q.SessionID, q.Text)
+			res = map[string]any{"messageId": msg}
+		} else {
+			if svc.CancelSession == nil {
+				return nil, unavailable(method)
+			}
+			var ok bool
+			ok, err = svc.CancelSession(ctx, p.name, q.WorkspaceID, q.SessionID)
+			res = map[string]any{"cancelled": ok}
+		}
+		if errors.Is(err, ErrNotPermitted) {
+			return nil, notGranted("%v", err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
 	case "runtime.registerLaunchHook":
 		p.mu.Lock()
 		p.hook = true
@@ -477,6 +518,18 @@ func (m *Manager) WorkspaceEvent(ctx context.Context, kind string, ws Workspace)
 		if c := p.conn(); c != nil {
 			p.enqueue(func() { c.Notify(ctx, "onWorkspaceEvent", map[string]any{"kind": kind, "workspace": ws}) })
 		}
+	}
+}
+
+// Notify sends one plugin a notification (e.g. onSessionIdle), in order
+// with its other notifications. A plugin that is not running misses it.
+func (m *Manager) Notify(plugin, method string, params any) {
+	p := m.get(plugin)
+	if p == nil {
+		return
+	}
+	if c := p.conn(); c != nil {
+		p.enqueue(func() { c.Notify(context.Background(), method, params) })
 	}
 }
 
