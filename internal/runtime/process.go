@@ -23,9 +23,12 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/jsonrpc"
 )
 
-// Defaults from SPEC 3.1.
+// Defaults from SPEC 3.1. The ready timeout allows for a cold first start:
+// on a fresh Windows install the virus scanner reads the bundled runtime's
+// files on first load, and dsh took over 15 s to answer initialize there
+// (Windows retest r3, step 5); later starts took about 3 s.
 const (
-	DefaultReadyTimeout = 15 * time.Second
+	DefaultReadyTimeout = 60 * time.Second
 	DefaultIdleTimeout  = 10 * time.Minute
 	DefaultStopGrace    = 5 * time.Second
 )
