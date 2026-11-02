@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -94,18 +93,26 @@ func (h *handler) Notify(method string, params json.RawMessage) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "sleep" {
+		time.Sleep(10 * time.Minute)
+		return
+	}
 	h := &handler{mode: os.Getenv("FAKE_PLUGIN_MODE"), ready: make(chan struct{})}
 	h.conn = jsonrpc.New(os.Stdin, os.Stdout, h)
 	if h.is("stubborn") || h.is("child") {
-		// A child that inherits stdout, like a tool the plugin started.
-		var c *exec.Cmd
-		if runtime.GOOS == "windows" {
-			c = exec.Command("ping", "-n", "600", "127.0.0.1")
-		} else {
-			c = exec.Command("sleep", "600")
+		// A child that inherits stdout, like a tool the plugin started:
+		// this program again, so it needs nothing from PATH.
+		self, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "child:", err)
+			os.Exit(1)
 		}
+		c := exec.Command(self, "sleep")
 		c.Stdout = os.Stdout
-		c.Start()
+		if err := c.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "child:", err)
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "child %d\n", c.Process.Pid)
 	}
 	go func() {
