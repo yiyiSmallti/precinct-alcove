@@ -30,6 +30,10 @@ type Services struct {
 	// reserved names) added to its environment, and returns the runtime id.
 	// The host decides which profiles a plugin may run.
 	EnsureRuntime func(ctx context.Context, plugin, profile, cwd string, env []string) (string, error)
+	// Attach makes plugin the owner of a workspace and adds the plugin's
+	// package to its profile; Detach undoes that (provider_endpoint cap).
+	// Detach of an unknown workspace succeeds.
+	Attach, Detach func(ctx context.Context, plugin, workspaceID string) error
 	// KeychainRef returns an opaque reference to a stored credential.
 	KeychainRef func(plugin, name string) (string, error)
 	// Log writes a line to the plugin's log.
@@ -42,6 +46,7 @@ type Workspace struct {
 	Name    string `json:"name"`
 	Dir     string `json:"dir"`
 	Profile string `json:"profile"`
+	Owner   string `json:"owner"` // "personal" or the attaching plugin
 }
 
 // WorkspaceSource lists workspaces.
@@ -77,6 +82,8 @@ var methodCaps = map[string]string{
 	"runtime.registerLaunchHook": "runtime_launch_hook",
 	"runtime.ensure":             "background",
 	"inbox.post":                 "inbox",
+	"workspace.attach":           "provider_endpoint",
+	"workspace.detach":           "provider_endpoint",
 }
 
 type api struct{ p *plugin }
@@ -124,6 +131,28 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 			return nil, unavailable(method)
 		}
 		return svc.Workspaces.Get(ctx, q.ID)
+	case "workspace.attach", "workspace.detach":
+		var q struct {
+			WorkspaceID string `json:"workspaceId"`
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || q.WorkspaceID == "" {
+			return nil, invalid(fmt.Errorf("%s needs workspaceId", method))
+		}
+		f := svc.Attach
+		if method == "workspace.detach" {
+			f = svc.Detach
+		}
+		if f == nil {
+			return nil, unavailable(method)
+		}
+		err := f(ctx, p.name, q.WorkspaceID)
+		if errors.Is(err, ErrNotPermitted) {
+			return nil, notGranted("%v", err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{}, nil
 	case "runtime.registerLaunchHook":
 		p.mu.Lock()
 		p.hook = true
@@ -320,6 +349,40 @@ type LaunchResult struct {
 	Env          []string          // KEY=value, sorted by plugin name
 	ProfilePatch []json.RawMessage // in plugin name order
 	Failed       map[string]error  // plugin name → why its hook was skipped
+	// Providers holds the model routes of plugins with provider_endpoint,
+	// by plugin name. The host uses only the one of the workspace's owner.
+	Providers map[string]Provider
+	// EnvBy is Env split by plugin name, so the host can let one plugin's
+	// values win (the owner's, for an attached workspace).
+	EnvBy map[string][]string
+}
+
+// EnvFor is Env with owner's variables taking precedence: any variable the
+// owner sets drops every other plugin's value for it.
+func (r LaunchResult) EnvFor(owner string) []string {
+	own := r.EnvBy[owner]
+	if len(own) == 0 {
+		return r.Env
+	}
+	set := map[string]bool{}
+	for _, kv := range own {
+		k, _, _ := strings.Cut(kv, "=")
+		set[k] = true
+	}
+	var out []string
+	for _, kv := range r.Env {
+		if k, _, _ := strings.Cut(kv, "="); !set[k] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, own...)
+}
+
+// Provider is a model route a launch hook asks for: an SDK provider route
+// (mounted by a bundle in the profile) and its model.
+type Provider struct {
+	Route string `json:"route"`
+	Model string `json:"model"`
 }
 
 // reservedEnv are variables plugins may not set: the bridge's own endpoint
@@ -355,7 +418,7 @@ func checkEnv(m map[string]string) ([]string, error) {
 // env and profile patches. A hook that fails or exceeds HookTimeout is
 // skipped and reported; it never blocks the launch.
 func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResult {
-	res := LaunchResult{Failed: map[string]error{}}
+	res := LaunchResult{Failed: map[string]error{}, Providers: map[string]Provider{}, EnvBy: map[string][]string{}}
 	for _, p := range m.running("runtime_launch_hook") {
 		p.mu.Lock()
 		hook := p.hook
@@ -368,6 +431,7 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 		var out struct {
 			Env          map[string]string `json:"env"`
 			ProfilePatch json.RawMessage   `json:"profilePatch"`
+			Provider     *Provider         `json:"provider"`
 		}
 		err := c.Call(hctx, "launchHook", lc, &out)
 		cancel()
@@ -380,7 +444,20 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 			p.log("warn", "launch hook skipped: "+err.Error())
 			continue
 		}
+		if out.Provider != nil {
+			switch {
+			case !p.has("provider_endpoint"):
+				p.log("warn", "launch hook provider ignored: needs the provider_endpoint capability")
+			case out.Provider.Route == "" || out.Provider.Model == "":
+				res.Failed[p.name] = errors.New("launch hook provider needs route and model")
+				p.log("warn", "launch hook skipped: provider needs route and model")
+				continue
+			default:
+				res.Providers[p.name] = *out.Provider
+			}
+		}
 		res.Env = append(res.Env, env...)
+		res.EnvBy[p.name] = env
 		if len(out.ProfilePatch) > 0 && string(out.ProfilePatch) != "null" {
 			res.ProfilePatch = append(res.ProfilePatch, out.ProfilePatch)
 		}

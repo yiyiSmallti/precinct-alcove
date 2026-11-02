@@ -430,6 +430,9 @@ func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
 			return nil
 		}
 	}
+	if err := h.canAdd(name, profile); err != nil {
+		return err
+	}
 	rec.Profiles = append(rec.Profiles, profile)
 	all[name] = rec
 	if err := h.save(all); err != nil {
@@ -443,6 +446,71 @@ func (h *Host) AddToProfile(ctx context.Context, name, profile string) error {
 		return &StepError{Step: "add", Profile: profile, Err: err}
 	}
 	return nil
+}
+
+// CanAdd reports whether AddToProfile may add name to profile: not when the
+// profile already has a package by that name that Alcove did not put there.
+func (h *Host) CanAdd(name, profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.canAdd(name, profile)
+}
+
+func (h *Host) canAdd(name, profile string) error {
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	rec, ok := all[name]
+	if !ok || rec.Incomplete {
+		return fmt.Errorf("%s is not installed", name)
+	}
+	for _, p := range rec.Profiles {
+		if p == profile {
+			return nil
+		}
+	}
+	m, err := h.DSH.ReadProfile(profile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read profile %s: %w", profile, err)
+	}
+	if m.HasDependency(name) || m.HasBundle(name) {
+		return fmt.Errorf("profile %s already has %s; remove it there first", profile, name)
+	}
+	return nil
+}
+
+// RemoveFromProfile takes an installed package out of one profile it was
+// added to with AddToProfile. A profile it is not recorded in is left alone.
+func (h *Host) RemoveFromProfile(ctx context.Context, name, profile string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	all, err := h.load()
+	if err != nil {
+		return err
+	}
+	rec, ok := all[name]
+	if !ok {
+		return nil
+	}
+	keep := rec.Profiles[:0:0]
+	for _, p := range rec.Profiles {
+		if p != profile {
+			keep = append(keep, p)
+		}
+	}
+	if len(keep) == len(rec.Profiles) {
+		return nil
+	}
+	if err := h.undo(ctx, name, []string{profile}); err != nil {
+		return err
+	}
+	rec.Profiles = keep
+	all[name] = rec
+	return h.save(all)
 }
 
 // ForgetProfile drops profile from every record after the caller deleted

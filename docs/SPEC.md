@@ -28,7 +28,7 @@ internal/runtime/events    dsh 事件 → UI 模型（已实现：用户消息�
 internal/profile           profile 目录生成、bundle add/remove（npm/.tgz）、--dump-config 校验、按归属组装（首期只有个人）
 internal/plugins/host      插件生命周期：签名校验、读 package.json 的 engines.dsh 与 alcove 字段、经 dsh plugin add/remove 安装卸载、边车子进程启动、JSON-RPC、崩溃限频
 internal/plugins/caps      能力授权：settings_page, workspace_hook, runtime_launch_hook, provider_endpoint, background, inbox, deep_link
-internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
+internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get/attach/detach、runtime.launchHook 注册、ui.register、settings.read/write、keychain.ref（只给引用不给值）、log
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
 internal/update            更新（已实现；首期发布不配 updates，故不启用，见 PRD 0.3）：包一层 mygo.Updater（mygo build 产出的签名归档、差量包与 update-<平台>.json，ed25519 验签）；Mirror 是"更新源"：从企业镜像目录取清单，清单里的文件按文件名从同一目录取，验签不变。设置页"更新"：当前版本、检查更新（启动时与每 24 小时自动）、更新说明、下载并安装（进度）、立即重启、更新源（https，存 settings.json 的 updateSource）
 internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB；decisions.jsonl 只留时间、类型、运行时、工具名、结果与问题数，不含理由、问题与回答）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。读不到凭据库（如钥匙串锁着）就不导出。短于 4 字节的值不按值替换（会把正文改得面目全非），靠形状规则兜底。验收 A4：e2e/diag_test.go
@@ -98,7 +98,9 @@ package.json
 握手   host → plugin: hello{ protocol: 1, alcoveVersion, dshVersion, grantedCaps[] }
        plugin → host: ready{ name, version, uiContributions[] }
 宿主提供（plugin 可调）
-  workspace.list() / workspace.get(id)
+  workspace.list() / workspace.get(id)     结果含 owner："personal" 或 attach 了它的插件名
+  workspace.attach({workspaceId})          需要 provider_endpoint；工作区归本插件，本插件包装进该工作区 profile（卸载插件时一并移除）；已打开的运行时被停掉，下次打开按新归属拉起；已归别的插件 → -32030
+  workspace.detach({workspaceId})          需要 provider_endpoint；工作区回到 personal，插件包移出 profile（插件本身声明了 personal 的除外），停掉已打开的运行时；未知或已移除的工作区直接成功
   runtime.registerLaunchHook()            需要 runtime_launch_hook；之后宿主在每次拉起前调 plugin.launchHook(ctx) 取 env/profilePatch
   runtime.ensure(profile, cwd, env?) → { runtimeId }  需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）。只允许插件自己装入的非工作区 profile（如 daily），cwd 须为已存在的绝对目录；env 是插件给的变量（如 DAILY_TOOLS_HOST/_TOKEN），保留名（ALCOVE_*、DSH_HOME）被拒（-32602）；凭据由宿主注入。卸载插件时一并停掉这些运行时。
   ui.register(contribution)               需要 settings_page 等能力；contribution 为声明式 schema
@@ -108,7 +110,7 @@ package.json
   inbox.post(item)                         需要 inbox；向通用对话视图投递。item = { id, kind:"message", text, ts, replyTo? } 或 { id, kind:"card", card:{ title, body, actions:[{ id, label, style?:"primary"|"danger" }] } }；id 必填（缺失 -32602），同 id 再投视为更新；text/body 为 markdown 子集（段落、粗斜体、行内代码、代码块、链接、列表）；卡片按钮走 onUiAction(contributionId=item.id, action=按钮 id, payload={})
   log(level, msg)
 插件提供（宿主可调）
-  launchHook(ctx) → { env, profilePatch }   一期只应用 env；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn
+  launchHook(ctx) → { env, profilePatch, provider? }   一期只应用 env 与 provider；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn。provider = { route, model }：SDK provider 路由名（由该插件装进 profile 的 bundle 挂载）与模型，只认有 provider_endpoint 的插件
   onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed；通知，evt = { kind, workspace{ id, name, dir, profile } }。opened 在该工作区运行时启动时发一次（不是每条消息），closed 在运行时退出时发（空闲退出、崩溃、停止、移除工作区），removed 在 closed 之后
   onInboxInput{ id, text, ts }              需要 inbox；用户在该插件的对话视图里输入。插件落盘后应答 {}；宿主按 id 幂等重发（超时、断连、边车重启后），插件见重复 id 直接应答 {}；未应答的输入在视图标"未送达"。ts 为 RFC 3339 UTC
   onUiAction(contributionId, action, payload)
@@ -130,7 +132,7 @@ package.json
 - 握手：宿主发请求 `hello{ protocol, alcoveVersion, dshVersion, grantedCaps[] }`，插件以结果 `ready{ name, version, uiContributions[] }` 应答；10 秒内未应答、`name` 与包名不符、或 ready 里的界面贡献未获授权，都算握手失败。
 - 把关：`runtime.registerLaunchHook` 需 `runtime_launch_hook`，`runtime.ensure` 需 `background`，`inbox.post` 需 `inbox`；界面贡献 `settings_page`、`sidebar_item` 需同名能力，`card` 需 `inbox`；`ui.update` 只能改自己登记过的贡献。设置命名空间：插件拥有与包名同名的命名空间及其下 `<name>/...`；`policy` 段人人可读，只有 `policy_write` 可写；其他插件的命名空间一律拒绝。
 - 错误码：`-32030` 能力或命名空间未授权；`-32031` 宿主暂未提供该服务（如 `keychain.resolveForRuntime`，随凭据 PR 提供）；`-32602` 参数错误；`-32601` 未知方法。`log` 既可作请求也可作通知。
-- 拉起钩子：每次拉起 dsh 前按插件名顺序调用已登记插件的 `launchHook(ctx{ workspaceId, profile, cwd })`，每个限时 3 秒；失败、超时或想设置保留变量（`ALCOVE_*`、`DSH_HOME`）的钩子被跳过并记日志，不阻塞拉起。
+- 拉起钩子：每次拉起 dsh 前按插件名顺序调用已登记插件的 `launchHook(ctx{ workspaceId, profile, cwd })`，每个限时 3 秒；失败、超时或想设置保留变量（`ALCOVE_*`、`DSH_HOME`）的钩子被跳过并记日志，不阻塞拉起。例外是归插件的工作区（`workspace.attach`）：只用 owner 钩子给的 provider 路由与模型，不注入个人凭据；owner 的钩子失败、超时或没给 provider 时拒绝拉起，绝不退回个人凭据；拉起期间归属若被 attach/detach 改变，拉起后按新归属核对，不符就停掉重拉。owner 插件被卸载后工作区保留归属并拒绝拉起（文件夹里可能有组织数据），提示重装插件或移除工作区。个人工作区忽略钩子给的 provider。
 - 常驻：Alcove 运行期间边车一律常驻，宿主不按空闲停边车；`background` 只决定能否调 `runtime.ensure`。有插件声明 `background` 时，关窗口最小化到托盘（Windows）/ 菜单栏（macOS），边车继续跑（D3 界面实现）。
 - 停止：`shutdown` 请求后等 3 秒，再结束整个进程树；插件登记的界面贡献与拉起钩子随之撤销。
 - 崩溃限频：未经宿主要求的退出（含握手失败）算一次崩溃，按 1 s、2 s、4 s… 退避重启；10 分钟内满 3 次即停在 `crashed`，插件页显示最后错误与 stderr 尾部，用户手动启动时清零计数。

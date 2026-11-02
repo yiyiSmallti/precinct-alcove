@@ -26,7 +26,7 @@ type Workspace struct {
 	Name      string    `json:"name"`
 	Dir       string    `json:"dir"`
 	Profile   string    `json:"profile"`
-	Owner     string    `json:"owner"` // "personal" in the first phase
+	Owner     string    `json:"owner"` // "personal", or the plugin that attached it
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -87,6 +87,12 @@ func (s *Store) Rename(id, name string) error {
 	return s.edit(id, func(all []Workspace, i int) []Workspace { all[i].Name = name; return all })
 }
 
+// SetOwner records who owns a workspace: "personal", or the plugin that
+// attached it (workspace.attach).
+func (s *Store) SetOwner(id, owner string) error {
+	return s.edit(id, func(all []Workspace, i int) []Workspace { all[i].Owner = owner; return all })
+}
+
 // Remove forgets a workspace. Its folder and files are left alone; its dsh
 // profile is removed by the caller after the runtime has stopped.
 func (s *Store) Remove(id string) error {
@@ -130,6 +136,18 @@ func (s *Store) Find(id string) (*Workspace, error) {
 	}
 	return nil, ErrNotFound
 }
+
+// OwnerName is Owner, with records from before owners existed read as
+// "personal".
+func (w Workspace) OwnerName() string {
+	if w.Owner == "" {
+		return Personal
+	}
+	return w.Owner
+}
+
+// Personal is the owner of workspaces no plugin attached.
+const Personal = "personal"
 
 // Missing reports whether the workspace folder has gone (moved or deleted
 // outside Alcove); the UI offers to relocate or remove it.
@@ -192,7 +210,7 @@ func samePath(a, b string) bool {
 type Source struct{ Store *Store }
 
 func toSidecar(w Workspace) sidecar.Workspace {
-	return sidecar.Workspace{ID: w.ID, Name: w.Name, Dir: w.Dir, Profile: w.Profile}
+	return sidecar.Workspace{ID: w.ID, Name: w.Name, Dir: w.Dir, Profile: w.Profile, Owner: w.OwnerName()}
 }
 
 func (s Source) List(ctx context.Context) ([]sidecar.Workspace, error) {

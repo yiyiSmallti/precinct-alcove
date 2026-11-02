@@ -10,6 +10,7 @@
 //	                   ready and its outcome sent back as a log line
 //	                   "result <i> ok <json>" or "result <i> err <code>"
 //	FAKE_PLUGIN_UI     JSON array of uiContributions for ready
+//	FAKE_PLUGIN_HOOK_FILE  file whose JSON is the launchHook answer
 package main
 
 import (
@@ -52,6 +53,15 @@ func (h *handler) Request(ctx context.Context, method string, params json.RawMes
 		defer close(h.ready)
 		return map[string]any{"name": name, "version": "1.0.0", "uiContributions": ui, "hello": params}, nil
 	case "launchHook":
+		// FAKE_PLUGIN_HOOK_FILE, when set, holds the whole answer, read on
+		// every call so a test can change it while the sidecar runs.
+		if f := os.Getenv("FAKE_PLUGIN_HOOK_FILE"); f != "" {
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				return nil, err
+			}
+			return json.RawMessage(raw), nil
+		}
 		return map[string]any{"env": map[string]string{"FAKE_PLUGIN_TOKEN": "from-hook"}, "profilePatch": []any{}}, nil
 	case "onUiAction":
 		h.conn.Notify(ctx, "log", map[string]string{"level": "info", "msg": "uiAction " + string(params)})
