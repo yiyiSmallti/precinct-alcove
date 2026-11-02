@@ -23,7 +23,7 @@ DOVETAIL_DAILY_TGZ=$(ls /tmp/daily/precinct-daily-*.tgz) go test -tags e2e -run 
 
 # 打包
 
-在 Mac 上（`.app`、签名与 `.dmg` 需要 macOS；Windows 安装包另需 NSIS：`brew install makensis`）：
+在 Mac 上（`.app`、签名与 `.dmg` 需要 macOS；Windows 安装包另需 NSIS：`brew install makensis`，Linux 上 `apt install nsis` 也能打 Windows 安装包）：
 
 ```sh
 installer/build.sh                    # macOS 通用 .app/.dmg + Windows x64 安装包，产物在 build/
