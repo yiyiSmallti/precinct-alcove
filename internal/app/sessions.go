@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
@@ -29,6 +30,7 @@ type pluginSession struct {
 	runtime        string
 	view           *events.Session
 	waiting        bool
+	gen            int // prompts sent; a watcher waits again when it moved
 }
 
 type pluginSessions struct {
@@ -64,19 +66,29 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 	if err := a.ownedBy(plugin, wsID); err != nil {
 		return "", err
 	}
+	if w, err := a.Workspaces.Find(wsID); err == nil && a.Runtimes.Get(alrt.Key{Profile: w.Profile, Cwd: w.Dir}) == nil {
+		// session.cancel needs bridge 0.1.1; profiles made before it get
+		// the shipped bridge while no runtime of theirs is running.
+		if _, err := a.Profiles.RefreshBridge(ctx, w.Profile); err != nil {
+			a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: updating the bridge: %v", wsID, err))
+		}
+	}
 	p, err := a.OpenWorkspace(ctx, wsID)
 	if err != nil {
 		return "", err
 	}
+	// A detach between the check above and the open gives a runtime on
+	// another route: never send the plugin's task there.
+	if p.Spec.Owner != plugin {
+		return "", fmt.Errorf("%w: workspace %s no longer belongs to %s", sidecar.ErrNotPermitted, wsID, plugin)
+	}
 	a.sessions.mu.Lock()
 	s := a.sessions.get(wsID, sessionID)
-	fresh := s == nil || s.runtime != p.ID
-	if s == nil {
-		s = &pluginSession{plugin: plugin, ws: wsID, id: sessionID}
-		a.sessions.byID[wsID+"\x00"+sessionID] = s
-	}
+	fresh := s == nil || s.runtime != p.ID || s.plugin != plugin
 	if fresh {
-		s.runtime, s.view = p.ID, events.NewSession(sessionID)
+		// A new owner's session of the same id is a different session.
+		s = &pluginSession{plugin: plugin, ws: wsID, id: sessionID, runtime: p.ID, view: events.NewSession(sessionID)}
+		a.sessions.byID[wsID+"\x00"+sessionID] = s
 	}
 	a.sessions.mu.Unlock()
 	if fresh {
@@ -89,6 +101,7 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 		return "", err
 	}
 	a.sessions.mu.Lock()
+	s.gen++
 	watch := !s.waiting
 	s.waiting = true
 	a.sessions.mu.Unlock()
@@ -98,22 +111,51 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 	return msg, nil
 }
 
-// watchSession waits for the session to go idle and tells the plugin.
+// watchSession waits for the session to go idle and tells the plugin. A
+// prompt that arrived while it waited is waited for too.
 func (a *App) watchSession(p *alrt.Process, s *pluginSession) {
 	ctx := context.Background()
-	err := p.Wait(ctx, s.id)
-	a.sessions.mu.Lock()
-	s.waiting = false
-	text, failed := lastAnswer(s.view)
-	a.sessions.mu.Unlock()
-	ev := map[string]any{"workspaceId": s.ws, "sessionId": s.id, "text": text}
-	switch {
-	case err != nil:
-		ev["error"] = "the session did not finish: " + err.Error()
-	case failed != "":
-		ev["error"] = failed
+	for {
+		a.sessions.mu.Lock()
+		gen := s.gen
+		a.sessions.mu.Unlock()
+		err := p.Wait(ctx, s.id)
+		if err == nil {
+			a.settle(s)
+		}
+		a.sessions.mu.Lock()
+		if err == nil && s.gen != gen {
+			a.sessions.mu.Unlock()
+			continue
+		}
+		s.waiting = false
+		text, failed := lastAnswer(s.view)
+		a.sessions.mu.Unlock()
+		ev := map[string]any{"workspaceId": s.ws, "sessionId": s.id, "text": text}
+		switch {
+		case err != nil:
+			ev["error"] = "the session did not finish: " + err.Error()
+		case failed != "":
+			ev["error"] = failed
+		}
+		a.Sidecars.Notify(s.plugin, "onSessionIdle", ev)
+		return
 	}
-	a.Sidecars.Notify(s.plugin, "onSessionIdle", ev)
+}
+
+// settle gives the event goroutine time to apply the turn's last events:
+// session/wait is answered on the connection's reader, notifications are
+// applied on another goroutine.
+func (a *App) settle(s *pluginSession) {
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		a.sessions.mu.Lock()
+		running := s.view.Running()
+		a.sessions.mu.Unlock()
+		if !running {
+			break
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
 }
 
 // lastAnswer is the last turn's final assistant text, or why it ended
