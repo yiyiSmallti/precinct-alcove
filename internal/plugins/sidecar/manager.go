@@ -120,6 +120,9 @@ type proc struct {
 	stdout io.Closer
 	stderr *tail
 	exited chan struct{}
+	// shook closes once the handshake is over (ready's contributions are
+	// registered, or it failed).
+	shook chan struct{}
 }
 
 // Errors.
@@ -197,6 +200,7 @@ func (p *plugin) launch(ctx context.Context, gen int) error {
 		}
 		p.mu.Unlock()
 		err = p.handshake(ctx, pr)
+		close(pr.shook)
 		if err != nil {
 			pr.kill()
 		}
@@ -249,13 +253,13 @@ func (p *plugin) spawn() (*proc, error) {
 	if err != nil {
 		return nil, err
 	}
-	pr := &proc{cmd: cmd, stdin: stdin, stdout: stdout, stderr: &tail{max: 16 << 10}, exited: make(chan struct{})}
+	pr := &proc{cmd: cmd, stdin: stdin, stdout: stdout, stderr: &tail{max: 16 << 10}, exited: make(chan struct{}), shook: make(chan struct{})}
 	cmd.Stderr = pr.stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sidecar: %w", err)
 	}
 	dsh.Contain(cmd)
-	pr.conn = jsonrpc.New(stdout, stdin, &api{p: p})
+	pr.conn = jsonrpc.New(stdout, stdin, &api{p: p, pr: pr})
 	go pr.conn.Serve(context.Background())
 	go func() {
 		// Watch the process itself, not stdout: a child that inherited

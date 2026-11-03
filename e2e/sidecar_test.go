@@ -148,6 +148,9 @@ func TestSidecar(t *testing.T) {
 
 	// 2. Handshake, capability checks, settings isolation, launch hook.
 	calls := []map[string]any{
+		// First, right after ready: the host must have registered ready's
+		// contributions by the time it handles this.
+		{"method": "ui.update", "params": map[string]any{"id": "e2e", "data": map[string]any{"type": "settings_page", "id": "e2e", "sections": []any{}}}},
 		{"method": "settings.write", "params": map[string]any{"ns": e2ePlugin, "value": map[string]any{"k": 1}}},
 		{"method": "settings.read", "params": map[string]any{"ns": e2ePlugin}},
 		{"method": "settings.write", "params": map[string]any{"ns": "@precinct/other", "value": 1}},
@@ -181,15 +184,16 @@ func TestSidecar(t *testing.T) {
 	err = waitFor(func() bool { _, ok := rec.has("calls done"); return ok }, 5*time.Second)
 	want := []string{
 		`result 0 ok {}`,
-		`result 1 ok {"value":{"k":1}}`,
-		`result 2 err -32030`,
+		`result 1 ok {}`,
+		`result 2 ok {"value":{"k":1}}`,
 		`result 3 err -32030`,
-		`result 4 ok {"value":null}`,
-		`result 5 ok {}`,
-		`result 6 err -32030`,
-		`result 7 ok {}`,
-		`result 8 err -32031`,
-		`result 9 err -32602`,
+		`result 4 err -32030`,
+		`result 5 ok {"value":null}`,
+		`result 6 ok {}`,
+		`result 7 err -32030`,
+		`result 8 ok {}`,
+		`result 9 err -32031`,
+		`result 10 err -32602`,
 	}
 	for i, w := range want {
 		if err != nil {
@@ -200,7 +204,7 @@ func TestSidecar(t *testing.T) {
 			err = fmt.Errorf("call %d: got %q, want %q", i, got, w)
 		}
 	}
-	r.step("能力与命名空间把关：自己的设置可读写；别人的命名空间、策略段、未授权的侧栏被拒（-32030）；未提供的服务答 -32031；inbox.post 须带 id（-32602）", err, "")
+	r.step("能力与命名空间把关：ready 之后立刻 ui.update 自己的设置页成功；自己的设置可读写；别人的命名空间、策略段、未授权的侧栏被拒（-32030）；未提供的服务答 -32031；inbox.post 须带 id（-32602）", err, "")
 
 	lr := m.LaunchHooks(ctx, sidecar.LaunchContext{WorkspaceID: "w1", Profile: "ws-1", Cwd: work})
 	err = nil
