@@ -16,18 +16,55 @@ func (s *Shell) workspaceView(c *ui.Context, pal *palette, v *wsView) {
 	tk := v.tasks[v.current]
 	if tk == nil {
 		v.current = ""
-		s.newTaskView(c, pal, v)
-		return
 	}
-	s.taskView(c, pal, v, tk)
+	ui.Row(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+			if tk == nil {
+				s.newTaskView(c, pal, v)
+			} else {
+				s.taskView(c, pal, v, tk)
+			}
+		})
+		if !s.panels.hidden {
+			s.panel(c, pal, v, tk)
+		}
+	})
+}
+
+// panelToggle shows or hides the right panel.
+func (s *Shell) panelToggle(c *ui.Context) {
+	label := "隐藏右栏"
+	if s.panels.hidden {
+		label = "显示右栏"
+	}
+	b := ui.Button(c, "").Label(label).Tooltip(label).Children(func() {
+		ui.Icon(c, icPanel).Size(16, 16)
+	})
+	if b.Clicked() {
+		s.panels.hidden = !s.panels.hidden
+	}
+}
+
+// jsonString is one string field of a JSON object, or "".
+func jsonString(raw, key string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }
 
 // newTaskView asks what to do, with the workspace it will run in.
 func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
 	as, qs := v.pending(nil)
+	ui.Row(c).Padding(10, 14, 0).Children(func() {
+		ui.Spacer(c)
+		s.panelToggle(c)
+	})
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(72, 32, 24).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Padding(48, 32, 24).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Width(640).MaxWidthPercent(100).Gap(14).Children(func() {
 				ui.Icon(c, icChat).Size(28, 28).TextColor(t.Accent)
 				ui.Text(c, "要做什么？").FontSize(24).Bold()
@@ -78,6 +115,7 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 		case len(sess.Entries) > 0:
 			pill(c, "已完成", pal.okSoft, t.Success)
 		}
+		s.panelToggle(c)
 		more := ui.Button(c, "").Label("更多").Children(func() {
 			ui.Icon(c, icMore).Size(16, 16)
 		})

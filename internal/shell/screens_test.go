@@ -14,6 +14,7 @@ import (
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 )
 
@@ -29,6 +30,7 @@ func TestScreens(t *testing.T) {
 		s, tt := newShell(t)
 		tt.SetDark(dark)
 		tt.SetScale(2)
+		tt.SetSize(1280, 800)
 		v := demo(t, s)
 		suffix := "light"
 		if dark {
@@ -53,6 +55,18 @@ func TestScreens(t *testing.T) {
 		s.mu.Unlock()
 		shot("task-open")
 		s.mu.Lock()
+		s.panels.tab = tabFiles
+		s.panels.open = map[string]bool{filepath.Join(v.ws.Dir, "data"): true}
+		s.mu.Unlock()
+		shot("files")
+		time.Sleep(100 * time.Millisecond)
+		shot("files")
+		s.mu.Lock()
+		s.panels.tab = tabWorkspace
+		s.mu.Unlock()
+		shot("workspace")
+		s.mu.Lock()
+		s.panels.tab = tabProgress
 		v.current = ""
 		s.mu.Unlock()
 		shot("new")
@@ -101,8 +115,20 @@ func (e *ev) tool(s *Shell, id, name, args, result string, done bool) {
 
 // demo fills the shell with a workspace of example tasks.
 func demo(t *testing.T, s *Shell) *wsView {
+	dir := filepath.Join(t.TempDir(), "quarterly")
+	for _, f := range []string{"data/2026-07.csv", "data/2026-08.csv", "data/2026-09.csv", "data/notes.md", "report/Q3.md", "summarize.py", "README.md"} {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755)
+		os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644)
+	}
+	page := `{"id":"org","type":"settings_page","title":"组织","sections":[
+		{"title":"组织","description":"已加入组织 Precinct（liuliu），本设备已批准，已连接。","fields":[]},
+		{"title":"组织工作区","description":"内容同步到组织云端，可以派到云端运行。","fields":[
+			{"id":"sync","type":"button","label":"同步「季度报表」"},
+			{"id":"task","type":"text","label":"派到云端：要完成的任务","placeholder":"例如：把 data/ 下的报表汇总成季度报告"},
+			{"id":"run","type":"button","label":"派到云端","style":"primary"}]}]}`
+	s.Register("@precinct/cloister", sidecar.Contribution{ID: "org", Type: "settings_page", Raw: json.RawMessage(page)})
 	s.mu.Lock()
-	w := workspace.Workspace{ID: "w1", Name: "季度报表", Dir: "/Users/liuliu/work/quarterly", Profile: "ws-w1", Owner: "@precinct/cloister"}
+	w := workspace.Workspace{ID: "w1", Name: "季度报表", Dir: dir, Profile: "ws-w1", Owner: "@precinct/cloister"}
 	s.workspaces = []workspace.Workspace{w, {ID: "w2", Name: "precinct-alcove", Dir: "/Users/liuliu/IdeaProjects/precinct-alcove", Profile: "ws-w2", Owner: "personal"}}
 	v := s.view("w1")
 	v.runtimeID = "rt1"
@@ -128,6 +154,7 @@ func demo(t *testing.T, s *Shell) *wsView {
 	r.tool(s, "c2", "read", `{"file_path":"data/2026-07.csv"}`, "月份,收入,支出\n7,128400,96200", true)
 	r.tool(s, "c3", "write", `{"file_path":"report/Q3.md","content":"# 第三季度报告\n..."}`, "Created file", true)
 	r.say(s, 1, 2, "汇总好了：第三季度收入 **41.2 万**，比上季度多 8%。报告写在 `report/Q3.md`。\n\n接下来把它转成 docx。")
+	r.tool(s, "c5", "edit", `{"file_path":"summarize.py","old_string":"a","new_string":"b"}`, "ok", true)
 	r.tool(s, "c4", "bash", `{"command":"pandoc report/Q3.md -o ~/Desktop/Q3.docx"}`, "", false)
 
 	b := &ev{sid: "task-c"}

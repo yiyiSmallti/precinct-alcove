@@ -46,6 +46,10 @@ type Shell struct {
 	PickFile func() (string, error)
 	// SaveFile asks where to save a file named name; "" means cancelled.
 	SaveFile func(name string) (string, error)
+	// OpenPath opens a file with its default application; Reveal shows it
+	// in the file manager. Nil hides what needs them.
+	OpenPath func(path string) error
+	Reveal   func(path string)
 	// OnBackground is called (on the UI thread) when Alcove starts or stops
 	// having a plugin that runs in the background: the window then hides to
 	// the tray / menu bar on close instead of quitting (SPEC 3.2 常驻).
@@ -77,6 +81,7 @@ type Shell struct {
 	updates    updatesState
 
 	pluginsState
+	panels       panelState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
 }
 

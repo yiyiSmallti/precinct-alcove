@@ -91,8 +91,10 @@ func main() {
 		}()
 	})
 	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1100, Height: 760, Content: ui.View(s.View)})
+		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1280, Height: 800, Content: ui.View(s.View)})
 		s.Post = win.Update
+		s.OpenPath = mygo.Shell.OpenPath
+		s.Reveal = mygo.Shell.ShowItemInFolder
 		s.PickFolder = func() (string, error) {
 			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择工作区文件夹", Directory: true, CreateDirectories: true})
 			if err != nil || len(dirs) == 0 {

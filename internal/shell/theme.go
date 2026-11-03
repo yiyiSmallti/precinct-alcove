@@ -125,6 +125,8 @@ var (
 	icCloud    = icon(`<path d="M7 18a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 8.5a4.5 4.5 0 0 1-.5 9.5z"/>`)
 	icChat     = icon(`<path d="M5 18.5V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8.5z"/>`)
 	icMore     = icon(`<circle cx="6" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="18" cy="12" r="1" fill="currentColor"/>`)
+	icFile     = icon(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>`)
+	icPanel    = icon(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>`)
 	icTerminal = icon(`<path d="m5 8 4 4-4 4M12 17h7"/>`)
 	icAlert    = icon(`<path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17h.01"/>`)
 )
