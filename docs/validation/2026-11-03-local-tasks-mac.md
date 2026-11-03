@@ -69,3 +69,9 @@
 | a 派任务 → 运行 → 结果回 bot（随包运行时） | **通过**（问题 1 已修） | 卡片有“在「org-ws2」里运行”和“拒绝”；点运行后第一次刷新（约 20 秒）就显示“已完成，结果已交回云端 bot。”。updates 是 `started`（`task-lt_r_a`）和 `report`（`final: true, state: ready`）；模型桩收到 `POST /v1/chat/completions`，带网关令牌 `Bearer gwt_…`、`X-Gatehouse-Source: alcove`（截图 20） |
 
 问题 3（后台不重绘）和问题 4 里那条批准后不更新的“正在等待管理员批准”在这次复测里还在，截图 20 顶部能看到这条旧提示。b、c、d 这次没有重跑，它们和打包无关，前面已经通过。
+
+## 后续（2026-11-03）
+
+- 问题 3（后台不重绘）：不是缺陷。在同一台 Mac mini（macOS 27.0.1）上用一个独立的 MyGo v0.7.4 原生小程序复现：后台协程每秒经 `win.Update` 更新界面，与 Alcove 的 `shell.Post` 走同一条路。窗口被盖住一半且不在前台时，露出的一半照常更新；完全盖住 5 秒后用 `osascript … activate` 调到前台（不点击），0.5 秒后截屏已是最新值；完全盖住时用 `screencapture -l` 抓窗口，画面停在盖住那一刻。MyGo 对完全不可见的窗口有意暂停出帧，露出时立即补画。前面的截图是对被完全盖住的窗口用 `-l` 抓的，所以看到的是旧画面。记录在 Mac mini 的 `~/IdeaProjects/precinct-mac-retest/redraw/redraw.md`。
+- 问题 4：“ui contribution "cloister" was not registered by this plugin” 和那条不更新的“正在等待管理员批准”是同一个原因：插件答完 hello 立刻 `ui.update`，宿主还没登记 ready 里的设置页，更新被拒（-32030）后丢了。alcove#26 已修：握手结束前到达的 `ui.update` 等握手结束再处理。重启后卡片不再显示是因为对话视图只在内存里，插件需要在启动后自己重新 `inbox.post`。
+- Windows 安装包：用 main 9278e2c 在云端重新打包（`installer/build.sh windows-amd64`，apt 的 nsis），119.9 MB；构建目录里有 `pi-ai/dist/providers/data/dot.manifest.json`，问题 1 的修复已进 Windows 包。Windows 上的组织工作区没有复测。
