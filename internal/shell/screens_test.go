@@ -95,6 +95,17 @@ func TestScreens(t *testing.T) {
 		s.settings.Appearance = app.Appearance{Accent: "amber"}
 		s.mu.Unlock()
 		shot("task-amber")
+		for _, tn := range []string{"warm", "neutral", "cool"} {
+			s.mu.Lock()
+			s.settings.Appearance = app.Appearance{Tone: tn}
+			s.mu.Unlock()
+			shot("tone-" + tn)
+		}
+		s.mu.Lock()
+		s.page, s.prefs.tab, s.prefs.picking = PageSettings, tabLook, true
+		s.prefs.custom = ui.Hex("#7c3aed")
+		s.mu.Unlock()
+		shot("picker")
 	}
 }
 
