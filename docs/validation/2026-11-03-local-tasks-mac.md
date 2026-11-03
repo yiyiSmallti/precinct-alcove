@@ -54,3 +54,18 @@
 - 只有一台设备，没测多台设备抢答（`settled`）和确认超时（`expire`）。
 - 没接真模型，也没接真 Gatehouse，模型桩回的是固定文字。没测需要审批或提问的操作。
 - c 只确认了 bot 那边收到 `ended`，而且之后没有再报。dsh 回合有没有真的被 `session.cancel` 取消，没有单独去查会话日志。
+
+## 修复后复测（main 89ad1e0）
+
+复测对象是 main 89ad1e0，含 alcove#23（stage-runtime 把运行时里被引用的点开头文件改名为 `dot<name>`）和 alcove#24（内置一方公钥 `cmd/alcove/trusted-keys.txt`，key `bb9bc560f011a603`）。用的是正式安装包，不是开发构建；cloister 是 main 7a571f3（cloister#11，`FAKE_GATEWAY_URL`），dovetail 包没变（50e5a14）。
+
+环境：`installer/build.sh darwin-universal` 打出的 `build/darwin-universal/Alcove.app` 直接从构建目录运行，没有装进 Applications，也没覆盖用户已装的 Alcove（同一个 bundle id，那个应用当时没开）。只设了 `ALCOVE_DATA_DIR`（`lt/data2`）和 `PRECINCT_CLOISTER_URL`，没有任何 `ALCOVE_DEV_*`、`ALCOVE_NODE`/`ALCOVE_DSH` 变量，dsh 进程用的是 `.app` 里的 `Contents/Resources/runtime/node`。假 Cloister 设了 `FAKE_GATEWAY_URL` 指向模型桩，不再用转发代理。两个插件包用 `~/.precinct/keys/precinct-first-party.key` 经 `dovetail sign` 签名，`dovetail verify` 显示 key `bb9bc560f011a603`。界面仍由本机 Codex 操作，只碰这个 `.app`。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 打包 | 通过 | 共 7 分 59 秒，退出码 0；`.app` 1170.4 MB，`.dmg` 255.6 MB。日志里有 `unhid @earendil-works/pi-ai/dist/providers/data/.manifest.json (1 script)`；`.app` 里有 `pi-ai/dist/providers/data/dot.manifest.json`，`dist/providers/all.js` 引用的是 `./data/dot.manifest.json`；`codesign --verify --deep --strict` 通过（adhoc），版本 0.1.0 |
+| 安装一方签名的插件 | 通过（问题 2 已修） | daily、cloister 的安装卡片都显示“签名有效”，没有红字，装完都是“运行中”。cloister 装进 `worker` |
+| 加入组织、标组织工作区 | 通过 | 回调与审批同前；org-ws2 显示“组织工作区 · 内部 · 版本 1 · 本机可写”，推送了 revision 1 |
+| a 派任务 → 运行 → 结果回 bot（随包运行时） | **通过**（问题 1 已修） | 卡片有“在「org-ws2」里运行”和“拒绝”；点运行后第一次刷新（约 20 秒）就显示“已完成，结果已交回云端 bot。”。updates 是 `started`（`task-lt_r_a`）和 `report`（`final: true, state: ready`）；模型桩收到 `POST /v1/chat/completions`，带网关令牌 `Bearer gwt_…`、`X-Gatehouse-Source: alcove`（截图 20） |
+
+问题 3（后台不重绘）和问题 4 里那条批准后不更新的“正在等待管理员批准”在这次复测里还在，截图 20 顶部能看到这条旧提示。b、c、d 这次没有重跑，它们和打包无关，前面已经通过。
