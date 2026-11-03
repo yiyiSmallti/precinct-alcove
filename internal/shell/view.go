@@ -4,25 +4,26 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
-	"github.com/yiyiSmallti/precinct-alcove/internal/runtime/events"
 )
 
-// View builds the window.
+// View builds the window: the sidebar of the workspace's tasks, and the
+// page it chose (a task, the new-task page, plugins or settings).
 func (s *Shell) View(c *ui.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pal := useTheme(c)
 	t := c.Theme()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(220).PaddingY(12).Background(t.Surface).Shrink(0).Children(func() {
-			s.sidebar(c)
+		ui.Column(c).Width(256).Background(pal.sidebar).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Shrink(0).Children(func() {
+			s.sidebar(c, pal)
 		})
-		ui.Column(c).Grow(1).Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
 			if s.notice != "" {
-				ui.Row(c).Padding(8, 16).Gap(8).Background(t.Surface).Children(func() {
-					ui.Text(c, s.notice).TextColor(t.Danger).Grow(1)
+				ui.Row(c).Padding(8, 16).Gap(8).AlignItems(ui.Center).Background(pal.warnSoft).Children(func() {
+					ui.Icon(c, icAlert).TextColor(t.Danger)
+					ui.Text(c, s.notice).TextColor(t.Danger).Grow(1).Selectable()
 					if ui.Button(c, "关闭").Clicked() {
 						s.notice = ""
 					}
@@ -31,10 +32,10 @@ func (s *Shell) View(c *ui.Context) {
 			switch {
 			case strings.HasPrefix(s.page, pageWS):
 				if v := s.view(strings.TrimPrefix(s.page, pageWS)); v != nil {
-					s.workspaceView(c, v)
+					s.workspaceView(c, pal, v)
 					return
 				}
-				s.settingsView(c)
+				s.welcomeView(c)
 			case s.page == PagePlugins:
 				s.pluginsView(c)
 			case strings.HasPrefix(s.page, pagePlugin):
@@ -48,129 +49,26 @@ func (s *Shell) View(c *ui.Context) {
 	})
 }
 
-func (s *Shell) sidebar(c *ui.Context) {
+// welcomeView is the first page when there is no workspace yet.
+func (s *Shell) welcomeView(c *ui.Context) {
 	t := c.Theme()
-	ui.Text(c, "工作区").FontSize(12).Bold().TextColor(t.TextMuted).Padding(4, 16, 6)
-	ui.Sidebar(c, &s.page, func() {
-		for _, w := range s.workspaces {
-			item := ui.SidebarItem(c, pageWS+w.ID, nil, w.Name)
-			if w.Missing() {
-				item.Children(func() { ui.Badge(c, "目录不在") })
-			}
-		}
-		if nav := s.pluginNav(); len(nav) > 0 {
-			ui.Text(c, "插件").FontSize(12).Bold().TextColor(t.TextMuted).Padding(10, 6, 6)
-			for _, n := range nav {
-				ui.SidebarItem(c, n.page, nil, n.title)
-			}
-		}
-		ui.Divider(c).Margin(6, 12)
-		ui.SidebarItem(c, PagePlugins, nil, "管理插件")
-		ui.SidebarItem(c, PageSettings, nil, "设置")
-	}).Grow(1).Label("页面")
-	if ui.Button(c, "添加工作区…").Margin(8, 12).Clicked() {
-		s.createWorkspace()
-	}
-}
-
-func (s *Shell) workspaceView(c *ui.Context, v *wsView) {
-	t := c.Theme()
-	sess := v.session
-	ui.Row(c).Padding(10, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		title := v.ws.Name
-		if sess.Title != "" {
-			title += " · " + sess.Title
-		}
-		ui.Text(c, title).Bold().Grow(1)
-		ui.Text(c, v.ws.Dir).FontSize(12).TextColor(t.TextMuted)
-		if ui.Button(c, "移除").Clicked() {
-			s.removeWorkspace(v.ws.ID)
-		}
-	})
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(16, 20).Gap(12).Children(func() {
-			if len(sess.Entries) == 0 {
-				ui.Text(c, "在下面输入任务，Alcove 会在这个文件夹里执行。").TextColor(t.TextMuted)
-			}
-			for _, e := range sess.Entries {
-				entry(c, e)
-			}
-			for _, a := range v.approvals {
-				s.approvalCard(c, a)
-			}
-			for _, q := range v.questions {
-				questionCard(c, q)
-			}
-			if v.err != "" {
-				ui.Text(c, v.err).TextColor(t.Danger).Selectable()
-			}
-		})
-	})
-	busy := v.starting || sess.Running()
-	ui.Row(c).Gap(8).Padding(12, 20).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		in := ui.TextArea(c, &v.input).Lines(1, 8).Placeholder("输入任务…").Grow(1)
-		if busy {
-			ui.Spinner(c)
-		}
-		text := strings.TrimSpace(v.input)
-		if (ui.PrimaryButton(c, "发送").Disabled(text == "" || v.starting).Clicked() || in.Submitted()) && text != "" && !v.starting {
-			v.input = ""
-			s.send(v, text)
+	ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Padding(32).Gap(12).Children(func() {
+		ui.Icon(c, icFolder).Size(36, 36).TextColor(t.Accent)
+		ui.Text(c, "先添加一个工作区").FontSize(20).Bold()
+		ui.Text(c, "工作区是你电脑上的一个文件夹，Alcove 的任务都在里面执行。").TextColor(t.TextMuted)
+		if ui.PrimaryButton(c, "添加工作区…").Clicked() {
+			s.createWorkspace()
 		}
 	})
 }
 
-func entry(c *ui.Context, e *events.Entry) {
+func (s *Shell) approvalCard(c *ui.Context, pal *palette, a *approval) {
 	t := c.Theme()
-	switch e.Kind {
-	case events.User:
-		ui.Row(c).Key(e.Key).Children(func() {
-			ui.Spacer(c)
-			ui.Text(c, e.Text).Selectable().Padding(8, 12).Radius(12).Background(t.Surface).MaxWidth(560)
+	ui.Column(c).Gap(8).Padding(12, 14).Radius(10).Border(1, t.Warning).Background(pal.warnSoft).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Warning)
+			ui.Text(c, "需要你确认："+toolVerb(a.req.ToolName)).Bold()
 		})
-	case events.Assistant:
-		ui.Column(c).Key(e.Key).MaxWidth(760).Children(func() {
-			if e.Streaming {
-				markdown.Stream(c, e.Text, nil)
-			} else {
-				markdown.View(c, e.Text, nil)
-			}
-		})
-	case events.Reasoning:
-		ui.Text(c, e.Text).Key(e.Key).FontSize(12).TextColor(t.TextMuted).Selectable()
-	case events.Tool:
-		ui.Column(c).Key(e.Key).Gap(4).Padding(8, 12).Radius(8).Border(1, t.Border).Children(func() {
-			state := "运行中"
-			if e.Done {
-				state = "完成"
-				if e.IsError {
-					state = "出错"
-				}
-			}
-			ui.Row(c).Gap(8).Children(func() {
-				ui.Text(c, e.ToolName).Bold()
-				ui.Text(c, state).TextColor(t.TextMuted)
-			})
-			if e.Args != "" {
-				ui.Text(c, clip(e.Args, 400)).FontSize(12).TextColor(t.TextMuted).Selectable()
-			}
-			if e.Result != "" {
-				color := t.Text
-				if e.IsError {
-					color = t.Danger
-				}
-				ui.Text(c, clip(e.Result, 2000)).FontSize(12).TextColor(color).Selectable()
-			}
-		})
-	case events.Notice:
-		ui.Text(c, e.Text).Key(e.Key).TextColor(t.Warning)
-	}
-}
-
-func (s *Shell) approvalCard(c *ui.Context, a *approval) {
-	t := c.Theme()
-	ui.Column(c).Gap(8).Padding(12).Radius(8).Border(1, t.Warning).Children(func() {
-		ui.Text(c, "需要你的确认："+a.req.ToolName).Bold()
 		reason := a.req.DisplayReason.Text(s.Lang)
 		if reason == "" {
 			reason = a.req.Reason
@@ -194,9 +92,9 @@ func answer(a *approval, outcome string) {
 	}
 }
 
-func questionCard(c *ui.Context, q *question) {
+func questionCard(c *ui.Context, pal *palette, q *question) {
 	t := c.Theme()
-	ui.Column(c).Gap(10).Padding(12).Radius(8).Border(1, t.Accent).Children(func() {
+	ui.Column(c).Gap(10).Padding(12, 14).Radius(10).Border(1, t.Accent).Background(pal.accentSoft).Children(func() {
 		for i, qq := range q.req.Questions {
 			if qq.Header != "" {
 				ui.Text(c, qq.Header).FontSize(12).TextColor(t.TextMuted)

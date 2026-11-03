@@ -19,6 +19,7 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/identity"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/paths"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
@@ -59,6 +60,7 @@ type App struct {
 	CLI        *dsh.CLI
 	Creds      *credentials.Store
 	Workspaces *workspace.Store
+	Tasks      *tasks.Store
 	Plugins    *host.Host
 	Profiles   *profile.Assembler
 	Bridge     *alrt.Bridge
@@ -108,6 +110,7 @@ func New(cfg Config) (*App, error) {
 	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg}
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
+	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
 	a.Plugins = &host.Host{
 		DSH: cli, Dir: l.Plugins(), AlcoveVersion: cfg.AlcoveVersion, GOOS: runtime.GOOS,
 		TrustedKeys: cfg.TrustedKeys, AllowUnsigned: cfg.AllowUnsigned,
@@ -257,6 +260,7 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 	if err := a.Workspaces.Remove(id); err != nil {
 		return err
 	}
+	a.Tasks.RemoveWorkspace(id)
 	a.Sidecars.WorkspaceEvent(ctx, "removed", sidecarView(w))
 	return nil
 }

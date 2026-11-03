@@ -28,18 +28,18 @@ const (
 
 // Entry is one item of the conversation.
 type Entry struct {
-	Key  string // stable across updates, for list keys
-	Kind Kind
-	Text string
+	Key  string `json:"-"` // stable across updates, for list keys
+	Kind Kind   `json:"kind"`
+	Text string `json:"text,omitempty"`
 	// Streaming is set while an assistant entry is still built from live
 	// chunks; the final assistant/message replaces it.
-	Streaming bool
+	Streaming bool `json:"-"`
 	// Tool calls only.
-	ToolName string
-	Args     string
-	Result   string
-	IsError  bool
-	Done     bool
+	ToolName string `json:"toolName,omitempty"`
+	Args     string `json:"args,omitempty"`
+	Result   string `json:"result,omitempty"`
+	IsError  bool   `json:"isError,omitempty"`
+	Done     bool   `json:"done,omitempty"`
 }
 
 // Session is one dsh session as the conversation view shows it.
@@ -380,4 +380,46 @@ func textOf(blocks []block) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// Snapshot is what a session view keeps across restarts: dsh's runtime
+// does not replay a resumed session's history, so the UI saves the folded
+// entries itself.
+type Snapshot struct {
+	Title   string  `json:"title,omitempty"`
+	Seq     int     `json:"seq"`
+	Entries []Entry `json:"entries"`
+}
+
+// Snapshot returns the finished part of s: entries still streaming are
+// left out.
+func (s *Session) Snapshot() Snapshot {
+	out := Snapshot{Title: s.Title, Seq: s.seq}
+	for _, e := range s.Entries {
+		if e.Streaming {
+			continue
+		}
+		c := *e
+		c.Key = ""
+		out.Entries = append(out.Entries, c)
+	}
+	return out
+}
+
+// Restore replaces s's entries with a snapshot's. Tool calls that never
+// finished are shown as such.
+func (s *Session) Restore(snap Snapshot) {
+	s.Entries, s.next = nil, 0
+	s.tools, s.live, s.think = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
+	s.Title, s.seq = snap.Title, snap.Seq
+	for i := range snap.Entries {
+		e := snap.Entries[i]
+		if e.Kind == Tool && !e.Done {
+			e.Done, e.IsError = true, true
+			if e.Result == "" {
+				e.Result = "没有结果（运行时已退出）"
+			}
+		}
+		s.add(&e)
+	}
 }

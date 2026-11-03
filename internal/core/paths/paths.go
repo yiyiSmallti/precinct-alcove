@@ -53,9 +53,13 @@ func (l Layout) Credentials() string {
 	return filepath.Join(l.Root, "credentials.json")
 }
 func (l Layout) Settings() string { return filepath.Join(l.Root, "settings.json") }
-func (l Layout) Plugins() string  { return filepath.Join(l.Root, "plugins") }
-func (l Layout) Logs() string     { return filepath.Join(l.Root, "logs") }
-func (l Layout) DSHHome() string  { return filepath.Join(l.Root, "dsh") }
+func (l Layout) Tasks() string    { return filepath.Join(l.Root, "tasks.json") }
+func (l Layout) Transcripts() string {
+	return filepath.Join(l.Root, "tasks")
+}
+func (l Layout) Plugins() string { return filepath.Join(l.Root, "plugins") }
+func (l Layout) Logs() string    { return filepath.Join(l.Root, "logs") }
+func (l Layout) DSHHome() string { return filepath.Join(l.Root, "dsh") }
 func (l Layout) PluginSettings() string {
 	return filepath.Join(l.Root, "plugins", "settings")
 }
