@@ -82,6 +82,8 @@ func until(t *testing.T, tt *ui.Tester, s *Shell, cond func() bool) {
 func TestSettingsAddCredential(t *testing.T) {
 	s, tt := newShell(t)
 	tt.Frame()
+	tt.Click("模型")
+	tt.Frame()
 	if !tt.HasText("还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。") {
 		t.Fatalf("no empty state; texts: %v", tt.Texts())
 	}
@@ -114,15 +116,16 @@ func openWorkspace(s *Shell, rt string) *wsView {
 	v := s.view("w1")
 	v.runtimeID = rt
 	s.byRuntime[rt] = "w1"
-	s.page = pageWS + "w1"
+	s.page, s.curWS = pageWS+"w1", "w1"
 	return v
 }
 
 func TestConversationFromRuntimeEvents(t *testing.T) {
 	s, tt := newShell(t)
 	v := openWorkspace(s, "rt1")
-	// The recorded turn of the events package, under this workspace's
-	// session id.
+	// The recorded turn of the events package, under a task's session id:
+	// the task shows up in the sidebar on its first event.
+	const sid = "chat-0001"
 	f, err := os.Open("../runtime/events/testdata/turn.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -132,25 +135,67 @@ func TestConversationFromRuntimeEvents(t *testing.T) {
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		method, params, _ := strings.Cut(sc.Text(), " ")
-		params = strings.ReplaceAll(params, `"sessionId":"s1"`, `"sessionId":"`+v.session.ID+`"`)
+		params = strings.ReplaceAll(params, `"sessionId":"s1"`, `"sessionId":"`+sid+`"`)
 		s.OnEvent("rt1", alrt.Event{Method: method, Params: json.RawMessage(params)})
 	}
 	tt.Frame()
-	for _, want := range []string{"do it", "write", "bash", "done after 2 tool calls"} {
+	s.mu.Lock()
+	tk := v.tasks[sid]
+	s.mu.Unlock()
+	if tk == nil {
+		t.Fatalf("no task for the session; texts: %v", tt.Texts())
+	}
+	if !tt.HasText("do it") { // the title, from the first message
+		t.Errorf("task not listed: %v", tt.Texts())
+	}
+	if err := tt.Click("do it"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	for _, want := range []string{"写入文件", "运行命令", "echo step 1", "done after 2 tool calls"} {
 		if !tt.HasText(want) {
 			t.Errorf("missing %q; texts: %v", want, tt.Texts())
 		}
 	}
 	s.mu.Lock()
-	n := len(v.session.Entries)
+	n := len(tk.session.Entries)
 	s.mu.Unlock()
 	if n != 4 {
 		t.Errorf("%d entries", n)
 	}
-	// Events of another runtime do not reach this workspace.
-	s.OnEvent("rt2", alrt.Event{Method: "session.status", Params: json.RawMessage(`{"sessionId":"` + v.session.ID + `","status":"running"}`)})
-	if v.session.Running() {
-		t.Error("another runtime's event applied")
+	// Events of another runtime do not reach this workspace, and sessions
+	// Alcove did not start are not listed.
+	s.OnEvent("rt2", alrt.Event{Method: "session.status", Params: json.RawMessage(`{"sessionId":"` + sid + `","status":"running"}`)})
+	s.OnEvent("rt1", alrt.Event{Method: "session.status", Params: json.RawMessage(`{"sessionId":"sub-1","status":"running"}`)})
+	s.mu.Lock()
+	running, n := tk.session.Running(), len(v.tasks)
+	s.mu.Unlock()
+	if running || n != 1 {
+		t.Errorf("running=%v tasks=%d", running, n)
+	}
+	// The index and the transcript survive a restart.
+	until(t, tt, s, func() bool {
+		l, _ := s.App.Tasks.List("w1")
+		return len(l) == 1 && l[0].Title == "do it"
+	})
+	until(t, tt, s, func() bool {
+		var snap events.Snapshot
+		return s.App.Tasks.LoadTranscript("w1", sid, &snap) == nil && len(snap.Entries) == 4
+	})
+	// A new window (after a restart) shows the task with its transcript.
+	s2 := New(s.App)
+	s2.Load()
+	s2.mu.Lock()
+	s2.workspaces = append(s2.workspaces, workspace.Workspace{ID: "w1", Name: "项目 A", Dir: os.TempDir()})
+	s2.index["w1"], _ = s.App.Tasks.List("w1")
+	v2 := s2.view("w1")
+	n2 := 0
+	if tk2 := v2.tasks[sid]; tk2 != nil {
+		n2 = len(tk2.session.Entries)
+	}
+	s2.mu.Unlock()
+	if n2 != 4 {
+		t.Errorf("after restart: %d entries", n2)
 	}
 }
 
@@ -249,11 +294,11 @@ func TestStartFailedRefusesTasks(t *testing.T) {
 	s.StartFailed(errors.New("listen: path too long"))
 	s.mu.Lock()
 	v := s.views["w1"]
-	s.send(v, "hi")
-	starting, msg, notice := v.starting, v.err, s.notice
+	s.send(v, nil, "hi")
+	n, msg, notice := len(v.tasks), v.err, s.notice
 	s.mu.Unlock()
-	if starting || !strings.Contains(msg, "path too long") || notice == "" {
-		t.Errorf("starting=%v err=%q notice=%q", starting, msg, notice)
+	if n != 0 || !strings.Contains(msg, "path too long") || notice == "" {
+		t.Errorf("tasks=%d err=%q notice=%q", n, msg, notice)
 	}
 }
 
@@ -265,7 +310,7 @@ func TestExportDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
-	s.page = PageSettings
+	s.page, s.prefs.tab = PageSettings, tabOther
 	s.mu.Unlock()
 	tt.Frame()
 	if err := tt.Click("导出诊断包…"); err != nil {

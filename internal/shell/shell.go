@@ -20,6 +20,7 @@ import (
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
@@ -45,6 +46,10 @@ type Shell struct {
 	PickFile func() (string, error)
 	// SaveFile asks where to save a file named name; "" means cancelled.
 	SaveFile func(name string) (string, error)
+	// OpenPath opens a file with its default application; Reveal shows it
+	// in the file manager. Nil hides what needs them.
+	OpenPath func(path string) error
+	Reveal   func(path string)
 	// OnBackground is called (on the UI thread) when Alcove starts or stops
 	// having a plugin that runs in the background: the window then hides to
 	// the tray / menu bar on close instead of quitting (SPEC 3.2 常驻).
@@ -58,6 +63,9 @@ type Shell struct {
 
 	mu         sync.Mutex
 	page       string
+	curWS      string                  // the workspace the sidebar shows
+	wsMenu     bool                    // the workspace switcher is open
+	index      map[string][]tasks.Task // tasks by workspace, as last read
 	workspaces []workspace.Workspace
 	views      map[string]*wsView // by workspace id
 	byRuntime  map[string]string  // runtime id → workspace id
@@ -73,19 +81,35 @@ type Shell struct {
 	updates    updatesState
 
 	pluginsState
+	panels       panelState
+	prefs        prefsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
 }
 
-// wsView is one workspace's conversation.
+// wsView is one workspace: its tasks, the runtime they run in, and the
+// approvals and questions that runtime is waiting on.
 type wsView struct {
-	ws        workspace.Workspace
-	session   *events.Session
-	runtimeID string
-	starting  bool
-	err       string
-	input     string
-	approvals []*approval
-	questions []*question
+	ws            workspace.Workspace
+	runtimeID     string
+	tasks         map[string]*taskView // by session id
+	current       string               // the task shown; "" is a new task
+	draft         string               // what is typed for a new task
+	err           string               // why a new task did not start
+	approvals     []*approval
+	questions     []*question
+	confirmRemove bool
+}
+
+// taskView is one task: a dsh session of the workspace.
+type taskView struct {
+	meta     tasks.Task
+	session  *events.Session
+	input    string
+	starting bool
+	stopping bool
+	err      string
+	open     map[string]bool // tool entries shown in full, by entry key
+	legacy   bool            // the conversation from before tasks; no transcript
 }
 
 type approval struct {
@@ -109,7 +133,7 @@ type credForm struct {
 
 // New returns a shell for a; call Load once a is started.
 func New(a *app.App) *Shell {
-	return &Shell{App: a, Lang: "zh", views: map[string]*wsView{}, byRuntime: map[string]string{},
+	return &Shell{App: a, Lang: "zh", views: map[string]*wsView{}, byRuntime: map[string]string{}, index: map[string][]tasks.Task{},
 		contribs: map[string]sidecar.Contribution{},
 		pluginsState: pluginsState{sidecars: map[string]sidecar.Status{}, busy: map[string]bool{},
 			forms: map[string]*settingsForm{}, chats: map[string]*chat{}, cards: map[string]*contribCard{}}}
@@ -132,9 +156,12 @@ func (s *Shell) Load() {
 	s.post(func() {
 		switch {
 		case len(s.creds) == 0 || len(s.workspaces) == 0:
-			s.page = PageSettings
+			s.page, s.prefs.tab = PageSettings, tabModel
 		default:
 			s.page = pageWS + s.workspaces[0].ID
+		}
+		if len(s.workspaces) > 0 {
+			s.curWS = s.workspaces[0].ID
 		}
 	})
 }
@@ -153,14 +180,31 @@ func (s *Shell) reload() {
 	wss, err1 := s.App.Workspaces.All()
 	creds, err2 := s.App.Creds.List()
 	st, err3 := s.App.Settings()
+	idx := map[string][]tasks.Task{}
+	if err1 == nil {
+		s.App.MigrateTasks(wss)
+		for _, w := range wss {
+			idx[w.ID], _ = s.App.Tasks.List(w.ID)
+		}
+	}
 	s.post(func() {
 		if s.model == s.settings.Model {
 			s.model = st.Model // not being edited: follow the saved value
 		}
 		s.workspaces, s.creds, s.settings = wss, creds, st
+		if err1 == nil {
+			s.index = idx
+		}
 		for _, w := range wss {
 			if v := s.views[w.ID]; v != nil {
 				v.ws = w
+				s.addIndexed(v)
+			}
+		}
+		if s.find(s.curWS) == nil {
+			s.curWS = ""
+			if len(wss) > 0 {
+				s.curWS = wss[0].ID
 			}
 		}
 		if err := errors.Join(err1, err2, err3); err != nil {
@@ -173,9 +217,19 @@ func (s *Shell) reload() {
 // runtime sent it.
 func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
 	s.post(func() {
-		if v := s.views[s.byRuntime[runtimeID]]; v != nil && v.session != nil {
-			v.session.Apply(e.Method, e.Params)
+		v := s.views[s.byRuntime[runtimeID]]
+		if v == nil {
+			return
 		}
+		sid := events.SessionOf(e.Params)
+		t := v.tasks[sid]
+		if t == nil {
+			if !taskSession(sid) {
+				return // subagents and sessions Alcove did not start
+			}
+			t = s.addTask(v, tasks.Task{ID: sid, Source: sourceOf(v.ws, sid)})
+		}
+		s.apply(v, t, e)
 	})
 }
 
@@ -190,8 +244,15 @@ func (s *Shell) OnExit(k alrt.Key, runtimeID string, err error) {
 			return
 		}
 		v.runtimeID = ""
-		if err != nil {
-			v.err = "运行时退出：" + err.Error()
+		for _, t := range v.tasks {
+			if t.session.Running() {
+				t.session.Status = "idle"
+				if err != nil {
+					t.err = "运行时退出：" + err.Error()
+				}
+				s.saveTranscript(v, t)
+			}
+			t.stopping = false
 		}
 		// Requests of the gone runtime can no longer be answered.
 		for _, a := range v.approvals {
@@ -231,51 +292,27 @@ func (s *Shell) runtimeView(runtimeID, ws string) *wsView {
 	return v
 }
 
-// sessionID is the one conversation each workspace keeps; dsh persists it,
-// so it survives restarts.
-func sessionID(w workspace.Workspace) string { return "main-" + w.ID }
-
 func (s *Shell) view(id string) *wsView {
 	v := s.views[id]
 	if v == nil {
-		for _, w := range s.workspaces {
-			if w.ID == id {
-				v = &wsView{ws: w, session: events.NewSession(sessionID(w))}
-				s.views[id] = v
-			}
+		w := s.find(id)
+		if w == nil {
+			return nil
 		}
+		v = &wsView{ws: *w, tasks: map[string]*taskView{}}
+		s.views[id] = v
+		s.addIndexed(v)
 	}
 	return v
 }
 
-// send starts the workspace's runtime if needed and queues the message.
-func (s *Shell) send(v *wsView, text string) {
-	if s.startErr != "" {
-		v.err = "Alcove 没有正常启动，暂时不能执行任务：" + s.startErr
-		return
-	}
-	v.starting, v.err = true, ""
-	id := v.ws.ID
-	sid := v.session.ID
-	go func() {
-		ctx := context.Background()
-		p, err := s.App.OpenWorkspace(ctx, id)
-		if err == nil {
-			s.post(func() {
-				v.runtimeID = p.ID
-				s.byRuntime[p.ID] = id
-			})
-			// A restored session continues; a new one is created by prompt.
-			p.Resume(ctx, sid)
-			_, err = p.PromptText(ctx, sid, text)
+func (s *Shell) find(id string) *workspace.Workspace {
+	for i := range s.workspaces {
+		if s.workspaces[i].ID == id {
+			return &s.workspaces[i]
 		}
-		s.post(func() {
-			v.starting = false
-			if err != nil {
-				v.err = describe(err)
-			}
-		})
-	}()
+	}
+	return nil
 }
 
 // Approve is the bridge's approval card: it waits for the user's choice on
@@ -395,7 +432,7 @@ func (s *Shell) createWorkspace() {
 				return
 			}
 			s.notice = ""
-			s.page = pageWS + w.ID
+			s.page, s.curWS = pageWS+w.ID, w.ID
 		})
 	}()
 }
@@ -413,6 +450,7 @@ func (s *Shell) removeWorkspace(id string) {
 			s.page = PageSettings
 			if len(s.workspaces) > 0 {
 				s.page = pageWS + s.workspaces[0].ID
+				s.curWS = s.workspaces[0].ID
 			}
 		})
 	}()

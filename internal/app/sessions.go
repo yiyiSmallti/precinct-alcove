@@ -66,13 +66,7 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 	if err := a.ownedBy(plugin, wsID); err != nil {
 		return "", err
 	}
-	if w, err := a.Workspaces.Find(wsID); err == nil && a.Runtimes.Get(alrt.Key{Profile: w.Profile, Cwd: w.Dir}) == nil {
-		// session.cancel needs bridge 0.1.1; profiles made before it get
-		// the shipped bridge while no runtime of theirs is running.
-		if _, err := a.Profiles.RefreshBridge(ctx, w.Profile); err != nil {
-			a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: updating the bridge: %v", wsID, err))
-		}
-	}
+	a.RefreshBridge(ctx, wsID)
 	p, err := a.OpenWorkspace(ctx, wsID)
 	if err != nil {
 		return "", err
@@ -230,4 +224,15 @@ func (a *App) RuntimeWorkspace(runtimeID string) string {
 		return l.ws.ID
 	}
 	return ""
+}
+
+// RefreshBridge gives a workspace whose runtime is not running the shipped
+// bridge: session.cancel (stopping a task) needs bridge 0.1.1, and profiles
+// made before it still have an older one.
+func (a *App) RefreshBridge(ctx context.Context, wsID string) {
+	if w, err := a.Workspaces.Find(wsID); err == nil && a.Runtimes.Get(alrt.Key{Profile: w.Profile, Cwd: w.Dir}) == nil {
+		if _, err := a.Profiles.RefreshBridge(ctx, w.Profile); err != nil {
+			a.pluginLog("host", "warn", fmt.Sprintf("workspace %s: updating the bridge: %v", wsID, err))
+		}
+	}
 }

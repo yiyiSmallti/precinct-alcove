@@ -19,6 +19,7 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/identity"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/paths"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
@@ -50,6 +51,25 @@ type Settings struct {
 	// UpdateSource is a mirror of the release files (an https directory);
 	// "" is the feed built into the app.
 	UpdateSource string `json:"updateSource,omitempty"`
+	// Appearance is how the window looks; zero is Alcove's default look.
+	Appearance Appearance `json:"appearance"`
+}
+
+// Appearance is the look the user chose in settings.
+type Appearance struct {
+	// Mode is "light" or "dark"; "" follows the system.
+	Mode string `json:"mode,omitempty"`
+	// Tone tints the neutrals: "warm" (""), "neutral" or "cool".
+	Tone string `json:"tone,omitempty"`
+	// Accent colors primary buttons, the chosen row and running tasks: a
+	// preset name ("" is graphite) or a #rrggbb color.
+	Accent string `json:"accent,omitempty"`
+	// Font and CodeFont are font families; "" is the system's and its
+	// monospace.
+	Font     string `json:"font,omitempty"`
+	CodeFont string `json:"codeFont,omitempty"`
+	// Zoom scales the whole window; 0 is 1.
+	Zoom float32 `json:"zoom,omitempty"`
 }
 
 // App is one running Alcove.
@@ -59,6 +79,7 @@ type App struct {
 	CLI        *dsh.CLI
 	Creds      *credentials.Store
 	Workspaces *workspace.Store
+	Tasks      *tasks.Store
 	Plugins    *host.Host
 	Profiles   *profile.Assembler
 	Bridge     *alrt.Bridge
@@ -108,6 +129,7 @@ func New(cfg Config) (*App, error) {
 	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg}
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
+	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
 	a.Plugins = &host.Host{
 		DSH: cli, Dir: l.Plugins(), AlcoveVersion: cfg.AlcoveVersion, GOOS: runtime.GOOS,
 		TrustedKeys: cfg.TrustedKeys, AllowUnsigned: cfg.AllowUnsigned,
@@ -257,6 +279,7 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 	if err := a.Workspaces.Remove(id); err != nil {
 		return err
 	}
+	a.Tasks.RemoveWorkspace(id)
 	a.Sidecars.WorkspaceEvent(ctx, "removed", sidecarView(w))
 	return nil
 }

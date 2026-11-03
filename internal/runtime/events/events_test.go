@@ -114,3 +114,23 @@ func TestFinalKeepsBlockOrder(t *testing.T) {
 		t.Fatalf("tool first: %s", kinds(s))
 	}
 }
+
+func TestSnapshotRestore(t *testing.T) {
+	s := NewSession("s1")
+	s.add(&Entry{Kind: User, Text: "hi"})
+	s.add(&Entry{Kind: Tool, ToolName: "bash", Args: "{}"})
+	s.add(&Entry{Kind: Assistant, Text: "part", Streaming: true})
+	s.seq, s.Title = 7, "t"
+	r := NewSession("s1")
+	r.Restore(s.Snapshot())
+	if len(r.Entries) != 2 || r.Title != "t" || r.seq != 7 {
+		t.Fatalf("restored %+v", r)
+	}
+	if e := r.Entries[1]; !e.Done || !e.IsError || e.Key == "" {
+		t.Errorf("unfinished tool %+v", e)
+	}
+	// Durable events up to the snapshot's seq are not applied again.
+	if r.applyEvent(event{Type: "user/message", Seq: 7, Data: []byte(`{"role":"user","content":[{"type":"text","text":"hi"}],"source":{"kind":"user"}}`)}) {
+		t.Error("old event applied")
+	}
+}

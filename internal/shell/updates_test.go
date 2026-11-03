@@ -63,7 +63,7 @@ func TestUpdates(t *testing.T) {
 	f := &fakeUpdater{}
 	s.Version, s.Updater = "0.1.0", f
 	s.mu.Lock()
-	s.page = PageSettings
+	s.page, s.prefs.tab = PageSettings, tabOther
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
