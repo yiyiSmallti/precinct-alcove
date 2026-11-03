@@ -94,7 +94,10 @@ var methodCaps = map[string]string{
 	"session.cancel":             "workspace_session",
 }
 
-type api struct{ p *plugin }
+type api struct {
+	p  *plugin
+	pr *proc
+}
 
 // ErrNotPermitted is what a Services function wraps to refuse a call; the
 // sidecar gets CodeNotGranted.
@@ -232,6 +235,17 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 		}
 		if err := json.Unmarshal(raw, &q); err != nil || q.ID == "" {
 			return nil, invalid(errors.New("ui.update needs id"))
+		}
+		// A sidecar may update right after answering hello, before the
+		// host has registered the contributions in its ready.
+		if a.pr != nil {
+			select {
+			case <-a.pr.shook:
+			case <-a.pr.exited:
+				return nil, ErrNotRunning
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 		p.mu.Lock()
 		own := p.ui[q.ID]
