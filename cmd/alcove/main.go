@@ -11,6 +11,9 @@
 //	ALCOVE_TOOLDIR     directory with pnpm, put first on PATH for dsh
 //	ALCOVE_BRIDGE_TGZ  the alcove-bridge package
 //	ALCOVE_DATA_DIR    data directory (default: the platform's)
+//
+// Development builds (version ending in -dev) also read
+// ALCOVE_DEV_TRUSTED_KEYS and ALCOVE_DEV_ALLOW_UNSIGNED (trust.go).
 package main
 
 import (
@@ -60,6 +63,9 @@ func main() {
 		DSHBin:        env("ALCOVE_DSH", filepath.Join(rt, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")),
 		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "bin")), rt},
 		BridgeTgz:     env("ALCOVE_BRIDGE_TGZ", filepath.Join(rt, "alcove-bridge.tgz")),
+	}
+	if cfg.TrustedKeys, cfg.AllowUnsigned, err = trust(Version, os.Getenv); err != nil {
+		log.Fatal(err)
 	}
 	s := shell.New(nil)
 	s.Version, s.Updater = Version, &update.MyGo{}

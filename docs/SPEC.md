@@ -79,7 +79,7 @@ package.json
 ```
 
 - 首期第一方包不带 install/postinstall 脚本；Alcove 调用 dsh 时不批准任何构建脚本。
-- 签名：Ed25519，公钥随 Alcove 内置，可由策略追加组织公钥。dsh/pnpm 不验发布者签名，签名只由 Alcove 校验。
+- 签名：Ed25519，公钥随 Alcove 内置（`cmd/alcove/trusted-keys.txt`，构建时嵌入；一方密钥 key id `bb9bc560f011a603`，私钥只在发版用的 Mac 上），可由策略追加组织公钥。开发构建（版本以 `-dev` 结尾）另读 `ALCOVE_DEV_TRUSTED_KEYS`（逗号分隔）和 `ALCOVE_DEV_ALLOW_UNSIGNED=1`，正式构建忽略这两个变量。dsh/pnpm 不验发布者签名，签名只由 Alcove 校验。
 
 **安装流程（F5）**
 
