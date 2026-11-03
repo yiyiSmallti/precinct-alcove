@@ -8,31 +8,36 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// sidebar is the left column: the workspace switcher, a new task, the
-// workspace's tasks by when they last moved, the plugins' conversation
-// views, and the way to plugins and settings.
+// sidebar is the left column: the workspace switcher, a new task, what
+// waits on you, the workspace's tasks by when they last moved, the plugins'
+// conversations, and the way to plugins and settings.
 func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	t := c.Theme()
 	v := s.view(s.curWS)
-	ui.Column(c).Padding(12, 10, 8).Gap(8).Children(func() {
+	top := float32(10)
+	if bar := c.TitleBar(); bar.Height > 0 {
+		ui.Row(c).Height(bar.Height).Shrink(0).DragWindow()
+		top = 2
+	}
+	ui.Column(c).Padding(top, 10, 4).Gap(1).Children(func() {
 		s.workspaceSwitcher(c, pal, v)
-		if v != nil {
-			b := ui.Row(c).Padding(8, 10).Gap(6).AlignItems(ui.Center).Justify(ui.Center).Radius(8).Cursor(ui.CursorPointer).Focusable().Label("新任务")
-			bg := t.Accent
-			if b.Hovered() {
-				bg = t.AccentHover
+		ui.Box(c).Height(8)
+		if v != nil && navRow(c, pal, "new", icPlus, "新任务", s.page == pageWS+v.ws.ID && v.current == "") {
+			s.newTask(v.ws.ID)
+		}
+		n := s.waitingTotal()
+		if listRow(c, pal, "waiting", "等你处理", s.page == PageWaiting, func() {
+			ui.Icon(c, icInbox).Size(15, 15).TextColor(t.TextMuted)
+			ui.Text(c, "等你处理").FontSize(13).Grow(1)
+			if n > 0 {
+				ui.Text(c, fmt.Sprint(n)).FontSize(11).Bold().TextColor(t.AccentText).Background(pal.waiting).Padding(0, 6).Radius(8)
 			}
-			b.Background(bg).Children(func() {
-				ui.Icon(c, icPlus).Size(15, 15).TextColor(t.AccentText)
-				ui.Text(c, "新任务").TextColor(t.AccentText).Bold()
-			})
-			if b.Clicked() {
-				s.newTask(v.ws.ID)
-			}
+		}) {
+			s.page = PageWaiting
 		}
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(4, 10, 12).Gap(2).Children(func() {
+		ui.Column(c).Padding(0, 10, 12).Gap(1).Children(func() {
 			if v != nil {
 				s.taskList(c, pal, v)
 			}
@@ -46,12 +51,12 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 			}
 		})
 	})
-	ui.Row(c).Padding(8, 10, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
+	ui.Column(c).Padding(6, 10, 10).Gap(1).Children(func() {
 		plugins := s.page == PagePlugins || strings.HasPrefix(s.page, pagePlugin)
-		if footButton(c, pal, icPuzzle, "插件", plugins) {
+		if navRow(c, pal, "plugins", icPuzzle, "插件", plugins) {
 			s.page = PagePlugins
 		}
-		if footButton(c, pal, icGear, "设置", s.page == PageSettings) {
+		if navRow(c, pal, "settings", icGear, "设置", s.page == PageSettings) {
 			s.page = PageSettings
 		}
 	})
@@ -61,28 +66,24 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 // adding one and removing this one.
 func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
-	name, sub := "还没有工作区", "点这里添加"
+	name := "添加工作区"
 	if v != nil {
-		name, sub = v.ws.Name, shortDir(v.ws.Dir)
+		name = v.ws.Name
 	}
-	anchor := ui.Row(c).Padding(8, 10).Gap(10).AlignItems(ui.Center).Radius(8).Cursor(ui.CursorPointer).Focusable().Label("切换工作区")
+	anchor := ui.Row(c).Height(36).Padding(0, 6).Gap(9).AlignItems(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label("切换工作区")
 	if anchor.Hovered() || s.wsMenu {
 		anchor.Background(pal.hover)
 	}
 	anchor.Children(func() {
-		ui.Column(c).Size(30, 30).Radius(8).Background(t.Accent).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
-			ui.Text(c, initial(name)).Bold().TextColor(t.AccentText)
+		ui.Column(c).Size(22, 22).Radius(6).Background(pal.avatar).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
+			ui.Text(c, initial(name)).FontSize(11.5).Bold()
 		})
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, name).Bold().SingleLine().Grow(1).Shrink(1).MinWidth(0)
-				if v != nil && v.ws.OwnerName() != "personal" {
-					pill(c, "组织", pal.accentSoft, t.Accent)
-				}
-			})
-			ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
-		})
-		ui.Icon(c, icChevron).Size(14, 14).TextColor(t.TextMuted)
+		ui.Text(c, name).FontSize(13.5).Bold().SingleLine().Shrink(1).MinWidth(0)
+		if v != nil && v.ws.OwnerName() != "personal" {
+			tag(c, pal, "组织")
+		}
+		ui.Spacer(c)
+		ui.Icon(c, icUpDown).Size(14, 14).TextColor(t.TextMuted)
 	})
 	if anchor.Clicked() {
 		if v == nil {
@@ -92,39 +93,46 @@ func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 		}
 	}
 	ui.Popover(c, anchor, &s.wsMenu, func() {
-		ui.Column(c).Width(236).Padding(6).Gap(2).Children(func() {
-			sectionLabel(c, "工作区")
+		ui.Column(c).Width(240).Padding(4).Gap(1).Children(func() {
 			for _, w := range s.workspaces {
-				label := w.Name
-				if w.Missing() {
-					label += "（目录不在）"
-				}
-				if navRow(c, pal, "ws:"+w.ID, icFolder, label, v != nil && w.ID == v.ws.ID) {
+				w := w
+				sel := v != nil && w.ID == v.ws.ID
+				if listRow(c, pal, "ws:"+w.ID, w.Name, sel, func() {
+					ui.Column(c).Size(20, 20).Radius(5).Background(pal.avatar).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
+						ui.Text(c, initial(w.Name)).FontSize(10.5).Bold()
+					})
+					ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+						ui.Text(c, w.Name).FontSize(13).SingleLine()
+						sub := shortDir(w.Dir)
+						if w.Missing() {
+							sub = "文件夹不在了"
+						}
+						ui.Text(c, sub).FontSize(11).TextColor(pal.subtle).SingleLine()
+					})
+					if sel {
+						ui.Icon(c, icCheck).Size(14, 14).TextColor(t.TextMuted)
+					}
+				}) {
 					s.wsMenu = false
 					if vv := s.view(w.ID); vv != nil {
 						s.page, s.curWS = pageWS+w.ID, w.ID
 					}
 				}
 			}
-			ui.Divider(c).Margin(4, 0)
+			ui.Box(c).Height(1).Background(pal.hairline).Margin(4, 6)
 			if navRow(c, pal, "add", icPlus, "添加工作区…", false) {
 				s.wsMenu = false
 				s.createWorkspace()
 			}
 			if v != nil {
-				label := "移除「" + v.ws.Name + "」"
+				label := "移除这个工作区"
 				if v.confirmRemove {
-					label = "再点一次确认移除（文件不会删）"
+					label = "再点一次确认移除（文件保留）"
 				}
-				r := ui.Row(c).Padding(6, 8).Gap(8).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer).Focusable().Label(label)
-				if r.Hovered() {
-					r.Background(pal.hover)
-				}
-				r.Children(func() {
+				if listRow(c, pal, "remove", label, false, func() {
 					ui.Icon(c, icX).Size(15, 15).TextColor(t.Danger)
-					ui.Text(c, label).TextColor(t.Danger).SingleLine()
-				})
-				if r.Clicked() {
+					ui.Text(c, label).FontSize(13).TextColor(t.Danger).SingleLine()
+				}) {
 					if v.confirmRemove {
 						v.confirmRemove, s.wsMenu = false, false
 						s.removeWorkspace(v.ws.ID)
@@ -143,7 +151,6 @@ func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 // taskList lists the workspace's tasks: running or waiting first, then
 // today's, then older ones.
 func (s *Shell) taskList(c *ui.Context, pal *palette, v *wsView) {
-	t := c.Theme()
 	var active, today, older []*taskView
 	start := startOfDay(time.Now())
 	for _, tk := range ordered(v) {
@@ -157,7 +164,8 @@ func (s *Shell) taskList(c *ui.Context, pal *palette, v *wsView) {
 		}
 	}
 	if len(active)+len(today)+len(older) == 0 {
-		ui.Text(c, "还没有任务。点上面的“新任务”开始。").FontSize(12.5).TextColor(t.TextMuted).Padding(10, 8)
+		sectionLabel(c, "任务")
+		ui.Text(c, "还没有任务").FontSize(12.5).TextColor(pal.subtle).Padding(4, 8)
 		return
 	}
 	group := func(title string, list []*taskView) {
@@ -175,85 +183,33 @@ func (s *Shell) taskList(c *ui.Context, pal *palette, v *wsView) {
 }
 
 func (s *Shell) taskRow(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
-	t := c.Theme()
 	sel := s.page == pageWS+v.ws.ID && v.current == tk.meta.ID
 	title := taskTitle(tk)
-	r := ui.Row(c).Key(tk.meta.ID).Padding(7, 8).Gap(8).AlignItems(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label(title)
-	switch {
-	case sel:
-		r.Background(pal.selected)
-	case r.Hovered():
-		r.Background(pal.hover)
-	}
-	r.Children(func() {
+	waiting := v.waiting(tk)
+	running := tk.session.Running() || tk.starting
+	if listRow(c, pal, tk.meta.ID, title, sel, func() {
+		ui.Row(c).Width(14).Justify(ui.Center).Shrink(0).Children(func() {
+			switch {
+			case waiting:
+				dot(c, pal.waiting)
+			case running:
+				ui.Spinner(c).Size(12, 12).TextColor(pal.running)
+			case tk.meta.Source != "":
+				ui.Icon(c, icCloud).Size(13, 13).TextColor(pal.subtle)
+			default:
+				ui.Icon(c, icChat).Size(13, 13).TextColor(pal.subtle)
+			}
+		})
+		ui.Text(c, title).FontSize(13).SingleLine().Grow(1).Shrink(1).MinWidth(0)
 		switch {
-		case v.waiting(tk):
-			ui.Icon(c, icAlert).Size(14, 14).TextColor(t.Warning)
-		case tk.session.Running() || tk.starting:
-			ui.Spinner(c).Size(14, 14).TextColor(pal.running)
-		case tk.meta.Source != "":
-			ui.Icon(c, icCloud).Size(14, 14).TextColor(t.TextMuted)
+		case waiting:
+			ui.Text(c, "待确认").FontSize(11).TextColor(pal.waiting).Shrink(0)
 		default:
-			ui.Icon(c, icChat).Size(14, 14).TextColor(t.TextMuted)
+			ui.Text(c, when(tk.meta.UpdatedAt)).FontSize(11).TextColor(pal.subtle).Shrink(0)
 		}
-		txt := ui.Text(c, title).SingleLine().Grow(1).Shrink(1).MinWidth(0)
-		if sel {
-			txt.Bold()
-		}
-		switch {
-		case v.waiting(tk):
-			pill(c, "待确认", pal.warnSoft, t.Warning)
-		default:
-			ui.Text(c, when(tk.meta.UpdatedAt)).FontSize(11).TextColor(t.TextMuted).Shrink(0)
-		}
-	})
-	if r.Clicked() {
+	}) {
 		s.openTask(v, tk.meta.ID)
 	}
-}
-
-// navRow is one clickable row with an icon; it reports a click.
-func navRow(c *ui.Context, pal *palette, key string, ic *ui.SVG, label string, sel bool) bool {
-	t := c.Theme()
-	r := ui.Row(c).Key(key).Padding(7, 8).Gap(8).AlignItems(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label(label)
-	switch {
-	case sel:
-		r.Background(pal.selected)
-	case r.Hovered():
-		r.Background(pal.hover)
-	}
-	r.Children(func() {
-		ui.Icon(c, ic).Size(14, 14).TextColor(t.TextMuted)
-		txt := ui.Text(c, label).SingleLine().Grow(1).MinWidth(0)
-		if sel {
-			txt.Bold()
-		}
-	})
-	return r.Clicked()
-}
-
-func footButton(c *ui.Context, pal *palette, ic *ui.SVG, label string, sel bool) bool {
-	t := c.Theme()
-	r := ui.Row(c).Grow(1).Basis(0).Padding(7, 8).Gap(6).AlignItems(ui.Center).Justify(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label(label)
-	switch {
-	case sel:
-		r.Background(pal.selected)
-	case r.Hovered():
-		r.Background(pal.hover)
-	}
-	r.Children(func() {
-		ui.Icon(c, ic).Size(15, 15).TextColor(t.TextMuted)
-		ui.Text(c, label)
-	})
-	return r.Clicked()
-}
-
-func sectionLabel(c *ui.Context, title string) {
-	ui.Text(c, title).FontSize(11.5).Bold().TextColor(c.Theme().TextMuted).Padding(12, 8, 4)
-}
-
-func pill(c *ui.Context, text string, bg, fg ui.Color) {
-	ui.Text(c, text).FontSize(11).TextColor(fg).Background(bg).Padding(1, 7).Radius(9).Shrink(0).SingleLine()
 }
 
 func initial(name string) string {

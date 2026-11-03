@@ -91,7 +91,14 @@ func main() {
 		}()
 	})
 	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{Title: "Alcove", Width: 1280, Height: 800, Content: ui.View(s.View)})
+		opts := mygo.WindowOptions{Title: "Alcove", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600, Content: ui.View(s.View)}
+		if runtime.GOOS == "darwin" {
+			// The sidebar sits on the window's material, with the traffic
+			// lights over it, as native Mac apps do.
+			opts.TitleBarStyle = mygo.TitleBarHidden
+			opts.Vibrancy = mygo.VibrancySidebar
+		}
+		win := mygo.NewWindow(opts)
 		s.Post = win.Update
 		s.OpenPath = mygo.Shell.OpenPath
 		s.Reveal = mygo.Shell.ShowItemInFolder

@@ -31,6 +31,7 @@ func TestScreens(t *testing.T) {
 		tt.SetDark(dark)
 		tt.SetScale(2)
 		tt.SetSize(1280, 800)
+		tt.SetTitleBar(ui.TitleBar{Height: 38, Left: 78})
 		v := demo(t, s)
 		suffix := "light"
 		if dark {

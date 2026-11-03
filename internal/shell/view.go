@@ -16,14 +16,15 @@ func (s *Shell) View(c *ui.Context) {
 	pal := useTheme(c)
 	t := c.Theme()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(256).Background(pal.sidebar).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Shrink(0).Children(func() {
+		side := ui.Column(c).Width(248).BorderWidth(0, 1, 0, 0).BorderColor(pal.hairline).Shrink(0)
+		sideGround(c, pal, side).Children(func() {
 			s.sidebar(c, pal)
 		})
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Background(pal.content).Children(func() {
 			if s.notice != "" {
-				ui.Row(c).Padding(8, 16).Gap(8).AlignItems(ui.Center).Background(pal.warnSoft).Children(func() {
-					ui.Icon(c, icAlert).TextColor(t.Danger)
-					ui.Text(c, s.notice).TextColor(t.Danger).Grow(1).Selectable()
+				ui.Row(c).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
+					ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Danger)
+					ui.Text(c, s.notice).FontSize(13).TextColor(t.Danger).Grow(1).Selectable()
 					if ui.Button(c, "关闭").Clicked() {
 						s.notice = ""
 					}
@@ -36,6 +37,8 @@ func (s *Shell) View(c *ui.Context) {
 					return
 				}
 				s.welcomeView(c)
+			case s.page == PageWaiting:
+				s.waitingView(c, pal)
 			case s.page == PagePlugins:
 				s.pluginsView(c)
 			case strings.HasPrefix(s.page, pagePlugin):
@@ -64,17 +67,18 @@ func (s *Shell) welcomeView(c *ui.Context) {
 
 func (s *Shell) approvalCard(c *ui.Context, pal *palette, a *approval) {
 	t := c.Theme()
-	ui.Column(c).Gap(8).Padding(12, 14).Radius(10).Border(1, t.Warning).Background(pal.warnSoft).Children(func() {
+	ui.Column(c).Gap(8).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Warning)
-			ui.Text(c, "需要你确认："+toolVerb(a.req.ToolName)).Bold()
+			dot(c, pal.waiting)
+			ui.Text(c, "需要你确认").FontSize(13).Bold()
+			ui.Text(c, toolVerb(a.req.ToolName)).FontSize(13).TextColor(t.TextMuted)
 		})
 		reason := a.req.DisplayReason.Text(s.Lang)
 		if reason == "" {
 			reason = a.req.Reason
 		}
-		ui.Text(c, reason).Selectable()
-		ui.Row(c).Gap(8).Children(func() {
+		ui.Text(c, reason).FontSize(13.5).Selectable()
+		ui.Row(c).Gap(8).Padding(4, 0, 0).Children(func() {
 			if ui.PrimaryButton(c, "允许这一次").Clicked() {
 				answer(a, alrt.AllowedOnce)
 			}
@@ -94,7 +98,7 @@ func answer(a *approval, outcome string) {
 
 func questionCard(c *ui.Context, pal *palette, q *question) {
 	t := c.Theme()
-	ui.Column(c).Gap(10).Padding(12, 14).Radius(10).Border(1, t.Accent).Background(pal.accentSoft).Children(func() {
+	ui.Column(c).Gap(10).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
 		for i, qq := range q.req.Questions {
 			if qq.Header != "" {
 				ui.Text(c, qq.Header).FontSize(12).TextColor(t.TextMuted)

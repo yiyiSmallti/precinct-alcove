@@ -38,9 +38,13 @@ type dirListing struct {
 }
 
 func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
-	t := c.Theme()
-	ui.Column(c).Width(300).Shrink(0).Background(pal.sidebar).BorderWidth(0, 0, 0, 1).BorderColor(t.Border).Children(func() {
-		ui.Row(c).Padding(10, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+	col := ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 0, 0, 1).BorderColor(pal.hairline)
+	sideGround(c, pal, col).Children(func() {
+		r := ui.Row(c).Height(52).Shrink(0).Padding(0, 14).Gap(16).AlignItems(ui.Stretch).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline)
+		if c.TitleBar().Height > 0 {
+			r.DragWindow()
+		}
+		r.Children(func() {
 			for i, label := range []string{"进度", "文件", "工作区"} {
 				if tabButton(c, pal, label, s.panels.tab == i) {
 					s.panels.tab = i
@@ -48,7 +52,7 @@ func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 			}
 		})
 		ui.Scroll(c).Grow(1).Children(func() {
-			ui.Column(c).Padding(14, 14, 20).Gap(10).Children(func() {
+			ui.Column(c).Padding(16, 16, 24).Gap(8).Children(func() {
 				switch s.panels.tab {
 				case tabFiles:
 					s.filesTab(c, pal, v)
@@ -62,24 +66,34 @@ func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	})
 }
 
+// tabButton is a text tab, underlined when chosen.
 func tabButton(c *ui.Context, pal *palette, label string, sel bool) bool {
 	t := c.Theme()
-	r := ui.Row(c).Padding(5, 10).Radius(6).Cursor(ui.CursorPointer).Focusable().Label(label)
-	switch {
-	case sel:
-		r.Background(t.Background).Border(1, t.Border)
-	case r.Hovered():
-		r.Background(pal.hover)
+	r := ui.Column(c).Justify(ui.Center).Cursor(ui.CursorPointer).Focusable().Label(label).BorderWidth(0, 0, 2, 0)
+	if sel {
+		r.BorderColor(t.Text)
+	} else {
+		r.BorderColor(ui.Transparent)
 	}
 	r.Children(func() {
 		txt := ui.Text(c, label).FontSize(13)
-		if sel {
+		switch {
+		case sel:
 			txt.Bold()
-		} else {
+		case r.Hovered():
+		default:
 			txt.TextColor(t.TextMuted)
 		}
 	})
 	return r.Clicked()
+}
+
+// statRow is one line of a panel's facts: a label and its value.
+func statRow(c *ui.Context, pal *palette, label string, value func()) {
+	ui.Row(c).Height(32).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
+		ui.Text(c, label).FontSize(13).TextColor(c.Theme().TextMuted).Grow(1)
+		value()
+	})
 }
 
 // changedFiles lists the files a task's tool calls wrote or edited, in the
@@ -136,52 +150,54 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 		}
 	}
 	as, qs := v.pending(tk)
-	panelLabel(c, "状态")
-	ui.Column(c).Gap(6).Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-		stat := func(label, value string, color ui.Color) {
-			ui.Row(c).Gap(8).Children(func() {
-				ui.Text(c, label).TextColor(t.TextMuted).Grow(1)
-				ui.Text(c, value).Bold().TextColor(color)
-			})
-		}
-		state, color := "空闲", t.TextMuted
-		switch {
-		case len(as)+len(qs) > 0:
-			state, color = "等你确认", t.Warning
-		case tk.session.Running() || tk.starting:
-			state, color = "运行中", t.Accent
-		case len(tk.session.Entries) > 0:
-			state, color = "已完成", t.Success
-		}
-		stat("任务", state, color)
-		stat("工具调用", fmt.Sprint(calls), t.Text)
-		if failed > 0 {
-			stat("出错", fmt.Sprint(failed), t.Danger)
-		}
-		stat("最后活动", when(tk.meta.UpdatedAt), t.Text)
+	panelLabel(c, "概况")
+	ui.Column(c).Children(func() {
+		statRow(c, pal, "状态", func() {
+			switch {
+			case len(as)+len(qs) > 0:
+				status(c, pal.waiting, "等你确认")
+			case tk.session.Running() || tk.starting:
+				status(c, pal.running, "运行中")
+			case len(tk.session.Entries) > 0:
+				status(c, pal.done, "已完成")
+			default:
+				status(c, pal.subtle, "空闲")
+			}
+		})
+		statRow(c, pal, "工具调用", func() {
+			txt := fmt.Sprint(calls)
+			if failed > 0 {
+				txt += fmt.Sprintf("（%d 次出错）", failed)
+			}
+			ui.Text(c, txt).FontSize(13).FontFeatures("tnum")
+		})
+		statRow(c, pal, "最后活动", func() { ui.Text(c, when(tk.meta.UpdatedAt)).FontSize(13) })
 	})
+	_ = running
+	_ = t
 	paths, created := changedFiles(tk.session)
-	panelLabel(c, fmt.Sprintf("改动的文件（%d）", len(paths)))
+	ui.Box(c).Height(8)
+	panelLabel(c, fmt.Sprintf("改动的文件 · %d", len(paths)))
 	if len(paths) == 0 {
 		panelHint(c, "还没有写入或修改文件。命令行里改的文件不在这里统计，可以到“文件”里看。")
 		return
 	}
 	for _, p := range paths {
-		mark, color := "改", t.Warning
+		mark, color := "改", pal.waiting
 		if created[p] {
-			mark, color = "新", t.Success
+			mark, color = "新", pal.done
 		}
 		abs := p
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(v.ws.Dir, p)
 		}
-		r := ui.Row(c).Key(p).Gap(8).Padding(5, 8).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer).Focusable().Label(p).Tooltip("打开 " + abs)
+		r := ui.Row(c).Key(p).Height(28).Gap(8).Padding(0, 8).Margin(0, -8).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer).Focusable().Label(p).Tooltip("打开 " + abs)
 		if r.Hovered() {
 			r.Background(pal.hover)
 		}
 		r.Children(func() {
-			ui.Text(c, mark).FontSize(11).Bold().TextColor(color).Shrink(0)
-			ui.Text(c, relTo(v.ws.Dir, p)).FontSize(12.5).Font("monospace").SingleLine().Grow(1).MinWidth(0)
+			ui.Text(c, mark).FontSize(10.5).Bold().TextColor(color).Shrink(0)
+			ui.Text(c, relTo(v.ws.Dir, p)).FontSize(12.5).SingleLine().Grow(1).MinWidth(0)
 		})
 		if r.Clicked() {
 			s.openPath(abs)
@@ -310,15 +326,15 @@ func (s *Shell) workspaceTab(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
 	owner := v.ws.OwnerName()
 	panelLabel(c, "工作区")
-	ui.Column(c).Gap(6).Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-		ui.Text(c, v.ws.Name).Bold()
+	ui.Column(c).Gap(6).Children(func() {
+		ui.Text(c, v.ws.Name).FontSize(14).Bold()
 		ui.Text(c, v.ws.Dir).FontSize(12).TextColor(t.TextMuted).Selectable()
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			if owner == "personal" {
-				pill(c, "个人", pal.selected, t.TextMuted)
+				tag(c, pal, "个人")
 				ui.Text(c, "用你自己的模型凭据").FontSize(12).TextColor(t.TextMuted)
 			} else {
-				pill(c, "组织", pal.accentSoft, t.Accent)
+				tag(c, pal, "组织")
 				ui.Text(c, "由 "+displayName(owner)+" 管理，模型走组织网关").FontSize(12).TextColor(t.TextMuted)
 			}
 		})
@@ -346,7 +362,7 @@ func (s *Shell) workspaceTab(c *ui.Context, pal *palette, v *wsView) {
 }
 
 func panelLabel(c *ui.Context, text string) {
-	ui.Text(c, text).FontSize(11.5).Bold().TextColor(c.Theme().TextMuted).Padding(6, 0, 0)
+	ui.Text(c, text).FontSize(11).FontWeight(500).TextColor(c.Theme().TextMuted).Padding(2, 0, 4)
 }
 
 func panelHint(c *ui.Context, text string) {
