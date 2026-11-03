@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -166,7 +167,11 @@ func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
 							tag(c, pal, "默认")
 						}
 					})
-					ui.Text(c, providerName(cr.Provider)+" · "+credentials.ModelOf(cr)).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
+					sub := providerName(cr.Provider) + " · " + credentials.ModelOf(cr)
+					if cr.Provider == credentials.Custom {
+						sub = "自定义 · " + hostOf(cr.BaseURL) + " · " + cr.Model
+					}
+					ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
 				})
 				if (def == nil || cr.ID != def.ID) && ui.Button(c, "设为默认").Clicked() {
 					st := s.settings
@@ -181,12 +186,17 @@ func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
 	})
 	if def := s.defaultCred(); def != nil {
 		p, _ := credentials.ProviderOf(def.Provider)
+		custom := p.ID == credentials.Custom
+		hint := "「" + def.Label + "」用的模型，留空用服务的默认模型。"
+		if custom {
+			hint = "「" + def.Label + "」用的模型，填接口支持的模型名。"
+		}
 		settingsGroup(c, pal, "模型", func() {
-			prefRow(c, pal, "模型名", "「"+def.Label+"」用的模型，留空用服务的默认模型。", func() {
+			prefRow(c, pal, "模型名", hint, func() {
 				ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
 					ui.Row(c).Gap(8).Children(func() {
 						in := ui.TextInput(c, &s.model).Placeholder(firstOf(p.Models)).Grow(1)
-						changed := strings.TrimSpace(s.model) != def.Model
+						changed := strings.TrimSpace(s.model) != def.Model && !(custom && strings.TrimSpace(s.model) == "")
 						if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
 							s.setModel(def.ID, s.model)
 						}
@@ -204,22 +214,42 @@ func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
 		// Another service: its own model and address.
 		f.model, f.baseURL, f.shown = "", "", f.provider
 	}
+	if f.protocol == "" {
+		f.protocol = credentials.Protocols[0].Name
+	}
 	p, _ := providerNamed(f.provider)
+	custom := p.ID == credentials.Custom
 	settingsGroup(c, pal, "添加凭据", func() {
 		prefRow(c, pal, "服务", "", func() { ui.Select(c, &f.provider, providerNames()).Width(260) })
 		prefRow(c, pal, "名称", "在列表里认出它。", func() {
-			ui.TextInput(c, &f.label).Placeholder("例如：" + p.Name + " 个人").Grow(1)
+			name := p.Name + " 个人"
+			if custom {
+				name = "公司网关"
+			}
+			ui.TextInput(c, &f.label).Placeholder("例如：" + name).Grow(1)
 		})
+		if custom {
+			prefRow(c, pal, "接口地址", "服务商文档里的 Base URL。", func() {
+				ui.TextInput(c, &f.baseURL).Placeholder("https://api.example.com/v1").Grow(1)
+			})
+			prefRow(c, pal, "协议", "接口兼容哪家的 API。", func() { ui.Select(c, &f.protocol, protocolNames()).Width(260) })
+		}
 		prefRow(c, pal, "API key", "只存在系统凭据库里。", func() {
 			ui.TextInput(c, &f.key).Password().Grow(1)
 		})
-		prefRow(c, pal, "模型", "留空用 "+firstOf(p.Models)+"；也可以填这个服务的其他模型名。", func() {
-			ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
-				ui.TextInput(c, &f.model).Placeholder(firstOf(p.Models)).Grow(1)
-				modelChips(c, pal, p.Models, &f.model)
+		if custom {
+			prefRow(c, pal, "模型", "接口支持的模型名。", func() {
+				ui.TextInput(c, &f.model).Placeholder("例如：qwen3-coder").Grow(1)
 			})
-		})
-		if p.BaseEnv != "" {
+		} else {
+			prefRow(c, pal, "模型", "留空用 "+firstOf(p.Models)+"；也可以填这个服务的其他模型名。", func() {
+				ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
+					ui.TextInput(c, &f.model).Placeholder(firstOf(p.Models)).Grow(1)
+					modelChips(c, pal, p.Models, &f.model)
+				})
+			})
+		}
+		if p.BaseEnv != "" && !custom {
 			prefRow(c, pal, "接口地址", "可选，留空用服务的默认地址。", func() {
 				ui.TextInput(c, &f.baseURL).Placeholder("https://…").Grow(1)
 			})
@@ -231,6 +261,9 @@ func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
 				ui.Spacer(c)
 			}
 			ok := strings.TrimSpace(f.label) != "" && strings.TrimSpace(f.key) != ""
+			if custom {
+				ok = ok && strings.TrimSpace(f.baseURL) != "" && strings.TrimSpace(f.model) != ""
+			}
 			if primaryButton(c, "添加", ok) {
 				s.addCredential()
 			}
@@ -259,6 +292,14 @@ func modelChips(c *ui.Context, pal *palette, models []string, field *string) {
 			}
 		}
 	})
+}
+
+// hostOf is the host of an address, or the address when it has none.
+func hostOf(addr string) string {
+	if u, err := url.Parse(addr); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return addr
 }
 
 func firstOf(list []string) string {

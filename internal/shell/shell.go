@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +137,7 @@ type question struct {
 type credForm struct {
 	label, baseURL, key, model string
 	provider                   string // the provider's Name, as the select shows it
+	protocol                   string // a custom endpoint's protocol, by Name
 	shown                      string // the provider the fields were last cleared for
 	err                        string
 }
@@ -554,8 +556,13 @@ func (s *Shell) removeWorkspace(id string) {
 func (s *Shell) addCredential() {
 	f := s.form
 	go func() {
-		p, _ := providerNamed(f.provider)
-		c, err := s.App.Creds.Add(f.label, p.ID, f.baseURL, f.key, f.model)
+		var c *credentials.Credential
+		var err error
+		if p, _ := providerNamed(f.provider); p.ID == credentials.Custom {
+			c, err = s.App.Creds.AddCustom(f.label, strings.TrimSpace(f.baseURL), protocolNamed(f.protocol), f.key, f.model)
+		} else {
+			c, err = s.App.Creds.Add(f.label, p.ID, f.baseURL, f.key, f.model)
+		}
 		if err == nil {
 			st, _ := s.App.Settings()
 			if st.DefaultCredential == "" {
@@ -641,6 +648,26 @@ func providerNamed(name string) (credentials.Provider, bool) {
 		}
 	}
 	return credentials.Provider{}, false
+}
+
+// protocolNames lists the protocols a custom endpoint may speak as the
+// settings page names them.
+func protocolNames() []string {
+	names := make([]string, len(credentials.Protocols))
+	for i, p := range credentials.Protocols {
+		names[i] = p.Name
+	}
+	return names
+}
+
+// protocolNamed is the id of the protocol the settings page calls name.
+func protocolNamed(name string) string {
+	for _, p := range credentials.Protocols {
+		if p.Name == name {
+			return p.ID
+		}
+	}
+	return ""
 }
 
 // providerName is how the settings page names route id.

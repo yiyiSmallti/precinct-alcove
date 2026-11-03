@@ -11,19 +11,32 @@
     - id: alcove-bridge
       name: '@precinct/alcove-bridge'
 # The providers Alcove's settings offer besides DeepSeek, each reading its key
-# from the variable Alcove sets at launch (credentials.Provider.KeyEnv).
+# from the variable Alcove sets at launch (credentials.Provider.KeyEnv). The
+# custom route exists only in a runtime started for a custom endpoint, whose
+# address, protocol and model arrive in ALCOVE_CUSTOM_* variables.
 - id: llm-pi-ai
   config:
-    providers:
-      openai: { apiKeyEnv: OPENAI_API_KEY }
-      anthropic: { apiKeyEnv: ANTHROPIC_API_KEY }
-      google: { apiKeyEnv: GEMINI_API_KEY }
-      xai: { apiKeyEnv: XAI_API_KEY }
-      openrouter: { apiKeyEnv: OPENROUTER_API_KEY }
-      moonshotai-cn: { apiKeyEnv: MOONSHOT_API_KEY }
-      zai-coding-cn: { apiKeyEnv: ZAI_CODING_CN_API_KEY }
-      qwen-token-plan-cn: { apiKeyEnv: QWEN_TOKEN_PLAN_CN_API_KEY }
-      minimax-cn: { apiKeyEnv: MINIMAX_CN_API_KEY }
-      xiaomi: { apiKeyEnv: XIAOMI_API_KEY }
-      mistral: { apiKeyEnv: MISTRAL_API_KEY }
-      groq: { apiKeyEnv: GROQ_API_KEY }
+    providers: !!js |-
+      ({
+        openai: { apiKeyEnv: 'OPENAI_API_KEY' },
+        anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },
+        google: { apiKeyEnv: 'GEMINI_API_KEY' },
+        xai: { apiKeyEnv: 'XAI_API_KEY' },
+        openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+        'moonshotai-cn': { apiKeyEnv: 'MOONSHOT_API_KEY' },
+        'zai-coding-cn': { apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
+        'qwen-token-plan-cn': { apiKeyEnv: 'QWEN_TOKEN_PLAN_CN_API_KEY' },
+        'minimax-cn': { apiKeyEnv: 'MINIMAX_CN_API_KEY' },
+        xiaomi: { apiKeyEnv: 'XIAOMI_API_KEY' },
+        mistral: { apiKeyEnv: 'MISTRAL_API_KEY' },
+        groq: { apiKeyEnv: 'GROQ_API_KEY' },
+        ...(process.env.ALCOVE_CUSTOM_BASE_URL && {
+          custom: {
+            displayName: '自定义',
+            apiKeyEnv: 'ALCOVE_CUSTOM_API_KEY',
+            api: process.env.ALCOVE_CUSTOM_API,
+            baseURL: process.env.ALCOVE_CUSTOM_BASE_URL,
+            models: [{ id: process.env.ALCOVE_CUSTOM_MODEL }],
+          },
+        }),
+      })

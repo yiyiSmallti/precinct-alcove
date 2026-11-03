@@ -125,6 +125,11 @@ func TestScreens(t *testing.T) {
 		s.mu.Unlock()
 		shot("settings-model")
 		s.mu.Lock()
+		s.creds = append(s.creds, credentials.Credential{ID: "c3", Label: "公司网关", Provider: credentials.Custom, BaseURL: "https://llm.example.com/v1", API: "openai-completions", Model: "qwen3-coder"})
+		s.form.provider = "自定义（兼容接口）"
+		s.mu.Unlock()
+		shot("settings-model-custom")
+		s.mu.Lock()
 		s.creds = nil
 		s.mu.Unlock()
 		s.mu.Lock()

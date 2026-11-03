@@ -1,6 +1,6 @@
 {
   "name": "@precinct/alcove-bridge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Alcove bridge: answers dsh approval requests and ask_user_question through the Alcove client.",
   "license": "MIT",
   "type": "module",

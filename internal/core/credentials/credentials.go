@@ -42,10 +42,11 @@ type Provider struct {
 
 // Providers dsh 0.2.1-rc.5 accepts through environment variables, in the
 // order the settings page lists them. deepseek-official is dsh's own
-// DeepSeek adapter; the others are routes of pi-ai's installed catalog,
-// which dsh-llm-pi-ai serves without profile configuration and which read
-// their key from pi-ai's own variable (its env-api-keys map). Catalog routes
-// take their base URL from the catalog only.
+// DeepSeek adapter; the others are dsh-llm-pi-ai routes the bridge bundle
+// configures (bridge/cordis.patch.yml), reading their key from pi-ai's own
+// variable (its env-api-keys map). Catalog routes take their base URL from
+// the catalog only; Custom takes its address, protocol and model from the
+// credential.
 var Providers = []Provider{
 	{ID: "deepseek-official", Name: "DeepSeek", KeyEnv: "DEEPSEEK_API_KEY", BaseEnv: "DEEPSEEK_BASE_URL", Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}},
 	{ID: "openai", Name: "OpenAI", KeyEnv: "OPENAI_API_KEY", Models: []string{"gpt-5.5", "gpt-6.1-sol", "gpt-5.4-mini"}},
@@ -60,6 +61,37 @@ var Providers = []Provider{
 	{ID: "xiaomi", Name: "小米 MiMo", KeyEnv: "XIAOMI_API_KEY", Models: []string{"mimo-v2.6-pro", "mimo-v2.6-flash"}},
 	{ID: "mistral", Name: "Mistral", KeyEnv: "MISTRAL_API_KEY", Models: []string{"mistral-large-latest", "devstral-latest"}},
 	{ID: "groq", Name: "Groq", KeyEnv: "GROQ_API_KEY", Models: []string{"openai/gpt-oss-120b", "qwen/qwen3.8-27b"}},
+	{ID: Custom, Name: "自定义（兼容接口）", KeyEnv: "ALCOVE_CUSTOM_API_KEY", BaseEnv: "ALCOVE_CUSTOM_BASE_URL"},
+}
+
+// Custom is the route of an endpoint the user names, speaking one of
+// Protocols. The bridge registers it only for a runtime started with
+// ALCOVE_CUSTOM_BASE_URL set; its protocol and only model come from
+// ALCOVE_CUSTOM_API and ALCOVE_CUSTOM_MODEL.
+const Custom = "custom"
+
+// Protocol is a wire protocol a custom endpoint may speak.
+type Protocol struct {
+	ID   string // dsh-llm-pi-ai's api name
+	Name string
+}
+
+// Protocols are the ones dsh-llm-pi-ai serves for a declared route, the
+// most common first.
+var Protocols = []Protocol{
+	{ID: "openai-completions", Name: "OpenAI 兼容（Chat Completions）"},
+	{ID: "openai-responses", Name: "OpenAI Responses"},
+	{ID: "anthropic-messages", Name: "Anthropic 兼容（Messages）"},
+}
+
+// ProtocolOf returns the protocol named id.
+func ProtocolOf(id string) (Protocol, bool) {
+	for _, p := range Protocols {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Protocol{}, false
 }
 
 // ProviderOf returns the provider of route id.
@@ -90,6 +122,7 @@ type Credential struct {
 	Provider  string    `json:"provider"`
 	BaseURL   string    `json:"baseUrl,omitempty"`
 	Model     string    `json:"model,omitempty"` // "" is the provider's default
+	API       string    `json:"api,omitempty"`   // a Custom endpoint's protocol
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -102,28 +135,49 @@ type Store struct {
 
 func secretKey(id string) string { return "credential/" + id }
 
-// Add stores a new credential. The key goes to the secret store first, so
-// a record never points at a missing key.
+// Add stores a new credential of a listed provider. The key goes to the
+// secret store first, so a record never points at a missing key.
 func (s *Store) Add(label, provider, baseURL, key, model string) (*Credential, error) {
 	p, ok := ProviderOf(provider)
-	if !ok {
+	switch {
+	case !ok:
 		return nil, fmt.Errorf("unknown provider %q", provider)
-	}
-	if baseURL != "" && p.BaseEnv == "" {
+	case p.ID == Custom:
+		return nil, errors.New("a custom endpoint is added with AddCustom")
+	case baseURL != "" && p.BaseEnv == "":
 		return nil, fmt.Errorf("%s takes no base URL", p.Name)
 	}
+	return s.add(Credential{Label: label, Provider: provider, BaseURL: baseURL, Model: strings.TrimSpace(model)}, key)
+}
+
+// AddCustom stores a credential of an endpoint speaking protocol api at
+// baseURL, running model.
+func (s *Store) AddCustom(label, baseURL, api, key, model string) (*Credential, error) {
+	model = strings.TrimSpace(model)
+	switch _, ok := ProtocolOf(api); {
+	case !ok:
+		return nil, fmt.Errorf("unknown protocol %q", api)
+	case baseURL == "":
+		return nil, errors.New("a custom endpoint needs a base URL")
+	case model == "":
+		return nil, errors.New("a custom endpoint needs a model")
+	}
+	return s.add(Credential{Label: label, Provider: Custom, BaseURL: baseURL, Model: model, API: api}, key)
+}
+
+func (s *Store) add(c Credential, key string) (*Credential, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, errors.New("key is empty")
 	}
-	if baseURL != "" {
-		u, err := url.Parse(baseURL)
+	if c.BaseURL != "" {
+		u, err := url.Parse(c.BaseURL)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-			return nil, fmt.Errorf("base URL %q is not an http(s) URL", baseURL)
+			return nil, fmt.Errorf("base URL %q is not an http(s) URL", c.BaseURL)
 		}
 	}
 	raw := make([]byte, 8)
 	rand.Read(raw)
-	c := Credential{ID: hex.EncodeToString(raw), Label: label, Provider: provider, BaseURL: baseURL, Model: strings.TrimSpace(model), CreatedAt: time.Now().UTC()}
+	c.ID, c.CreatedAt = hex.EncodeToString(raw), time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	all, err := s.load()
@@ -174,8 +228,9 @@ func (s *Store) Keys() ([][]byte, error) {
 }
 
 // SetModel changes the model credential id runs; "" is its provider's
-// default.
+// default, which a Custom endpoint does not have.
 func (s *Store) SetModel(id, model string) error {
+	model = strings.TrimSpace(model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	all, err := s.load()
@@ -184,7 +239,10 @@ func (s *Store) SetModel(id, model string) error {
 	}
 	for i := range all {
 		if all[i].ID == id {
-			all[i].Model = strings.TrimSpace(model)
+			if model == "" && all[i].Provider == Custom {
+				return errors.New("a custom endpoint needs a model")
+			}
+			all[i].Model = model
 			return fsutil.WriteJSON(s.Path, all, 0o600)
 		}
 	}
@@ -238,6 +296,9 @@ func (s *Store) LaunchEnv(id string) (provider, model string, env []string, err 
 		env = []string{p.KeyEnv + "=" + string(key)}
 		if c.BaseURL != "" {
 			env = append(env, p.BaseEnv+"="+c.BaseURL)
+		}
+		if p.ID == Custom {
+			env = append(env, "ALCOVE_CUSTOM_API="+c.API, "ALCOVE_CUSTOM_MODEL="+c.Model)
 		}
 		return p.ID, ModelOf(c), env, nil
 	}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/yiyiSmallti/precinct-alcove/e2e/fakemodel"
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sig"
 	"github.com/yiyiSmallti/precinct-alcove/internal/profile"
@@ -90,6 +91,37 @@ func TestApp(t *testing.T) {
 		err = errors.New("model did not get the stored key")
 	}
 	r.step("打开工作区：用默认凭据拉起运行时并完成一个回合", err, "")
+
+	// 2b. A custom endpoint: the bridge registers the route from the
+	// launch variables, and a turn reaches it with its own key.
+	cc, err := a.Creds.AddCustom("自定义假模型", model.URL, "anthropic-messages", "sk-e2e-custom", "fake-custom")
+	st, _ := a.Settings()
+	prev := st.DefaultCredential
+	if err == nil {
+		st.DefaultCredential = cc.ID
+		err = a.SaveSettings(st)
+	}
+	dir3 := filepath.Join(work, "proj-custom")
+	os.MkdirAll(dir3, 0o755)
+	var w3 *workspace.Workspace
+	if err == nil {
+		w3, err = a.CreateWorkspace(ctx, "自定义", dir3)
+	}
+	if err == nil {
+		p, err = a.OpenWorkspace(ctx, w3.ID)
+	}
+	if err == nil {
+		err = turn(ctx, p, "custom-"+fmt.Sprint(time.Now().UnixNano()))
+	}
+	if err == nil && !model.SawKey("sk-e2e-custom") {
+		err = errors.New("model did not get the custom endpoint's key")
+	}
+	if err == nil {
+		err = a.RemoveWorkspace(ctx, w3.ID)
+	}
+	st.DefaultCredential = prev
+	a.SaveSettings(st)
+	r.step("自定义接口：按凭据的地址、协议、模型注册路由并完成一个回合", err, "")
 
 	// 3. A plugin for personal workspaces and its own daily profile, with a
 	// sidecar that asks for its daily runtime.
