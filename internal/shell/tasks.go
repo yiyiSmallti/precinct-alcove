@@ -237,14 +237,23 @@ func (v *wsView) waitingCount() int {
 func (s *Shell) newTask(id string) {
 	if v := s.view(id); v != nil {
 		v.current = ""
-		s.page, s.curWS = pageWS+id, id
+		s.focus(id)
+	}
+}
+
+// focus shows workspace id's page and makes it where new tasks go; a
+// project becomes the one the sidebar's switcher shows.
+func (s *Shell) focus(id string) {
+	s.page, s.curWS = pageWS+id, id
+	if id != s.scratchID {
+		s.curProj = id
 	}
 }
 
 // openTask shows one task.
 func (s *Shell) openTask(v *wsView, id string) {
 	v.current = id
-	s.page, s.curWS = pageWS+v.ws.ID, v.ws.ID
+	s.focus(v.ws.ID)
 }
 
 // send starts the workspace's runtime if needed and queues the message on

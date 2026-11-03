@@ -1,6 +1,7 @@
 package shell
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
 	"time"
@@ -8,9 +9,22 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// sidebar is the left column: the workspace switcher, a new task, what
-// waits on you, the workspace's tasks by when they last moved, the plugins'
-// conversations, and the way to plugins and settings.
+//go:embed logo.png
+var logoPNG []byte
+
+// logo is the app's mark, the icon's tile without its padding.
+var logo = func() *ui.Bitmap {
+	b, err := ui.DecodeBitmap(logoPNG)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}()
+
+// sidebar is the left column: the app's name, a new task, what waits on
+// you, 最近会话 (the tasks outside a project), the project switcher over
+// the project's tasks by when they last moved, the plugins' conversations,
+// and the way to plugins and settings.
 func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	t := c.Theme()
 	v := s.view(s.curWS)
@@ -20,7 +34,10 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 		top = 2
 	}
 	ui.Column(c).Padding(top, 10, 4).Gap(1).Children(func() {
-		s.workspaceSwitcher(c, pal, v)
+		ui.Row(c).Height(36).Padding(0, 6).Gap(9).AlignItems(ui.Center).DragWindow().Children(func() {
+			ui.Image(c, logo).Size(22, 22).Shrink(0)
+			ui.Text(c, "Alcove").FontSize(15).FontWeight(650).LetterSpacing(-0.2)
+		})
 		ui.Box(c).Height(8)
 		if v != nil && navRow(c, pal, "new", icPlus, "新任务", s.page == pageWS+v.ws.ID && v.current == "") {
 			s.newTask(v.ws.ID)
@@ -38,8 +55,21 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, 10, 12).Gap(1).Children(func() {
-			if v != nil {
-				s.taskList(c, pal, v)
+			if sv := s.view(s.scratchID); sv != nil {
+				sectionLabel(c, "最近会话")
+				recent := ordered(sv)
+				if len(recent) == 0 {
+					ui.Text(c, "还没有会话").FontSize(12.5).TextColor(pal.subtle).Padding(4, 8)
+				}
+				for _, tk := range recent {
+					s.taskRow(c, pal, sv, tk)
+				}
+				ui.Box(c).Height(14)
+			}
+			pv := s.view(s.curProj)
+			s.workspaceSwitcher(c, pal, pv)
+			if pv != nil {
+				s.taskList(c, pal, pv)
 			}
 			if nav := s.pluginNav(); len(nav) > 0 {
 				sectionLabel(c, "助手")
@@ -62,8 +92,9 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	})
 }
 
-// workspaceSwitcher shows the current workspace; a click lists the others,
-// adding one and removing this one.
+// workspaceSwitcher shows the project the sidebar lists the tasks of; a
+// click lists the others, adding one and removing this one. 最近会话's
+// workspace is not among them.
 func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
 	name := "添加工作区"
@@ -76,7 +107,11 @@ func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 	}
 	anchor.Children(func() {
 		ui.Column(c).Size(22, 22).Radius(6).Background(pal.avatar).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
-			ui.Text(c, initial(name)).FontSize(11.5).Bold()
+			if v == nil {
+				ui.Icon(c, icPlus).Size(13, 13).TextColor(t.TextMuted)
+			} else {
+				ui.Text(c, initial(name)).FontSize(11.5).Bold()
+			}
 		})
 		ui.Text(c, name).FontSize(13.5).Bold().SingleLine().Shrink(1).MinWidth(0)
 		if v != nil && v.ws.OwnerName() != "personal" {
@@ -94,7 +129,7 @@ func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 	}
 	ui.Popover(c, anchor, &s.wsMenu, func() {
 		ui.Column(c).Width(240).Padding(4).Gap(1).Children(func() {
-			for _, w := range s.workspaces {
+			for _, w := range s.projects() {
 				w := w
 				sel := v != nil && w.ID == v.ws.ID
 				if listRow(c, pal, "ws:"+w.ID, w.Name, sel, func() {
@@ -115,7 +150,7 @@ func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
 				}) {
 					s.wsMenu = false
 					if vv := s.view(w.ID); vv != nil {
-						s.page, s.curWS = pageWS+w.ID, w.ID
+						s.focus(w.ID)
 					}
 				}
 			}

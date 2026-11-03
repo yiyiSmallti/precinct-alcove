@@ -63,7 +63,7 @@ func TestApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer model.Close()
-	_, err = a.Creds.Add("假模型", "deepseek-official", model.URL, "sk-e2e-app")
+	_, err = a.Creds.Add("假模型", "deepseek-official", model.URL, "sk-e2e-app", "")
 	r.step("录入凭据", err, "")
 
 	// 1. A workspace profile is the sdk template plus the bridge.

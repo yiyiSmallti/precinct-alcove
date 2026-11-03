@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
 	"time"
 
@@ -61,24 +60,31 @@ type Shell struct {
 	// Updater checks for and installs new versions; nil hides updates.
 	Updater update.Updater
 
-	mu         sync.Mutex
-	page       string
-	curWS      string                  // the workspace the sidebar shows
-	wsMenu     bool                    // the workspace switcher is open
-	index      map[string][]tasks.Task // tasks by workspace, as last read
-	workspaces []workspace.Workspace
-	views      map[string]*wsView // by workspace id
-	byRuntime  map[string]string  // runtime id → workspace id
-	creds      []credentials.Credential
-	settings   app.Settings
-	form       credForm
-	model      string // the model field being edited
-	notice     string // one line shown at the top, e.g. an error
-	startErr   string // why Alcove could not start; tasks are refused
-	diagBusy   bool
-	diagStatus string
-	contribs   map[string]sidecar.Contribution
-	updates    updatesState
+	mu          sync.Mutex
+	page        string
+	curWS       string                  // the workspace a new task goes to
+	curProj     string                  // the project the sidebar's switcher shows
+	scratchID   string                  // the workspace of tasks outside a project (最近会话)
+	wsMenu      bool                    // the workspace switcher is open
+	index       map[string][]tasks.Task // tasks by workspace, as last read
+	workspaces  []workspace.Workspace
+	views       map[string]*wsView // by workspace id
+	byRuntime   map[string]string  // runtime id → workspace id
+	creds       []credentials.Credential
+	settings    app.Settings
+	form        credForm
+	model       string  // the default credential's model field being edited
+	modelFor    string  // the credential model was filled for
+	savedModel  string  // its saved model, as last read
+	notice      string  // one line shown at the top, e.g. an error
+	startErr    string  // why Alcove could not start; tasks are refused
+	preparing   bool    // 最近会话's workspace is being added on first start
+	newTaskH    float32 // the new task page's height in the last frame
+	scratchBusy bool    // 最近会话 is moving to another folder
+	diagBusy    bool
+	diagStatus  string
+	contribs    map[string]sidecar.Contribution
+	updates     updatesState
 
 	pluginsState
 	panels       panelState
@@ -128,8 +134,10 @@ type question struct {
 }
 
 type credForm struct {
-	label, provider, baseURL, key string
-	err                           string
+	label, baseURL, key, model string
+	provider                   string // the provider's Name, as the select shows it
+	shown                      string // the provider the fields were last cleared for
+	err                        string
 }
 
 // New returns a shell for a; call Load once a is started.
@@ -150,21 +158,58 @@ func (s *Shell) post(fn func()) {
 	fn()
 }
 
-// Load reads workspaces, credentials and settings, and opens the first
-// workspace (or the settings page when there is none, or no credential).
+// Load reads workspaces, credentials and settings and opens 最近会话, the
+// workspace of tasks outside a project. Without it, it adds it (slow: its
+// profile installs the bridge plugin), showing that it is being prepared
+// meanwhile, and falls back to the first workspace or the settings page if
+// that fails. Without a credential the new task page says where to add one.
 func (s *Shell) Load() {
 	s.reload()
 	s.post(func() {
-		switch {
-		case len(s.creds) == 0 || len(s.workspaces) == 0:
-			s.page, s.prefs.tab = PageSettings, tabModel
-		default:
-			s.page = pageWS + s.workspaces[0].ID
-		}
-		if len(s.workspaces) > 0 {
-			s.curWS = s.workspaces[0].ID
-		}
+		s.preparing = s.scratchID == ""
+		s.openFirst()
 	})
+	w, err := s.App.EnsureWorkspace(context.Background())
+	if w != nil {
+		s.reload()
+	}
+	s.post(func() {
+		s.preparing = false
+		if err != nil {
+			s.notice = "无法准备最近会话的文件夹：" + describe(err)
+		}
+		s.openFirst()
+	})
+}
+
+// openFirst shows 最近会话 (else the first workspace), or the model
+// settings when there is none and none is being prepared. It keeps a page
+// the user has gone to.
+func (s *Shell) openFirst() {
+	if s.page != "" && s.page != pageWS {
+		return
+	}
+	switch {
+	case s.scratchID != "":
+		s.page, s.curWS = pageWS+s.scratchID, s.scratchID
+	case len(s.workspaces) > 0:
+		s.page, s.curWS = pageWS+s.workspaces[0].ID, s.workspaces[0].ID
+	case s.preparing:
+		s.page = pageWS
+	default:
+		s.page, s.prefs.tab = PageSettings, tabModel
+	}
+}
+
+// projects are the workspaces but 最近会话's.
+func (s *Shell) projects() []workspace.Workspace {
+	var ps []workspace.Workspace
+	for _, w := range s.workspaces {
+		if w.ID != s.scratchID {
+			ps = append(ps, w)
+		}
+	}
+	return ps
 }
 
 // StartFailed records that the app failed to start: the window still opens
@@ -181,6 +226,7 @@ func (s *Shell) reload() {
 	wss, err1 := s.App.Workspaces.All()
 	creds, err2 := s.App.Creds.List()
 	st, err3 := s.App.Settings()
+	scratch, err4 := s.App.ScratchWorkspace()
 	idx := map[string][]tasks.Task{}
 	if err1 == nil {
 		s.App.MigrateTasks(wss)
@@ -189,10 +235,17 @@ func (s *Shell) reload() {
 		}
 	}
 	s.post(func() {
-		if s.model == s.settings.Model {
-			s.model = st.Model // not being edited: follow the saved value
-		}
 		s.workspaces, s.creds, s.settings = wss, creds, st
+		// The model field follows the saved value unless it is being edited
+		// for the credential still the default.
+		if c := s.defaultCred(); c == nil {
+			s.model, s.modelFor = "", ""
+		} else if c.ID != s.modelFor || s.model == s.savedModel {
+			s.model, s.modelFor = c.Model, c.ID
+		}
+		if c := s.defaultCred(); c != nil {
+			s.savedModel = c.Model
+		}
 		if err1 == nil {
 			s.index = idx
 		}
@@ -202,13 +255,23 @@ func (s *Shell) reload() {
 				s.addIndexed(v)
 			}
 		}
+		s.scratchID = ""
+		if scratch != nil {
+			s.scratchID = scratch.ID
+		}
 		if s.find(s.curWS) == nil {
-			s.curWS = ""
-			if len(wss) > 0 {
+			s.curWS = s.scratchID
+			if s.curWS == "" && len(wss) > 0 {
 				s.curWS = wss[0].ID
 			}
 		}
-		if err := errors.Join(err1, err2, err3); err != nil {
+		if s.find(s.curProj) == nil || s.curProj == s.scratchID {
+			s.curProj = ""
+			if ps := s.projects(); len(ps) > 0 {
+				s.curProj = ps[0].ID
+			}
+		}
+		if err := errors.Join(err1, err2, err3, err4); err != nil {
 			s.notice = err.Error()
 		}
 	})
@@ -436,7 +499,36 @@ func (s *Shell) createWorkspace() {
 				return
 			}
 			s.notice = ""
-			s.page, s.curWS = pageWS+w.ID, w.ID
+			s.page, s.curWS, s.curProj = pageWS+w.ID, w.ID, w.ID
+		})
+	}()
+}
+
+// pickScratchDir asks for 最近会话's folder and moves it there.
+func (s *Shell) pickScratchDir() {
+	if s.PickFolder == nil {
+		return
+	}
+	go func() {
+		dir, err := s.PickFolder()
+		if err != nil || dir == "" {
+			return
+		}
+		s.post(func() { s.setScratchDir(dir) })
+	}()
+}
+
+// setScratchDir moves 最近会话 to dir ("" for the default folder).
+func (s *Shell) setScratchDir(dir string) {
+	s.scratchBusy = true
+	go func() {
+		err := s.App.SetScratchDir(context.Background(), dir)
+		s.reload()
+		s.post(func() {
+			s.scratchBusy = false
+			if err != nil {
+				s.notice = "无法更换默认文件夹：" + describe(err)
+			}
 		})
 	}()
 }
@@ -451,10 +543,9 @@ func (s *Shell) removeWorkspace(id string) {
 				return
 			}
 			delete(s.views, id)
-			s.page = PageSettings
-			if len(s.workspaces) > 0 {
-				s.page = pageWS + s.workspaces[0].ID
-				s.curWS = s.workspaces[0].ID
+			if s.page == pageWS+id {
+				s.page = ""
+				s.openFirst()
 			}
 		})
 	}()
@@ -463,7 +554,8 @@ func (s *Shell) removeWorkspace(id string) {
 func (s *Shell) addCredential() {
 	f := s.form
 	go func() {
-		c, err := s.App.Creds.Add(f.label, f.provider, f.baseURL, f.key)
+		p, _ := providerNamed(f.provider)
+		c, err := s.App.Creds.Add(f.label, p.ID, f.baseURL, f.key, f.model)
 		if err == nil {
 			st, _ := s.App.Settings()
 			if st.DefaultCredential == "" {
@@ -507,14 +599,56 @@ func (s *Shell) saveSettings(st app.Settings) {
 	}()
 }
 
-// providerIDs lists the credential providers in a stable order.
-func providerIDs() []string {
-	var ids []string
-	for id := range credentials.Providers {
-		ids = append(ids, id)
+// setModel changes the model of credential id.
+func (s *Shell) setModel(id, model string) {
+	go func() {
+		err := s.App.Creds.SetModel(id, model)
+		s.reload()
+		if err != nil {
+			s.post(func() { s.notice = "无法保存模型：" + describe(err) })
+		}
+	}()
+}
+
+// defaultCred is the credential tasks run with: the default one, else the
+// first; nil when there is none.
+func (s *Shell) defaultCred() *credentials.Credential {
+	for i := range s.creds {
+		if s.creds[i].ID == s.settings.DefaultCredential {
+			return &s.creds[i]
+		}
 	}
-	sort.Strings(ids)
-	return ids
+	if len(s.creds) > 0 {
+		return &s.creds[0]
+	}
+	return nil
+}
+
+// providerNames lists the credential providers as the settings page names
+// them, in credentials.Providers' order.
+func providerNames() []string {
+	names := make([]string, len(credentials.Providers))
+	for i, p := range credentials.Providers {
+		names[i] = p.Name
+	}
+	return names
+}
+
+func providerNamed(name string) (credentials.Provider, bool) {
+	for _, p := range credentials.Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return credentials.Provider{}, false
+}
+
+// providerName is how the settings page names route id.
+func providerName(id string) string {
+	if p, ok := credentials.ProviderOf(id); ok {
+		return p.Name
+	}
+	return id
 }
 
 // describe turns an error into the line the user sees.

@@ -95,7 +95,7 @@ func TestSettingsAddCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	until(t, tt, s, func() bool { return len(s.creds) == 1 && s.settings.DefaultCredential != "" })
-	if !tt.HasText("DeepSeek 个人（deepseek-official） · 默认") {
+	if !tt.HasText("DeepSeek 个人") || !tt.HasText("默认") {
 		t.Errorf("credential not listed as default: %v", tt.Texts())
 	}
 	s.mu.Lock()
@@ -116,7 +116,7 @@ func openWorkspace(s *Shell, rt string) *wsView {
 	v := s.view("w1")
 	v.runtimeID = rt
 	s.byRuntime[rt] = "w1"
-	s.page, s.curWS = pageWS+"w1", "w1"
+	s.focus("w1")
 	return v
 }
 
@@ -306,7 +306,7 @@ func TestExportDiagnostics(t *testing.T) {
 	s, tt := newShell(t)
 	out := filepath.Join(t.TempDir(), "diag.zip")
 	s.SaveFile = func(string) (string, error) { return out, nil }
-	if _, err := s.App.Creds.Add("k", "deepseek-official", "", "sk-shell-diag-123456"); err != nil {
+	if _, err := s.App.Creds.Add("k", "deepseek-official", "", "sk-shell-diag-123456", ""); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()

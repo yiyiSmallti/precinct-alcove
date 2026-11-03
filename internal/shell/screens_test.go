@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
@@ -95,7 +96,7 @@ func TestScreens(t *testing.T) {
 		s.settings.Appearance = app.Appearance{Accent: "amber"}
 		s.mu.Unlock()
 		shot("task-amber")
-		for _, tn := range []string{"warm", "neutral", "cool"} {
+		for _, tn := range []string{"zinc", "slate", "linen", "warm", "neutral", "cool"} {
 			s.mu.Lock()
 			s.settings.Appearance = app.Appearance{Tone: tn}
 			s.mu.Unlock()
@@ -106,6 +107,30 @@ func TestScreens(t *testing.T) {
 		s.prefs.custom = ui.Hex("#7c3aed")
 		s.mu.Unlock()
 		shot("picker")
+		s.mu.Lock()
+		s.settings.Appearance = app.Appearance{}
+		s.prefs.picking = false
+		s.mu.Unlock()
+		shot("settings-look")
+		s.mu.Lock()
+		s.prefs.tab = tabOther
+		s.mu.Unlock()
+		shot("settings-other")
+		s.mu.Lock()
+		s.prefs.tab = tabModel
+		s.creds = []credentials.Credential{{ID: "c1", Label: "DeepSeek 个人", Provider: "deepseek-official"}, {ID: "c2", Label: "OpenAI 工作", Provider: "openai", Model: "gpt-6.1-sol"}}
+		s.settings.DefaultCredential = "c2"
+		s.model, s.modelFor, s.savedModel = "gpt-6.1-sol", "c2", "gpt-6.1-sol"
+		s.form.provider = "Kimi（月之暗面）"
+		s.mu.Unlock()
+		shot("settings-model")
+		s.mu.Lock()
+		s.creds = nil
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.page = PagePlugins
+		s.mu.Unlock()
+		shot("plugins")
 	}
 }
 
@@ -156,11 +181,20 @@ func demo(t *testing.T, s *Shell) *wsView {
 	s.Register("@precinct/cloister", sidecar.Contribution{ID: "org", Type: "settings_page", Raw: json.RawMessage(page)})
 	s.mu.Lock()
 	w := workspace.Workspace{ID: "w1", Name: "季度报表", Dir: dir, Profile: "ws-w1", Owner: "@precinct/cloister"}
-	s.workspaces = []workspace.Workspace{w, {ID: "w2", Name: "precinct-alcove", Dir: "/Users/liuliu/IdeaProjects/precinct-alcove", Profile: "ws-w2", Owner: "personal"}}
+	s.workspaces = []workspace.Workspace{w, {ID: "w2", Name: "precinct-alcove", Dir: "/Users/liuliu/IdeaProjects/precinct-alcove", Profile: "ws-w2", Owner: "personal"},
+		{ID: "w0", Name: app.Scratch, Dir: "/Users/liuliu/Alcove", Profile: "ws-w0", Owner: "personal"}}
+	s.scratchID = "w0"
+	sv := s.view("w0")
+	for _, m := range []tasks.Task{
+		{ID: "chat-r1", Title: "翻译这段合同条款", UpdatedAt: time.Now().UTC().Add(-3 * time.Hour)},
+		{ID: "chat-r2", Title: "把截图里的表格转成 Excel", UpdatedAt: time.Now().UTC().Add(-26 * time.Hour)},
+	} {
+		s.addTask(sv, m)
+	}
 	v := s.view("w1")
 	v.runtimeID = "rt1"
 	s.byRuntime["rt1"] = "w1"
-	s.page, s.curWS = pageWS+"w1", "w1"
+	s.focus("w1")
 	now := time.Now().UTC()
 	for i, m := range []tasks.Task{
 		{ID: "chat-old1", Title: "整理 9 月的发票", UpdatedAt: now.Add(-50 * time.Hour)},

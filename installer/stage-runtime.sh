@@ -8,13 +8,11 @@
 #                                            for dsh's plugin installs
 #   runtime/alcove-bridge.tgz                the bridge bundle
 #
-# Usage: installer/stage-runtime.sh darwin-universal|windows-amd64
+# Usage: installer/stage-runtime.sh darwin-arm64|darwin-amd64|windows-amd64
 #
-# darwin-universal is one runtime for both Mac CPUs, as the universal .app
-# needs: node goes to resources/darwin-arm64 and resources/darwin-amd64
-# (mygo build joins them into a universal binary), and node_modules, with
-# the native packages of both CPUs side by side (node-pty, sharp, …), to
-# resources/darwin.
+# Each Mac CPU has its own .app and runtime, in resources/darwin-<cpu>: a
+# universal one would carry the node and native packages (LibreOffice,
+# sherpa-onnx, sharp, …) of both CPUs, some 320 MB more.
 #
 # Runs on macOS or Linux (curl, tar, unzip, npm). Native optional packages
 # are installed for the target, not for the build machine.
@@ -23,8 +21,12 @@ set -euo pipefail
 NODE_VERSION=${NODE_VERSION:-24.11.1}
 DSH_VERSION=0.2.1-rc.5
 PNPM_VERSION=10.28.0
+# The zod dsh's packages pin exactly. Other packages take the newest 4.x,
+# so npm would give each of some 50 dsh packages its own copy (310 MB);
+# every range in the tree accepts this one.
+ZOD_VERSION=4.4.3
 
-plat=${1:?usage: stage-runtime.sh darwin-universal|windows-amd64}
+plat=${1:?usage: stage-runtime.sh darwin-arm64|darwin-amd64|windows-amd64}
 root=$(cd "$(dirname "$0")/.." && pwd)
 cache=${ALCOVE_STAGE_CACHE:-$HOME/.cache/alcove-stage}
 mkdir -p "$cache"
@@ -59,7 +61,8 @@ modules() {
   mkdir -p "$3"
   cat > "$3/package.json" <<JSON
 { "name": "alcove-runtime", "private": true,
-  "dependencies": { "@deepseek-ai/dsh": "$DSH_VERSION", "pnpm": "$PNPM_VERSION" } }
+  "dependencies": { "@deepseek-ai/dsh": "$DSH_VERSION", "pnpm": "$PNPM_VERSION" },
+  "overrides": { "zod": "$ZOD_VERSION" } }
 JSON
   # Install scripts would run for the build machine (koffi and node-pty
   # build or pick its binaries); the packages ship prebuilt binaries for
@@ -71,6 +74,21 @@ JSON
   # npm's records and shims are for the build machine; the runtime has its own.
   rm -rf "$3/package-lock.json" "$3/node_modules/.bin" "$3/node_modules/.package-lock.json"
   unhide "$3/node_modules"
+  prune "$1" "$2" "$3/node_modules"
+}
+
+# prune <os> <cpu> <node_modules>: what the runtime never loads. Source maps,
+# type declarations, READMEs and changelogs; prebuilt binaries of other
+# platforms; the speech-to-text engine and the inspector, experimental dsh
+# plugins outside the sdk profile Alcove boots; and LibreOffice Kit's engine
+# (150 MB), which dsh's Office skill downloads, once the user agrees, the
+# first time a task needs it.
+prune() {
+  local nm=$3
+  find "$nm" -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \
+    -o -iname 'README*' -o -iname 'CHANGELOG*' -o -iname 'HISTORY*' \) -delete
+  find "$nm" -type d -path '*/prebuilds/*' -prune ! -name "$1-$2" -exec rm -rf {} +
+  rm -rf "$nm"/sherpa-onnx-* "$nm/@deepseek-ai/dsh-experimental-inspector" "$nm"/@deepseek-ai/libreoffice-kit-*
 }
 
 # unhide <node_modules>: mygo build leaves out every file whose name starts
@@ -132,13 +150,7 @@ common() {
     cat > "$out/bin/pnpm" <<'SH'
 #!/bin/sh
 d=$(dirname "$0")
-node=$d/../node
-# go run from the staged resources/: node is per CPU, next to darwin/.
-if [ ! -x "$node" ]; then
-  case $(uname -m) in arm64) cpu=arm64 ;; *) cpu=amd64 ;; esac
-  node=$d/../../../darwin-$cpu/runtime/node
-fi
-exec "$node" "$d/../node_modules/pnpm/bin/pnpm.cjs" "$@"
+exec "$d/../node" "$d/../node_modules/pnpm/bin/pnpm.cjs" "$@"
 SH
     chmod +x "$out/bin/pnpm"
   fi
@@ -156,26 +168,17 @@ case $plat in
     common "$out" win32
     echo "staged $out ($(du -sh "$out" | cut -f1))"
     ;;
-  darwin-universal)
-    shared=$root/resources/darwin/runtime
-    rm -rf "$shared" "$root/resources/darwin-arm64/runtime" "$root/resources/darwin-amd64/runtime"
-    node_exe "node-v$NODE_VERSION-darwin-arm64.tar.gz" "$root/resources/darwin-arm64/runtime"
-    node_exe "node-v$NODE_VERSION-darwin-x64.tar.gz" "$root/resources/darwin-amd64/runtime"
-    modules darwin arm64 "$tmp/arm64"
-    modules darwin x64 "$tmp/x64"
-    # One tree for both CPUs: the x64-only packages join the arm64 tree.
-    # Anything both have must be the same file, or the CPUs would differ.
-    (cd "$tmp/x64" && find node_modules -type f) | while read -r f; do
-      if [ -e "$tmp/arm64/$f" ]; then
-        cmp -s "$tmp/x64/$f" "$tmp/arm64/$f" || { echo "differs between arm64 and x64: $f" >&2; exit 1; }
-      else
-        mkdir -p "$(dirname "$tmp/arm64/$f")" && cp -p "$tmp/x64/$f" "$tmp/arm64/$f"
-      fi
-    done
-    mkdir -p "$shared"
-    mv "$tmp/arm64/node_modules" "$shared/"
-    common "$shared" darwin
-    echo "staged $shared ($(du -sh "$shared" | cut -f1)) and node for arm64 and amd64"
+  darwin-arm64|darwin-amd64)
+    cpu=${plat#darwin-}
+    [ "$cpu" = amd64 ] && cpu=x64
+    out=$root/resources/$plat/runtime
+    # resources/darwin/runtime is the universal build's shared tree, which
+    # mygo would add to the .app of either CPU.
+    rm -rf "$out" "$root/resources/darwin/runtime"
+    node_exe "node-v$NODE_VERSION-darwin-$cpu.tar.gz" "$out"
+    modules darwin "$cpu" "$out"
+    common "$out" darwin
+    echo "staged $out ($(du -sh "$out" | cut -f1))"
     ;;
-  *) echo "unsupported platform $plat (darwin-universal or windows-amd64)" >&2; exit 2 ;;
+  *) echo "unsupported platform $plat (darwin-arm64, darwin-amd64 or windows-amd64)" >&2; exit 2 ;;
 esac

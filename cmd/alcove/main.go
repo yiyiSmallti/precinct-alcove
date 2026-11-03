@@ -64,6 +64,11 @@ func main() {
 		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "bin")), rt},
 		BridgeTgz:     env("ALCOVE_BRIDGE_TGZ", filepath.Join(rt, "alcove-bridge.tgz")),
 	}
+	// Tasks outside a project (最近会话) live in ~/Alcove, where Finder shows what its tasks made;
+	// workspaces may not be inside the data directory.
+	if home, err := os.UserHomeDir(); err == nil {
+		cfg.ScratchDir = filepath.Join(home, "Alcove")
+	}
 	if cfg.TrustedKeys, cfg.AllowUnsigned, err = trust(Version, os.Getenv); err != nil {
 		log.Fatal(err)
 	}
@@ -150,12 +155,9 @@ func bundledRuntime() (nodeDir, rt string) {
 	if rt := filepath.Join(res, "runtime"); exists(rt) {
 		return rt, rt
 	}
-	// go run: resources/ as stage-runtime.sh left it, platform directories
-	// unmerged; for macOS node is per CPU and the rest in darwin/.
+	// go run: resources/ as stage-runtime.sh left it, one directory per
+	// platform.
 	plat := filepath.Join(res, runtime.GOOS+"-"+runtime.GOARCH, "runtime")
-	if runtime.GOOS == "darwin" {
-		return plat, filepath.Join(res, "darwin", "runtime")
-	}
 	return plat, plat
 }
 

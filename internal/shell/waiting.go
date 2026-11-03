@@ -76,11 +76,7 @@ func (s *Shell) waitingView(c *ui.Context, pal *palette) {
 					s.cardView(c, wc.plugin, wc.item, "w:"+wc.plugin+wc.item.ID)
 				}
 				if total == 0 {
-					ui.Column(c).Padding(40, 0).AlignItems(ui.Center).Gap(8).Children(func() {
-						ui.Icon(c, icCheck).Size(28, 28).TextColor(t.Success)
-						ui.Text(c, "没有要你处理的事").Bold()
-						ui.Text(c, "任务需要确认、提问，或云端 bot 想在本机运行任务时，会出现在这里。").TextColor(t.TextMuted)
-					})
+					emptyState(c, icCheck, t.Success, "没有要你处理的事", "任务需要确认、提问，或云端 bot 想在本机运行任务时，会出现在这里。", nil)
 				}
 			})
 		})

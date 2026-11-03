@@ -11,8 +11,8 @@ import (
 )
 
 // palette is the window's look beyond what ui.Theme names. The default
-// look is quiet, like a native Mac app: warm neutrals, hairlines instead
-// of boxes, ink-colored primary actions, and color kept for state
+// look is quiet, like a native Mac app: clean neutrals, hairlines instead
+// of boxes, one accent for primary actions, and color kept for state
 // (running, waiting on you, done, failed). Settings → 外观 changes the
 // light or dark mode, the neutrals' tone, the accent, the fonts and the
 // window's zoom.
@@ -35,10 +35,12 @@ type palette struct {
 	vibrant bool   // the side columns show the window's material
 }
 
-// tone is one set of neutrals, for light and for dark.
+// tone is one set of neutrals, for light and for dark, and the accent it
+// comes with until the user picks another.
 type tone struct {
 	id, name    string
 	light, dark neutrals
+	accent      string
 }
 
 type neutrals struct {
@@ -47,17 +49,26 @@ type neutrals struct {
 
 // The tones differ most where the eye rests: the sidebar, the user's
 // bubbles, controls and the muted text; the middle column stays near white
-// (or near black) so reading is easy.
+// (or near black) so reading is easy. The first is the default.
 var tones = []tone{
+	{"zinc", "雪白",
+		neutrals{"#ffffff", "#f4f4f5", "#ececee", "#e4e4e7", "#e4e4e7", "#18181b", "#71717a", "#f8f8f9", "#a1a1aa", "#f8f8f9", "#ececef", "#f4f4f5"},
+		neutrals{"#131316", "#1f1f23", "#27272a", "#2f2f33", "#2a2a2e", "#f4f4f5", "#a1a1aa", "#0e0e10", "#71717a", "#18181b", "#2a2a2e", "#232327"}, "indigo"},
+	{"slate", "石板",
+		neutrals{"#ffffff", "#f1f5f9", "#e9eef4", "#e2e8f0", "#e2e8f0", "#0f172a", "#64748b", "#f6f8fb", "#94a3b8", "#f8fafc", "#e2e8f0", "#eef3fa"},
+		neutrals{"#0d1424", "#172136", "#1d2940", "#24314b", "#1f2a3f", "#e2e8f0", "#94a3b8", "#090f1c", "#64748b", "#111a2c", "#1f2a3f", "#18243c"}, "blue"},
+	{"linen", "米白",
+		neutrals{"#fdfcfa", "#f2efea", "#ebe7e0", "#e3ded5", "#e7e2da", "#1f1d1a", "#706a62", "#f6f4f0", "#a59f96", "#f7f5f1", "#ece6dc", "#f3eee7"},
+		neutrals{"#1a1816", "#272421", "#302c28", "#38342f", "#33302b", "#efebe5", "#a59e94", "#141210", "#7a746b", "#211f1c", "#36312b", "#2b2723"}, "terracotta"},
 	{"warm", "暖灰",
 		neutrals{"#fffdfa", "#f1ece3", "#e9e3d8", "#dfd8cb", "#e5ded2", "#26221d", "#7a7064", "#f3eee5", "#a69d90", "#f8f5ef", "#e8e0d2", "#f1ebe1"},
-		neutrals{"#1e1b17", "#2d2923", "#36312a", "#3f3931", "#3a352e", "#ede8e0", "#a39a8d", "#27231e", "#7b7368", "#25221d", "#3d372f", "#2f2a24"}},
+		neutrals{"#1e1b17", "#2d2923", "#36312a", "#3f3931", "#3a352e", "#ede8e0", "#a39a8d", "#27231e", "#7b7368", "#25221d", "#3d372f", "#2f2a24"}, "graphite"},
 	{"neutral", "中性",
 		neutrals{"#ffffff", "#f2f2f2", "#e9e9e9", "#dedede", "#e2e2e2", "#1c1c1c", "#6f6f6f", "#f4f4f4", "#a3a3a3", "#f7f7f7", "#e6e6e6", "#f0f0f0"},
-		neutrals{"#1b1b1b", "#2a2a2a", "#333333", "#3c3c3c", "#373737", "#ececec", "#9c9c9c", "#222222", "#767676", "#232323", "#383838", "#2b2b2b"}},
+		neutrals{"#1b1b1b", "#2a2a2a", "#333333", "#3c3c3c", "#373737", "#ececec", "#9c9c9c", "#222222", "#767676", "#232323", "#383838", "#2b2b2b"}, "graphite"},
 	{"cool", "冷灰",
 		neutrals{"#fbfcfe", "#e9eef6", "#dfe6f0", "#d3dce9", "#d9e1ec", "#18202e", "#5d6a80", "#edf1f7", "#93a0b4", "#f3f6fa", "#dce4f0", "#e6edf7"},
-		neutrals{"#141922", "#212836", "#29313f", "#323b4b", "#2e3646", "#e4e9f2", "#93a0b6", "#1a202b", "#6c788c", "#1b212c", "#323b4c", "#232b39"}},
+		neutrals{"#141922", "#212836", "#29313f", "#323b4b", "#2e3646", "#e4e9f2", "#93a0b6", "#1a202b", "#6c788c", "#1b212c", "#323b4c", "#232b39"}, "graphite"},
 }
 
 // accent is a preset accent color, for light and for dark.
@@ -68,12 +79,14 @@ type accent struct {
 
 var accents = []accent{
 	{"graphite", "石墨", "", ""},
-	{"blue", "海蓝", "#2f6fe4", "#5b8ff9"},
+	{"indigo", "靛蓝", "#4f46e5", "#818cf8"},
+	{"blue", "海蓝", "#2563eb", "#60a5fa"},
 	{"violet", "紫藤", "#6e56cf", "#9d8bf0"},
 	{"teal", "青碧", "#0f8a83", "#3cc0b5"},
 	{"green", "松绿", "#2f8a57", "#55b97e"},
 	{"amber", "琥珀", "#c9620c", "#f0913a"},
 	{"rose", "玫红", "#c2416b", "#ef6f96"},
+	{"terracotta", "赤陶", "#c4532d", "#e07a55"},
 }
 
 func toneOf(id string) tone {
@@ -85,6 +98,15 @@ func toneOf(id string) tone {
 	return tones[0]
 }
 
+// accentID is the preset accent an appearance shows: the chosen one, or
+// the tone's own.
+func accentID(ap app.Appearance) string {
+	if ap.Accent != "" {
+		return ap.Accent
+	}
+	return toneOf(ap.Tone).accent
+}
+
 // accentColor is the accent of the appearance in light or dark, and
 // whether it is the tone's ink (graphite).
 func accentColor(ap app.Appearance, dark bool) (ui.Color, bool) {
@@ -94,8 +116,9 @@ func accentColor(ap app.Appearance, dark bool) (ui.Color, bool) {
 		}
 		return c, false
 	}
+	id := accentID(ap)
 	for _, a := range accents {
-		if a.id == ap.Accent && a.light != "" {
+		if a.id == id && a.light != "" {
 			if dark {
 				return ui.Hex(a.dark), false
 			}

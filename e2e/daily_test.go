@@ -123,7 +123,7 @@ func TestDaily(t *testing.T) {
 	a.Sidecars.Services.Log = rec.log
 	a.Sidecars.Backoff = 100 * time.Millisecond
 	a.Sidecars.Env = []string{"ALCOVE_DATA_DIR=" + dataDir, "PRECINCT_DAILY_IDLE_AFTER=10s"}
-	_, err = a.Creds.Add("假模型", "deepseek-official", model.URL, "sk-e2e-daily")
+	_, err = a.Creds.Add("假模型", "deepseek-official", model.URL, "sk-e2e-daily", "")
 	r.step("录入凭据（假模型）", err, "")
 
 	tgz := filepath.Join(work, filepath.Base(src))

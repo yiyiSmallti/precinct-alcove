@@ -28,18 +28,59 @@ type SecretStore interface {
 // ErrNotFound is returned by a SecretStore for a missing key.
 var ErrNotFound = errors.New("secret not found")
 
-// Provider says how a dsh provider takes its key and base URL.
+// Provider says how a dsh provider takes its key and base URL, and which
+// models it serves.
 type Provider struct {
-	ID      string // dsh provider id, e.g. deepseek-official
+	ID      string // dsh provider route, e.g. deepseek-official
+	Name    string // what the settings page calls it
 	KeyEnv  string
-	BaseEnv string
+	BaseEnv string // "" when the route takes no base URL from the environment
+	// Models are a few of the route's models to pick from, the default
+	// first; any other model id of the route works too.
+	Models []string
 }
 
-// Providers dsh 0.2.1-rc.5 accepts through environment variables. Only the
-// DeepSeek adapter is verified end to end; OpenAI-compatible endpoints
-// (Gatehouse) go through the pi-ai route, added with profile assembly.
-var Providers = map[string]Provider{
-	"deepseek-official": {ID: "deepseek-official", KeyEnv: "DEEPSEEK_API_KEY", BaseEnv: "DEEPSEEK_BASE_URL"},
+// Providers dsh 0.2.1-rc.5 accepts through environment variables, in the
+// order the settings page lists them. deepseek-official is dsh's own
+// DeepSeek adapter; the others are routes of pi-ai's installed catalog,
+// which dsh-llm-pi-ai serves without profile configuration and which read
+// their key from pi-ai's own variable (its env-api-keys map). Catalog routes
+// take their base URL from the catalog only.
+var Providers = []Provider{
+	{ID: "deepseek-official", Name: "DeepSeek", KeyEnv: "DEEPSEEK_API_KEY", BaseEnv: "DEEPSEEK_BASE_URL", Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}},
+	{ID: "openai", Name: "OpenAI", KeyEnv: "OPENAI_API_KEY", Models: []string{"gpt-5.5", "gpt-6.1-sol", "gpt-5.4-mini"}},
+	{ID: "anthropic", Name: "Anthropic Claude", KeyEnv: "ANTHROPIC_API_KEY", Models: []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"}},
+	{ID: "google", Name: "Google Gemini", KeyEnv: "GEMINI_API_KEY", Models: []string{"gemini-pro-latest", "gemini-flash-latest"}},
+	{ID: "xai", Name: "xAI Grok", KeyEnv: "XAI_API_KEY", Models: []string{"grok-4.7", "grok-4.6"}},
+	{ID: "openrouter", Name: "OpenRouter", KeyEnv: "OPENROUTER_API_KEY", Models: []string{"~anthropic/claude-sonnet-latest", "~openai/gpt-sol-latest", "~google/gemini-pro-latest", "~deepseek/deepseek-pro-latest"}},
+	{ID: "moonshotai-cn", Name: "Kimi（月之暗面）", KeyEnv: "MOONSHOT_API_KEY", Models: []string{"kimi-k3", "kimi-k3.1-pro", "kimi-k2.7-code"}},
+	{ID: "zai-coding-cn", Name: "智谱 GLM（Coding 套餐）", KeyEnv: "ZAI_CODING_CN_API_KEY", Models: []string{"glm-5.3", "glm-5.3-flash"}},
+	{ID: "qwen-token-plan-cn", Name: "阿里云百炼（Token Plan）", KeyEnv: "QWEN_TOKEN_PLAN_CN_API_KEY", Models: []string{"qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"}},
+	{ID: "minimax-cn", Name: "MiniMax", KeyEnv: "MINIMAX_CN_API_KEY", Models: []string{"MiniMax-M3", "MiniMax-M3.1-Flash"}},
+	{ID: "xiaomi", Name: "小米 MiMo", KeyEnv: "XIAOMI_API_KEY", Models: []string{"mimo-v2.6-pro", "mimo-v2.6-flash"}},
+	{ID: "mistral", Name: "Mistral", KeyEnv: "MISTRAL_API_KEY", Models: []string{"mistral-large-latest", "devstral-latest"}},
+	{ID: "groq", Name: "Groq", KeyEnv: "GROQ_API_KEY", Models: []string{"openai/gpt-oss-120b", "qwen/qwen3.8-27b"}},
+}
+
+// ProviderOf returns the provider of route id.
+func ProviderOf(id string) (Provider, bool) {
+	for _, p := range Providers {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
+// ModelOf is the model c runs: its own, else its provider's default.
+func ModelOf(c Credential) string {
+	if c.Model != "" {
+		return c.Model
+	}
+	if p, ok := ProviderOf(c.Provider); ok && len(p.Models) > 0 {
+		return p.Models[0]
+	}
+	return ""
 }
 
 // Credential is one stored credential, without its key.
@@ -48,6 +89,7 @@ type Credential struct {
 	Label     string    `json:"label"`
 	Provider  string    `json:"provider"`
 	BaseURL   string    `json:"baseUrl,omitempty"`
+	Model     string    `json:"model,omitempty"` // "" is the provider's default
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -62,9 +104,13 @@ func secretKey(id string) string { return "credential/" + id }
 
 // Add stores a new credential. The key goes to the secret store first, so
 // a record never points at a missing key.
-func (s *Store) Add(label, provider, baseURL, key string) (*Credential, error) {
-	if _, ok := Providers[provider]; !ok {
+func (s *Store) Add(label, provider, baseURL, key, model string) (*Credential, error) {
+	p, ok := ProviderOf(provider)
+	if !ok {
 		return nil, fmt.Errorf("unknown provider %q", provider)
+	}
+	if baseURL != "" && p.BaseEnv == "" {
+		return nil, fmt.Errorf("%s takes no base URL", p.Name)
 	}
 	if strings.TrimSpace(key) == "" {
 		return nil, errors.New("key is empty")
@@ -77,7 +123,7 @@ func (s *Store) Add(label, provider, baseURL, key string) (*Credential, error) {
 	}
 	raw := make([]byte, 8)
 	rand.Read(raw)
-	c := Credential{ID: hex.EncodeToString(raw), Label: label, Provider: provider, BaseURL: baseURL, CreatedAt: time.Now().UTC()}
+	c := Credential{ID: hex.EncodeToString(raw), Label: label, Provider: provider, BaseURL: baseURL, Model: strings.TrimSpace(model), CreatedAt: time.Now().UTC()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	all, err := s.load()
@@ -127,6 +173,24 @@ func (s *Store) Keys() ([][]byte, error) {
 	return out, nil
 }
 
+// SetModel changes the model credential id runs; "" is its provider's
+// default.
+func (s *Store) SetModel(id, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range all {
+		if all[i].ID == id {
+			all[i].Model = strings.TrimSpace(model)
+			return fsutil.WriteJSON(s.Path, all, 0o600)
+		}
+	}
+	return fmt.Errorf("no credential %s", id)
+}
+
 // Remove deletes the key, then the record.
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()
@@ -152,32 +216,32 @@ func (s *Store) Remove(id string) error {
 	return fsutil.WriteJSON(s.Path, keep, 0o600)
 }
 
-// LaunchEnv returns the provider id and the KEY=value pairs that give dsh
-// this credential. Call it only when starting a runtime; the result must not
-// be logged or written anywhere.
-func (s *Store) LaunchEnv(id string) (provider string, env []string, err error) {
+// LaunchEnv returns the provider id, the model (ModelOf) and the KEY=value
+// pairs that give dsh this credential. Call it only when starting a runtime;
+// the env must not be logged or written anywhere.
+func (s *Store) LaunchEnv(id string) (provider, model string, env []string, err error) {
 	s.mu.Lock()
 	all, err := s.load()
 	s.mu.Unlock()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	for _, c := range all {
 		if c.ID != id {
 			continue
 		}
-		p := Providers[c.Provider]
+		p, _ := ProviderOf(c.Provider)
 		key, err := s.Secrets.Get(secretKey(id))
 		if err != nil {
-			return "", nil, fmt.Errorf("read key for %s: %w", c.Label, err)
+			return "", "", nil, fmt.Errorf("read key for %s: %w", c.Label, err)
 		}
 		env = []string{p.KeyEnv + "=" + string(key)}
 		if c.BaseURL != "" {
 			env = append(env, p.BaseEnv+"="+c.BaseURL)
 		}
-		return p.ID, env, nil
+		return p.ID, ModelOf(c), env, nil
 	}
-	return "", nil, fmt.Errorf("no credential %s", id)
+	return "", "", nil, fmt.Errorf("no credential %s", id)
 }
 
 func (s *Store) load() ([]Credential, error) {

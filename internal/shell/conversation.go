@@ -62,7 +62,9 @@ func jsonString(raw, key string) string {
 	return v
 }
 
-// newTaskView asks what to do, with the workspace it will run in.
+// newTaskView asks what to do: the question in the middle of the page, and
+// the composer at its foot, as on a task's page, with the workspace it will
+// run in.
 func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
 	as, qs := v.pending(nil)
@@ -70,31 +72,62 @@ func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 		ui.Spacer(c)
 		s.panelToggle(c, pal)
 	})
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(96, 32, 24).AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Width(660).MaxWidthPercent(100).Gap(10).Children(func() {
-				ui.Text(c, "要做什么？").FontSize(26).Bold().LetterSpacing(-0.3)
-				ui.Text(c, "描述一个任务，Alcove 会在这个文件夹里动手完成，越界的操作会先问你。").FontSize(14).TextColor(t.TextMuted)
-				ui.Box(c).Height(14)
-				s.composer(c, pal, &v.draft, "例如：把 data/ 下的报表汇总成季度报告", 3, false, func(text string) {
-					s.send(v, nil, text)
-				}, nil)
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(4, 4).Children(func() {
-					ui.Icon(c, icFolder).Size(13, 13).TextColor(pal.subtle)
-					ui.Text(c, v.ws.Name).FontSize(12).TextColor(t.TextMuted)
-					ui.Text(c, shortDir(v.ws.Dir)).FontSize(12).TextColor(pal.subtle).SingleLine().MinWidth(0)
-				})
-				if v.err != "" {
-					ui.Text(c, v.err).TextColor(t.Danger).Selectable()
+	// A scroll area does not center what it holds, so the column takes its
+	// height from the last frame, drawing one more when that height changed
+	// or is not known yet (0, on the page's first frame).
+	sc := ui.Scroll(c).Grow(1)
+	if h := sc.LayoutBounds().H; h == 0 || h != s.newTaskH {
+		s.newTaskH = h
+		c.Invalidate()
+	}
+	sc.Children(func() {
+		ui.Column(c).MinHeight(s.newTaskH).Padding(32).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
+			ui.Text(c, "要做什么？").FontSize(26).Bold().LetterSpacing(-0.3)
+			ui.Text(c, "描述一个任务，Alcove 会在这个文件夹里动手完成，越界的操作会先问你。").FontSize(14).TextColor(t.TextMuted).MaxWidth(560).TextAlign(ui.Center)
+		})
+	})
+	ui.Column(c).Padding(0, 32, 16).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Width(720).MaxWidthPercent(100).Gap(10).Children(func() {
+			if len(s.creds) == 0 {
+				s.credentialHint(c, pal)
+			}
+			if v.err != "" {
+				ui.Text(c, v.err).TextColor(t.Danger).Selectable()
+			}
+			for _, a := range as {
+				s.approvalCard(c, pal, a)
+			}
+			for _, q := range qs {
+				questionCard(c, pal, q)
+			}
+			s.composer(c, pal, &v.draft, "例如：把 data/ 下的报表汇总成季度报告", 3, false, func(text string) {
+				s.send(v, nil, text)
+			}, nil)
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 4).Children(func() {
+				ui.Icon(c, icFolder).Size(13, 13).TextColor(pal.subtle)
+				name := v.ws.Name
+				if v.ws.ID == s.scratchID {
+					name = "默认文件夹"
 				}
-				for _, a := range as {
-					s.approvalCard(c, pal, a)
-				}
-				for _, q := range qs {
-					questionCard(c, pal, q)
-				}
+				ui.Text(c, name).FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, shortDir(v.ws.Dir)).FontSize(12).TextColor(pal.subtle).SingleLine().MinWidth(0)
 			})
 		})
+	})
+}
+
+// credentialHint asks for a model credential before the first task.
+func (s *Shell) credentialHint(c *ui.Context, pal *palette) {
+	t := c.Theme()
+	ui.Row(c).Gap(12).Padding(12, 14).Radius(12).AlignItems(ui.Center).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.2)).Children(func() {
+		ui.Icon(c, icAlert).Size(16, 16).TextColor(t.Accent)
+		ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
+			ui.Text(c, "还没有模型凭据").FontSize(13).FontWeight(600)
+			ui.Text(c, "添加一个模型 API key 后才能执行任务。").FontSize(12.5).TextColor(t.TextMuted)
+		})
+		if ui.PrimaryButton(c, "去添加").Clicked() {
+			s.page, s.prefs.tab = PageSettings, tabModel
+		}
 	})
 }
 
@@ -174,7 +207,14 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 // corner.
 func (s *Shell) composer(c *ui.Context, pal *palette, input *string, placeholder string, lines int, busy bool, send func(string), stop func()) {
 	t := c.Theme()
-	ui.Column(c).Padding(12, 12, 10, 14).Gap(4).Radius(14).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
+	box := ui.Column(c).Padding(12, 12, 10, 14).Gap(4).Radius(14).Background(pal.content).Transition(fade)
+	// Typing lights the box in the accent.
+	if box.FocusWithin() {
+		box.Border(1, t.Accent.Alpha(0.55)).Shadow(0, 6, 24, 0, t.Accent.Alpha(0.16))
+	} else {
+		box.Border(1, t.Border).Shadow(0, 4, 18, 0, pal.shadow)
+	}
+	box.Children(func() {
 		in := ui.TextArea(c, input).Placeholder(placeholder).Background(ui.Transparent).Border(0, ui.Transparent).Padding(0).FontSize(14).Lines(lines, 10).MinHeight(0)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "↵ 发送 · ⇧↵ 换行").FontSize(11).TextColor(pal.subtle).Grow(1).SingleLine()

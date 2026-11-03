@@ -41,16 +41,22 @@ type Config struct {
 	Answerer      alrt.Answerer           // approval cards and question forms
 	SidecarUI     sidecar.UISink
 	Inbox         func(plugin string, item json.RawMessage) error
+	// ScratchDir is the default folder of tasks outside a project, whose
+	// workspace Alcove adds when it is missing (the window lists its tasks
+	// as 最近会话); "" adds none.
+	ScratchDir string
 }
 
 // Settings are Alcove's own preferences (settings.json).
 type Settings struct {
 	DefaultCredential string `json:"defaultCredential,omitempty"`
-	Model             string `json:"model,omitempty"`
 	ReasoningEffort   string `json:"reasoningEffort,omitempty"`
 	// UpdateSource is a mirror of the release files (an https directory);
 	// "" is the feed built into the app.
 	UpdateSource string `json:"updateSource,omitempty"`
+	// ScratchDir is the folder of tasks outside a project (最近会话); ""
+	// is Config.ScratchDir.
+	ScratchDir string `json:"scratchDir,omitempty"`
 	// Appearance is how the window looks; zero is Alcove's default look.
 	Appearance Appearance `json:"appearance"`
 }
@@ -59,10 +65,11 @@ type Settings struct {
 type Appearance struct {
 	// Mode is "light" or "dark"; "" follows the system.
 	Mode string `json:"mode,omitempty"`
-	// Tone tints the neutrals: "warm" (""), "neutral" or "cool".
+	// Tone tints the neutrals: "zinc" (""), "slate", "linen", "warm",
+	// "neutral" or "cool".
 	Tone string `json:"tone,omitempty"`
 	// Accent colors primary buttons, the chosen row and running tasks: a
-	// preset name ("" is graphite) or a #rrggbb color.
+	// preset name ("" is the tone's own) or a #rrggbb color.
 	Accent string `json:"accent,omitempty"`
 	// Font and CodeFont are font families; "" is the system's and its
 	// monospace.
@@ -106,9 +113,6 @@ type App struct {
 	// sessions are plugin sessions (session.prompt), by workspace and id.
 	sessions pluginSessions
 }
-
-// DefaultModel is used until the user picks one.
-const DefaultModel = "deepseek-v4-flash"
 
 // New loads Alcove's state from cfg.DataDir, creating it on first start.
 func New(cfg Config) (*App, error) {
@@ -230,6 +234,93 @@ func (a *App) CreateWorkspace(ctx context.Context, name, dir string) (*workspace
 	}
 	a.Sidecars.WorkspaceEvent(ctx, "created", sidecarView(w))
 	return w, nil
+}
+
+// Scratch is the name of the workspace in ScratchDir, which holds every
+// task outside a project; the window lists its tasks as 最近会话 rather
+// than as a workspace.
+const Scratch = "最近会话"
+
+// EnsureWorkspace adds the workspace of ScratchDir when there is none,
+// and returns it; with one there already, or no ScratchDir, it returns nil.
+func (a *App) EnsureWorkspace(ctx context.Context) (*workspace.Workspace, error) {
+	dir := a.ScratchDir()
+	if dir == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if w, err := a.Workspaces.ByDir(dir); err != nil || w != nil {
+		return nil, err
+	}
+	return a.CreateWorkspace(ctx, Scratch, dir)
+}
+
+// ScratchWorkspace is the workspace of ScratchDir, or nil.
+func (a *App) ScratchWorkspace() (*workspace.Workspace, error) {
+	if dir := a.ScratchDir(); dir != "" {
+		return a.Workspaces.ByDir(dir)
+	}
+	return nil, nil
+}
+
+// ScratchDir is the folder of tasks outside a project: the one chosen in
+// settings, else Config.ScratchDir.
+func (a *App) ScratchDir() string {
+	if st, err := a.Settings(); err == nil && st.ScratchDir != "" {
+		return st.ScratchDir
+	}
+	return a.cfg.ScratchDir
+}
+
+// DefaultScratchDir is Config.ScratchDir, the folder of tasks outside a
+// project when settings choose none.
+func (a *App) DefaultScratchDir() string { return a.cfg.ScratchDir }
+
+// SetScratchDir makes dir ("" for the default) the folder of tasks outside
+// a project. Their workspace moves there, its runtime stopped (and with it
+// any task running in it); with none, one is added there. A folder that is
+// a project's workspace is refused.
+func (a *App) SetScratchDir(ctx context.Context, dir string) error {
+	st, err := a.Settings()
+	if err != nil {
+		return err
+	}
+	next := dir
+	if next == "" {
+		next = a.cfg.ScratchDir
+	}
+	cur, err := a.ScratchWorkspace()
+	if err != nil {
+		return err
+	}
+	there, err := a.Workspaces.ByDir(next)
+	switch {
+	case err != nil:
+		return err
+	case there != nil && (cur == nil || there.ID != cur.ID):
+		return fmt.Errorf("%w: %s", workspace.ErrTaken, there.Name)
+	}
+	if err := os.MkdirAll(next, 0o755); err != nil {
+		return err
+	}
+	switch {
+	case there != nil:
+	case cur == nil:
+		if _, err := a.CreateWorkspace(ctx, Scratch, next); err != nil {
+			return err
+		}
+	default:
+		k := alrt.Key{Profile: cur.Profile, Cwd: cur.Dir}
+		a.Runtimes.Stop(k)
+		a.closeWorkspace(k)
+		if err := a.Workspaces.Move(cur.ID, next); err != nil {
+			return err
+		}
+	}
+	st.ScratchDir = dir
+	return a.SaveSettings(st)
 }
 
 func sidecarView(w *workspace.Workspace) sidecar.Workspace {
@@ -464,13 +555,9 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		}
 		credID = list[0].ID
 	}
-	provider, env, err := a.Creds.LaunchEnv(credID)
+	provider, model, env, err := a.Creds.LaunchEnv(credID)
 	if err != nil {
 		return nil, err
-	}
-	model := s.Model
-	if model == "" {
-		model = DefaultModel
 	}
 	return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
 		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: s.ReasoningEffort,

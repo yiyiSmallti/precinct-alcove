@@ -6,7 +6,7 @@
 
 - Go 1.27+（MyGo v0.7.x 的要求），MyGo（原生模式；`internal/ui/webview` 作为页面级回退）。纯 Go，无 cgo。
 - dsh 运行时：Node 24 LTS 便携版 + `@deepseek-ai/dsh`（锁版本）+ `dsh-base` + `dsh-sdk-app` + pnpm（`dsh plugin` 调用 PATH 上的 `pnpm`，Alcove 拉起 dsh 时把随包 pnpm 放进 PATH），随包。
-- 平台：Windows 10+ x64；macOS 13+，arm64 与 amd64 合成通用二进制（`mygo build -platform darwin/universal`，随包 node 同样合成；两个 CPU 的原生包并存于一份 node_modules）。CI 每个 PR 交叉编译两个平台；macOS e2e 不进每次 CI（macOS runner 分钟数贵 10 倍），在 Mac 基线机上发版前跑。
+- 平台：Windows 10+ x64；macOS 13+，arm64 与 amd64 各打一个包（`mygo build -platform darwin/arm64,darwin/amd64`，各自只带本 CPU 的 node 与原生包；通用版要多带一份，约 320 MB）。CI 每个 PR 交叉编译两个平台；macOS e2e 不进每次 CI（macOS runner 分钟数贵 10 倍），在 Mac 基线机上发版前跑。
 - 构建：`installer/build.sh`（备运行时 + `mygo build`，配置在 `mygo.json`）。Windows x64：NSIS 安装包，装到 `%LOCALAPPDATA%\Programs\Alcove`（用户可写，才能自更新）。macOS：`Alcove.app`（`Contents/Resources/runtime` 下放 Node、dsh 与 pnpm），Developer ID 签名、hardened runtime，`notarytool` 公证并 staple，装进 `.dmg`。随包 Node 需要 `com.apple.security.cs.allow-jit` 与 `allow-unsigned-executable-memory` 两项 entitlement（`installer/node.entitlements.plist`，经 `macos.helperEntitlements`），否则 V8 起不来。MyGo 的签名增量更新两平台通用。
 - 存储（下文的 `<数据目录>`）：Windows `%LOCALAPPDATA%\Alcove\`，macOS `~/Library/Application Support/Alcove/`。其下 `identity.json`、`workspaces.json`、`settings.json`、`plugins/`、`logs/`；dsh home 在 `<数据目录>/dsh/`，每工作区 profile 在 `dsh/profiles/ws-<id>/`。
 - 本机 IPC 端点（桥接、daily-tools 宿主等回连）：Windows 命名管道；macOS 用 Unix 套接字，放在 `$TMPDIR/alcove-<短随机名>.sock`，不放 `<数据目录>`（macOS 的套接字路径上限 104 字节，`~/Library/Application Support/...` 容易超）。
@@ -32,7 +32,7 @@ internal/plugins/api       宿主对插件暴露的 RPC：workspace.list/get/att
 internal/policy            策略快照读取（由插件写入 settings 的受保护段）：executors.local.enabled、update.source、plugins.allowed/required/require_signature
 internal/update            更新（已实现；首期发布不配 updates，故不启用，见 PRD 0.3）：包一层 mygo.Updater（mygo build 产出的签名归档、差量包与 update-<平台>.json，ed25519 验签）；Mirror 是"更新源"：从企业镜像目录取清单，清单里的文件按文件名从同一目录取，验签不变。设置页"更新"：当前版本、检查更新（启动时与每 24 小时自动）、更新说明、下载并安装（进度）、立即重启、更新源（https，存 settings.json 的 updateSource）
 internal/diag              诊断包导出与脱敏（已实现，设置页"导出诊断包…"）：zip 内含 about.json（版本、平台、运行中的运行时、边车状态）、settings/workspaces/credentials 记录、插件安装记录与插件设置、logs/ 全部（每个文件最多取末尾 4 MB；decisions.jsonl 只留时间、类型、运行时、工具名、结果与问题数，不含理由、问题与回答）、manifest.json；不含 dsh 目录（对话）。脱敏：凭据库里存的每个 key 与插件密钥按值替换（含 JSON 转义形式），再按形状替换（JSON 里 *key/token/secret/password/authorization/cookie* 字段、KEY=值、Bearer/Basic、sk-/ghp_/xox*/AKIA 形状），家目录换成 ~。读不到凭据库（如钥匙串锁着）就不导出。短于 4 字节的值不按值替换（会把正文改得面目全非），靠形状规则兜底。验收 A4：e2e/diag_test.go
-installer/                 stage-runtime.sh 备随包运行时（darwin-universal、windows-amd64），build.sh 打包，node.entitlements.plist；签名与更新密钥见 README.dev.md
+installer/                 stage-runtime.sh 备随包运行时（darwin-arm64、darwin-amd64、windows-amd64），build.sh 打包，node.entitlements.plist；签名与更新密钥见 README.dev.md
 e2e/                       端到端脚本与报告模板
 ```
 

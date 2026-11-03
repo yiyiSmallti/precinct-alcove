@@ -65,7 +65,7 @@ func TestOrgWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer org.Close()
-	if _, err := a.Creds.Add("个人", "deepseek-official", personal.URL, "sk-personal"); err != nil {
+	if _, err := a.Creds.Add("个人", "deepseek-official", personal.URL, "sk-personal", ""); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(work, "org-ws")

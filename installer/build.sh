@@ -3,8 +3,8 @@
 # mygo build. Run on macOS (the .app, its signing and the .dmg need it; the
 # Windows installer needs NSIS: brew install makensis).
 #
-#   installer/build.sh                       # darwin-universal windows-amd64
-#   installer/build.sh darwin-universal      # one platform
+#   installer/build.sh                       # darwin-arm64 darwin-amd64 windows-amd64
+#   installer/build.sh darwin-arm64          # one platform
 #   ALCOVE_RESTAGE=0 installer/build.sh      # keep runtimes already staged
 #
 # Signing, notarization and update signing are configured in mygo.json and
@@ -13,12 +13,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 plats=("$@")
-[ ${#plats[@]} -eq 0 ] && plats=(darwin-universal windows-amd64)
+[ ${#plats[@]} -eq 0 ] && plats=(darwin-arm64 darwin-amd64 windows-amd64)
 
 targets=()
 for p in "${plats[@]}"; do
   staged=resources/$p/runtime
-  [ "$p" = darwin-universal ] && staged=resources/darwin/runtime
   if [ "${ALCOVE_RESTAGE:-1}" != 0 ] || [ ! -d "$staged" ]; then
     installer/stage-runtime.sh "$p"
   fi

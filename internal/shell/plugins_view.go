@@ -37,19 +37,19 @@ func stateText(r host.Installed, st sidecar.Status, known bool) string {
 }
 
 // pluginsView is the plugin list with the install flow.
-func (s *Shell) pluginsView(c *ui.Context) {
+func (s *Shell) pluginsView(c *ui.Context, pal *palette) {
 	t := c.Theme()
+	topBar(c, pal, func() {
+		ui.Text(c, "插件").FontSize(14).Bold().Grow(1)
+		if s.planBusy {
+			ui.Spinner(c)
+		}
+		if ui.Button(c, "从文件安装…").Disabled(s.planBusy).Clicked() && !s.planBusy {
+			s.pickPlugin()
+		}
+	})
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(24).Gap(16).MaxWidth(720).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "插件").FontSize(18).Bold().Grow(1)
-				if s.planBusy {
-					ui.Spinner(c)
-				}
-				if ui.Button(c, "从文件安装…").Disabled(s.planBusy).Clicked() && !s.planBusy {
-					s.pickPlugin()
-				}
-			})
+		ui.Column(c).Padding(28, 40, 40).Gap(16).MaxWidth(720).Children(func() {
 			if s.planErr != "" {
 				ui.Text(c, s.planErr).TextColor(t.Danger).Selectable()
 			}
@@ -57,7 +57,7 @@ func (s *Shell) pluginsView(c *ui.Context) {
 				s.planCard(c, s.plan)
 			}
 			if len(s.plugins) == 0 {
-				ui.Text(c, "还没有安装插件。插件包是 .tgz 文件，旁边带同名 .sig 签名文件。").TextColor(t.TextMuted)
+				emptyState(c, icPuzzle, t.Accent, "还没有安装插件", "插件包是 .tgz 文件，旁边带同名 .sig 签名文件。", nil)
 			}
 			for _, r := range s.plugins {
 				s.pluginRow(c, r)
@@ -92,7 +92,7 @@ func (s *Shell) planCard(c *ui.Context, plan *host.Plan) {
 			ui.Text(c, pr.Message).TextColor(t.Danger).Selectable()
 		}
 		ui.Row(c).Gap(8).Children(func() {
-			if ui.PrimaryButton(c, "安装").Disabled(!plan.OK() || s.planBusy).Clicked() && plan.OK() && !s.planBusy {
+			if primaryButton(c, "安装", plan.OK() && !s.planBusy) {
 				s.installPlan()
 			}
 			if ui.Button(c, "取消").Disabled(s.planBusy).Clicked() && !s.planBusy {
@@ -142,10 +142,10 @@ func (s *Shell) pluginRow(c *ui.Context, r host.Installed) {
 
 // pluginView is one plugin's page: what it is allowed to do, its sidecar,
 // and its settings pages.
-func (s *Shell) pluginView(c *ui.Context, name string) {
+func (s *Shell) pluginView(c *ui.Context, pal *palette, name string) {
 	r, ok := s.installed(name)
 	if !ok {
-		s.pluginsView(c)
+		s.pluginsView(c, pal)
 		return
 	}
 	ui.Scroll(c).Grow(1).Children(func() {
@@ -195,7 +195,7 @@ func (s *Shell) settingsPageView(c *ui.Context, plugin string, ct sidecar.Contri
 		}
 		if editable {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				if ui.PrimaryButton(c, "保存").Disabled(f.busy).Clicked() && !f.busy {
+				if primaryButton(c, "保存", !f.busy) {
 					s.submit(plugin, ct.ID, f, "submit")
 				}
 				if f.busy {
@@ -259,11 +259,11 @@ func (s *Shell) fieldView(c *ui.Context, plugin, id string, f *settingsForm, fd 
 }
 
 // inboxView is a plugin's conversation view.
-func (s *Shell) inboxView(c *ui.Context, name string) {
+func (s *Shell) inboxView(c *ui.Context, pal *palette, name string) {
 	t := c.Theme()
 	r, ok := s.installed(name)
 	if !ok {
-		s.pluginsView(c)
+		s.pluginsView(c, pal)
 		return
 	}
 	ch := s.chat(name)
@@ -300,7 +300,7 @@ func (s *Shell) inboxView(c *ui.Context, name string) {
 	ui.Row(c).Gap(8).Padding(12, 20).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
 		in := ui.TextArea(c, &ch.input).Lines(1, 8).Placeholder("输入消息…").Grow(1)
 		text := strings.TrimSpace(ch.input)
-		if (ui.PrimaryButton(c, "发送").Disabled(text == "").Clicked() || in.Submitted()) && text != "" {
+		if (primaryButton(c, "发送", text != "") || in.Submitted()) && text != "" {
 			ch.input = ""
 			s.sendInbox(name, ch, text)
 		}

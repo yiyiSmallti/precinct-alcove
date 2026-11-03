@@ -9,7 +9,7 @@ import (
 )
 
 // The settings page: 外观 (the window's look), 模型 (credentials and the
-// model) and 更新与诊断.
+// model) and 通用 (最近会话's folder, updates and diagnostics).
 
 const (
 	sysFont  = "系统默认"
@@ -40,8 +40,8 @@ var zooms = []struct {
 func (s *Shell) settingsView(c *ui.Context, pal *palette) {
 	topBar(c, pal, func() {
 		ui.Text(c, "设置").FontSize(14).Bold().Shrink(0)
-		ui.Row(c).Gap(20).AlignSelf(ui.Stretch).Padding(0, 0, 0, 24).Children(func() {
-			for i, label := range []string{"外观", "模型", "更新与诊断"} {
+		ui.Row(c).Gap(2).AlignItems(ui.Center).Padding(0, 0, 0, 16).Children(func() {
+			for i, label := range []string{"外观", "模型", "通用"} {
 				if tabButton(c, pal, label, s.prefs.tab == i) {
 					s.prefs.tab = i
 				}
@@ -55,9 +55,9 @@ func (s *Shell) settingsView(c *ui.Context, pal *palette) {
 			case tabLook:
 				s.appearanceSettings(c, pal)
 			case tabModel:
-				s.modelSettings(c)
+				s.modelSettings(c, pal)
 			default:
-				s.otherSettings(c)
+				s.otherSettings(c, pal)
 			}
 		})
 	})
@@ -110,13 +110,13 @@ func (s *Shell) appearanceSettings(c *ui.Context, pal *palette) {
 				}
 			})
 		})
-		prefRow(c, pal, "色调", "背景和文字灰色的冷暖。", func() {
-			ui.Row(c).Gap(8).Children(func() {
+		prefRow(c, pal, "色调", "背景和文字的底色；每种色调带一个默认主题色。", func() {
+			ui.Row(c).Gap(8).Wrap().Grow(1).MinWidth(0).Children(func() {
 				for _, tn := range tones {
-					sel := ap.Tone == tn.id || ap.Tone == "" && tn.id == "warm"
+					sel := toneOf(ap.Tone).id == tn.id
 					if toneChip(c, pal, tn, t.Dark, sel) {
 						ap.Tone = tn.id
-						if tn.id == "warm" {
+						if tn.id == tones[0].id {
 							ap.Tone = ""
 						}
 						s.setAppearance(ap)
@@ -125,13 +125,15 @@ func (s *Shell) appearanceSettings(c *ui.Context, pal *palette) {
 			})
 		})
 		prefRow(c, pal, "主题色", "用在主按钮、选中的任务和运行中的状态上。", func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Grow(1).MinWidth(0).Children(func() {
 				for _, a := range accents {
-					sel := ap.Accent == a.id || ap.Accent == "" && a.id == "graphite"
+					sel := accentID(ap) == a.id
 					col, _ := accentColor(app.Appearance{Tone: ap.Tone, Accent: a.id}, t.Dark)
 					if swatch(c, pal, "accent-"+a.id, a.name, col, sel) {
+						// The tone's own accent is stored as "", so it
+						// follows a later change of tone.
 						ap.Accent = a.id
-						if a.id == "graphite" {
+						if a.id == toneOf(ap.Tone).accent {
 							ap.Accent = ""
 						}
 						s.setAppearance(ap)
@@ -231,7 +233,11 @@ func fontField(c *ui.Context, pick *string, options []string, label string) bool
 func settingsGroup(c *ui.Context, pal *palette, title string, rows func()) {
 	ui.Column(c).Gap(8).Children(func() {
 		ui.Text(c, title).FontSize(13).Bold().Padding(0, 2)
-		ui.Column(c).Radius(10).Border(1, pal.hairline).Background(pal.content).Children(rows)
+		// The rows' bottom hairlines would double the box's own at the
+		// end: the last one is pushed under the clipped edge.
+		ui.Column(c).Radius(10).Border(1, pal.hairline).Background(pal.content).Clip().Children(func() {
+			ui.Column(c).Margin(0, 0, -1, 0).Children(rows)
+		})
 	})
 }
 
@@ -240,7 +246,7 @@ func settingsGroup(c *ui.Context, pal *palette, title string, rows func()) {
 func prefRow(c *ui.Context, pal *palette, label, hint string, control func()) {
 	t := c.Theme()
 	ui.Row(c).Padding(14, 16).Gap(24).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
-		ui.Column(c).Width(150).Shrink(0).Gap(3).Padding(4, 0, 0).Children(func() {
+		ui.Column(c).Width(180).Shrink(0).Gap(3).Padding(4, 0, 0).Children(func() {
 			ui.Text(c, label).FontSize(13)
 			if hint != "" {
 				ui.Text(c, hint).FontSize(11.5).TextColor(t.TextMuted)

@@ -57,8 +57,8 @@ func TestDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer model.Close()
-	a.Creds.Add("假模型", "deepseek-official", model.URL, key)
-	a.SaveSettings(app.Settings{Model: "deepseek-v4-flash"})
+	a.Creds.Add("假模型", "deepseek-official", model.URL, key, "")
+	a.SaveSettings(app.Settings{})
 
 	// A real turn, so there are decisions and runtime logs to export.
 	dir := filepath.Join(work, "proj")

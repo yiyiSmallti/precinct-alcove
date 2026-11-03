@@ -101,7 +101,7 @@ func TestCore(t *testing.T) {
 	defer model.Close()
 	const key = "sk-e2e-core-9f3c1d7a"
 	creds := &credentials.Store{Path: l.Credentials(), Secrets: secrets}
-	_, err = creds.Add("bad", "deepseek-official", "ftp://x", key)
+	_, err = creds.Add("bad", "deepseek-official", "ftp://x", key, "")
 	if err == nil {
 		err = errors.New("accepted a non-http base URL")
 	} else {
@@ -109,7 +109,7 @@ func TestCore(t *testing.T) {
 	}
 	var c *credentials.Credential
 	if err == nil {
-		c, err = creds.Add("DeepSeek（假服务）", "deepseek-official", model.URL, key)
+		c, err = creds.Add("DeepSeek（假服务）", "deepseek-official", model.URL, key, "")
 	}
 	if err == nil {
 		err = noFileContains(data, key)
@@ -152,7 +152,7 @@ func TestCore(t *testing.T) {
 
 	// 4. A runtime started with the credential reaches the model and leaves
 	// no key on disk after it exits.
-	provider, env, err := creds.LaunchEnv(c.ID)
+	provider, _, env, err := creds.LaunchEnv(c.ID)
 	var p *alrt.Process
 	if err == nil {
 		p, err = alrt.Launch(ctx, cli, alrt.LaunchSpec{Profile: "sdk", Cwd: w.Dir, Provider: provider, Model: "deepseek-v4-flash", Env: env, IdleTimeout: -1})
