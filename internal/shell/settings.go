@@ -28,6 +28,8 @@ type prefsState struct {
 	codePick         string
 	fontSet, codeSet string // what the fields were last filled from
 	custom           ui.Color
+	picking          bool // the custom accent's picker is open
+	picked           bool // and a color was picked, not saved yet
 }
 
 var zooms = []struct {
@@ -136,22 +138,7 @@ func (s *Shell) appearanceSettings(c *ui.Context, pal *palette) {
 					}
 				}
 				ui.Box(c).Size(1, 18).Background(pal.hairline).Margin(0, 2)
-				cur, custom := parseHex(ap.Accent)
-				if !custom {
-					cur = s.prefs.custom
-					if cur == (ui.Color{}) {
-						cur = ui.Hex("#2f6fe4")
-					}
-				}
-				well := ui.ColorWell(c, &cur).Label("自定义主题色").Tooltip("自定义颜色").Size(40, 24).Radius(12)
-				if custom {
-					well.Border(2, t.Text)
-				}
-				if well.Changed() {
-					s.prefs.custom = cur
-					ap.Accent = hexOf(cur)
-					s.setAppearance(ap)
-				}
+				s.customAccent(c, pal, ap)
 			})
 		})
 	})
@@ -228,7 +215,7 @@ func fromDefault(v, def string) string {
 	return v
 }
 
-// fontField is a filterable list of font families; it reports a choice.
+// fontField is a drop-down of font families; it reports a choice.
 func fontField(c *ui.Context, pick *string, options []string, label string) bool {
 	if options == nil {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -237,7 +224,7 @@ func fontField(c *ui.Context, pick *string, options []string, label string) bool
 		})
 		return false
 	}
-	return ui.Combobox(c, pick, options).Label(label).Width(260).Changed()
+	return ui.Select(c, pick, options).Label(label).Width(260).Changed()
 }
 
 // settingsGroup is a titled box of setting rows, divided by hairlines.
@@ -360,4 +347,56 @@ func swatch(c *ui.Context, pal *palette, key, name string, col ui.Color, sel boo
 		ui.Box(c).Size(18, 18).Radius(9).Background(col)
 	})
 	return ring.Clicked()
+}
+
+// customAccent is the swatch of the user's own accent: a click opens a
+// color picker under it. The window shows the color while it is picked
+// and saves it when the picker closes.
+func (s *Shell) customAccent(c *ui.Context, pal *palette, ap app.Appearance) {
+	t := c.Theme()
+	cur, custom := parseHex(ap.Accent)
+	if !custom {
+		cur = s.prefs.custom
+	}
+	ring := ui.Row(c).Key("accent-custom").Height(26).Padding(0, 10, 0, 4).Gap(6).AlignItems(ui.Center).Radius(13).Cursor(ui.CursorPointer).Focusable().Label("自定义主题色").BorderWidth(1)
+	switch {
+	case custom:
+		ring.BorderColor(cur).Background(pal.selected)
+	case ring.Hovered() || s.prefs.picking:
+		ring.BorderColor(pal.hairline).Background(pal.hover)
+	default:
+		ring.BorderColor(pal.hairline)
+	}
+	ring.Children(func() {
+		dotc := ui.Row(c).Size(18, 18).Radius(9).AlignItems(ui.Center).Justify(ui.Center)
+		if cur == (ui.Color{}) {
+			dotc.Border(1, t.TextMuted).Children(func() { ui.Icon(c, icPlus).Size(11, 11).TextColor(t.TextMuted) })
+		} else {
+			dotc.Background(cur).Children(func() {})
+		}
+		ui.Text(c, "自定义").FontSize(12.5)
+	})
+	if ring.Clicked() {
+		s.prefs.picking = !s.prefs.picking
+		if s.prefs.custom == (ui.Color{}) {
+			s.prefs.custom = ui.Hex("#2f6fe4")
+			if custom {
+				s.prefs.custom = cur
+			}
+		}
+	}
+	ui.Popover(c, ring, &s.prefs.picking, func() {
+		ui.Column(c).Width(288).Padding(14).Children(func() {
+			if ui.ColorPicker(c, &s.prefs.custom).Changed() {
+				col := s.prefs.custom
+				col.A = 255
+				s.settings.Appearance.Accent = hexOf(col)
+				s.prefs.picked = true
+			}
+		})
+	})
+	if !s.prefs.picking && s.prefs.picked {
+		s.prefs.picked = false
+		s.saveSettings(s.settings)
+	}
 }

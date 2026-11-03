@@ -45,16 +45,19 @@ type neutrals struct {
 	bg, surface, hover, pressed, border, text, muted, sidebar, subtle, code, avatar, userMsg string
 }
 
+// The tones differ most where the eye rests: the sidebar, the user's
+// bubbles, controls and the muted text; the middle column stays near white
+// (or near black) so reading is easy.
 var tones = []tone{
 	{"warm", "暖灰",
-		neutrals{"#ffffff", "#f3f2ef", "#ebeae6", "#e2e1dc", "#e4e3df", "#1f1f1d", "#73726d", "#f6f5f2", "#a3a29c", "#f8f7f5", "#e9e7e1", "#f3f2ef"},
-		neutrals{"#1d1c1a", "#2a2927", "#33322f", "#3b3a36", "#383733", "#ecebe8", "#9d9b95", "#242320", "#77756f", "#232220", "#3a3936", "#2c2b28"}},
+		neutrals{"#fffdfa", "#f1ece3", "#e9e3d8", "#dfd8cb", "#e5ded2", "#26221d", "#7a7064", "#f3eee5", "#a69d90", "#f8f5ef", "#e8e0d2", "#f1ebe1"},
+		neutrals{"#1e1b17", "#2d2923", "#36312a", "#3f3931", "#3a352e", "#ede8e0", "#a39a8d", "#27231e", "#7b7368", "#25221d", "#3d372f", "#2f2a24"}},
 	{"neutral", "中性",
-		neutrals{"#ffffff", "#f2f2f3", "#e9e9eb", "#dfdfe2", "#e3e3e6", "#1d1d1f", "#6e6e73", "#f5f5f6", "#a1a1a6", "#f7f7f8", "#e8e8ea", "#f2f2f3"},
-		neutrals{"#1c1c1e", "#2a2a2d", "#323236", "#3a3a3f", "#38383c", "#ececed", "#9b9ba1", "#232325", "#76767c", "#232326", "#3a3a3f", "#2c2c2f"}},
+		neutrals{"#ffffff", "#f2f2f2", "#e9e9e9", "#dedede", "#e2e2e2", "#1c1c1c", "#6f6f6f", "#f4f4f4", "#a3a3a3", "#f7f7f7", "#e6e6e6", "#f0f0f0"},
+		neutrals{"#1b1b1b", "#2a2a2a", "#333333", "#3c3c3c", "#373737", "#ececec", "#9c9c9c", "#222222", "#767676", "#232323", "#383838", "#2b2b2b"}},
 	{"cool", "冷灰",
-		neutrals{"#ffffff", "#f0f2f5", "#e7eaef", "#dde1e8", "#e0e4ea", "#1b1f26", "#6a7180", "#f3f5f8", "#9da4b0", "#f6f8fa", "#e3e8ef", "#eef1f5"},
-		neutrals{"#1a1d23", "#262a32", "#2e333c", "#363c46", "#343a44", "#e8ebf0", "#969eab", "#20242b", "#6f7785", "#21252c", "#363c46", "#2a2f37"}},
+		neutrals{"#fbfcfe", "#e9eef6", "#dfe6f0", "#d3dce9", "#d9e1ec", "#18202e", "#5d6a80", "#edf1f7", "#93a0b4", "#f3f6fa", "#dce4f0", "#e6edf7"},
+		neutrals{"#141922", "#212836", "#29313f", "#323b4b", "#2e3646", "#e4e9f2", "#93a0b6", "#1a202b", "#6c788c", "#1b212c", "#323b4c", "#232b39"}},
 }
 
 // accent is a preset accent color, for light and for dark.

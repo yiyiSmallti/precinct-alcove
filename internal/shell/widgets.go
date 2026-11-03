@@ -10,7 +10,8 @@ import (
 // one (macOS), else the sidebar color.
 func sideGround(c *ui.Context, pal *palette, col ui.Element) ui.Element {
 	if pal.vibrant {
-		return col.Background(ui.Transparent)
+		// The material, tinted toward the tone's sidebar.
+		return col.Background(pal.sidebar.Alpha(0.55))
 	}
 	return col.Background(pal.sidebar)
 }
