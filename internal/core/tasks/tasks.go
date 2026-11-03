@@ -5,6 +5,8 @@
 package tasks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -47,7 +49,9 @@ func (s *Store) transcript(ws, id string) string {
 }
 
 // safe makes an id one path element, distinct ids staying distinct: bytes
-// other than letters, digits, '-' and '_' are written as %XX.
+// other than letters, digits, '-' and '_' are written as %XX. A name that
+// would grow long keeps its start and ends in "~" and a hash of the whole
+// id ('~' is never written plain, so the two forms cannot meet).
 func safe(id string) string {
 	var b strings.Builder
 	for i := 0; i < len(id); i++ {
@@ -58,8 +62,16 @@ func safe(id string) string {
 			fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
-	return b.String()
+	if b.Len() <= maxName {
+		return b.String()
+	}
+	sum := sha256.Sum256([]byte(id))
+	return b.String()[:maxName/2] + "~" + hex.EncodeToString(sum[:16])
 }
+
+// maxName keeps transcript names (and their temporary files) well under
+// file systems' 255-byte limit.
+const maxName = 120
 
 // SaveTranscript writes a task's transcript.
 func (s *Store) SaveTranscript(ws, id string, v any) error {

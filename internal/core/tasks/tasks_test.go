@@ -62,13 +62,16 @@ func TestStore(t *testing.T) {
 
 func TestSafeKeepsIDsApart(t *testing.T) {
 	seen := map[string]string{}
-	for _, id := range []string{"task-a:b", "task-a_b", "task-a/b", "task-a%3Ab", "..", "."} {
+	for _, id := range []string{"task-a:b", "task-a_b", "task-a/b", "task-a%3Ab", "..", ".", "task-" + strings.Repeat(":", 120), "task-" + strings.Repeat(".", 120)} {
 		n := safe(id)
 		if o, ok := seen[n]; ok {
 			t.Fatalf("%q and %q both map to %q", o, id, n)
 		}
 		if strings.ContainsAny(n, `/\:.`) {
 			t.Fatalf("%q maps to %q", id, n)
+		}
+		if len(n) > maxName+40 {
+			t.Fatalf("%q is %d bytes", n, len(n))
 		}
 		seen[n] = id
 	}
