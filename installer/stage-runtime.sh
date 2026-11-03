@@ -70,6 +70,56 @@ JSON
   find "$3/node_modules" -path '*/node-pty/prebuilds/*/spawn-helper' -exec chmod 755 {} +
   # npm's records and shims are for the build machine; the runtime has its own.
   rm -rf "$3/package-lock.json" "$3/node_modules/.bin" "$3/node_modules/.package-lock.json"
+  unhide "$3/node_modules"
+}
+
+# unhide <node_modules>: mygo build leaves out every file whose name starts
+# with a dot, so a package that loads one (pi-ai imports
+# dist/providers/data/.manifest.json) breaks in the app. Such files are
+# renamed to "dot<name>" and their references in the package's scripts
+# rewritten; hidden files nothing refers to are left behind as before.
+unhide() {
+  node - "$1" <<'JS'
+const fs = require('fs'), path = require('path')
+const root = process.argv[2]
+const pkgs = []
+for (const d of fs.readdirSync(root)) {
+  if (d.startsWith('.')) continue
+  if (d.startsWith('@')) for (const s of fs.readdirSync(path.join(root, d))) pkgs.push(path.join(root, d, s))
+  else pkgs.push(path.join(root, d))
+}
+const walk = (dir, out) => {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name)
+    if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p, out) } else if (e.isFile()) out.push(p)
+  }
+  return out
+}
+let n = 0
+for (const pkg of pkgs) {
+  const files = walk(pkg, [])
+  const hidden = files.filter(f => path.basename(f).startsWith('.') && !f.split(path.sep).some(s => s === '.bin'))
+  if (!hidden.length) continue
+  const scripts = files.filter(f => /\.(c|m)?js$/.test(f))
+  for (const h of hidden) {
+    const name = path.basename(h)
+    // "…/.name" or a bare ".name" in quotes (path.join(dir, '.name')).
+    const pairs = []
+    for (const q of ["'", '"', '`']) pairs.push(['/' + name + q, '/dot' + name + q], [q + name + q, q + 'dot' + name + q])
+    const users = scripts.filter(f => { const s = fs.readFileSync(f, 'utf8'); return pairs.some(([a]) => s.includes(a)) })
+    if (!users.length) continue
+    fs.renameSync(h, path.join(path.dirname(h), 'dot' + name))
+    for (const f of users) {
+      let s = fs.readFileSync(f, 'utf8')
+      for (const [a, b] of pairs) s = s.split(a).join(b)
+      fs.writeFileSync(f, s)
+    }
+    console.log(`unhid ${path.relative(root, h)} (${users.length} script${users.length > 1 ? 's' : ''})`)
+    n++
+  }
+}
+if (!n) console.log('no hidden files in use')
+JS
 }
 
 # common <dest dir> <os>: shims, the bridge and the licence.
