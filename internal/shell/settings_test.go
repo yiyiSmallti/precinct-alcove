@@ -10,14 +10,14 @@ func TestAppearanceLooks(t *testing.T) {
 	if !isDark(app.Appearance{}, true) || isDark(app.Appearance{Mode: "light"}, true) || !isDark(app.Appearance{Mode: "dark"}, false) {
 		t.Fatal("mode")
 	}
-	if c, ink := accentColor(app.Appearance{}, false); !ink || hexOf(c) != "#1f1f1d" {
+	if c, ink := accentColor(app.Appearance{}, false); !ink || hexOf(c) != "#26221d" {
 		t.Fatalf("graphite: %s %v", hexOf(c), ink)
 	}
 	if c, ink := accentColor(app.Appearance{Accent: "#123456"}, false); ink || hexOf(c) != "#123456" {
 		t.Fatalf("custom: %s", hexOf(c))
 	}
 	l := lookFor(app.Appearance{Tone: "cool", Accent: "violet", CodeFont: "Menlo"}, true)
-	if l.theme.Accent != l.pal.running || l.pal.mono != "Menlo" || hexOf(l.pal.content) != "#1a1d23" {
+	if l.theme.Accent != l.pal.running || l.pal.mono != "Menlo" || hexOf(l.pal.content) != "#141922" {
 		t.Fatal("look")
 	}
 	if lookFor(app.Appearance{}, false).pal.mono != "monospace" {

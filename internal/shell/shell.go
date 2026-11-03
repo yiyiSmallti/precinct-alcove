@@ -82,6 +82,7 @@ type Shell struct {
 
 	pluginsState
 	panels       panelState
+	saves        transcriptSaves
 	prefs        prefsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
 }
@@ -216,8 +217,11 @@ func (s *Shell) reload() {
 // OnEvent is App.OnEvent: it folds the event into the workspace whose
 // runtime sent it.
 func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
+	// A runtime a plugin started (the cloud bot's local tasks) is not yet
+	// the window's: adopt it by its workspace.
+	ws := s.App.RuntimeWorkspace(runtimeID)
 	s.post(func() {
-		v := s.views[s.byRuntime[runtimeID]]
+		v := s.runtimeView(runtimeID, ws)
 		if v == nil {
 			return
 		}

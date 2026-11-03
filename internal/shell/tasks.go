@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -108,11 +109,39 @@ func (s *Shell) apply(v *wsView, t *taskView, e alrt.Event) {
 	}
 }
 
-// saveTranscript writes what the task shows, for after a restart.
+// saveTranscript writes what the task shows, for after a restart. Writes
+// run in the background, one at a time, and a snapshot older than one
+// already written is dropped, so the file never goes back in time.
 func (s *Shell) saveTranscript(v *wsView, t *taskView) {
 	snap := t.session.Snapshot()
 	ws, id := v.ws.ID, t.meta.ID
-	go s.App.Tasks.SaveTranscript(ws, id, snap)
+	gen := s.saves.next()
+	go s.saves.write(ws+"\x00"+id, gen, func() { s.App.Tasks.SaveTranscript(ws, id, snap) })
+}
+
+// transcriptSaves orders transcript writes.
+type transcriptSaves struct {
+	gen     uint64 // the last snapshot taken (UI thread)
+	mu      sync.Mutex
+	written map[string]uint64 // the newest snapshot written, by task
+}
+
+func (ts *transcriptSaves) next() uint64 {
+	ts.gen++
+	return ts.gen
+}
+
+func (ts *transcriptSaves) write(key string, gen uint64, save func()) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.written == nil {
+		ts.written = map[string]uint64{}
+	}
+	if gen <= ts.written[key] {
+		return
+	}
+	save()
+	ts.written[key] = gen
 }
 
 // titleFrom makes a task title from what the user typed: its first line,

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +57,19 @@ func TestStore(t *testing.T) {
 	}
 	if l, _ := s.List("w2"); len(l) != 1 {
 		t.Fatal("other workspace touched")
+	}
+}
+
+func TestSafeKeepsIDsApart(t *testing.T) {
+	seen := map[string]string{}
+	for _, id := range []string{"task-a:b", "task-a_b", "task-a/b", "task-a%3Ab", "..", "."} {
+		n := safe(id)
+		if o, ok := seen[n]; ok {
+			t.Fatalf("%q and %q both map to %q", o, id, n)
+		}
+		if strings.ContainsAny(n, `/\:.`) {
+			t.Fatalf("%q maps to %q", id, n)
+		}
+		seen[n] = id
 	}
 }
