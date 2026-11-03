@@ -82,6 +82,8 @@ func until(t *testing.T, tt *ui.Tester, s *Shell, cond func() bool) {
 func TestSettingsAddCredential(t *testing.T) {
 	s, tt := newShell(t)
 	tt.Frame()
+	tt.Click("模型")
+	tt.Frame()
 	if !tt.HasText("还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。") {
 		t.Fatalf("no empty state; texts: %v", tt.Texts())
 	}
@@ -308,7 +310,7 @@ func TestExportDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
-	s.page = PageSettings
+	s.page, s.prefs.tab = PageSettings, tabOther
 	s.mu.Unlock()
 	tt.Frame()
 	if err := tt.Click("导出诊断包…"); err != nil {

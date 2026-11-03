@@ -13,7 +13,7 @@ import (
 func (s *Shell) View(c *ui.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pal := useTheme(c)
+	pal := useTheme(c, s.settings.Appearance)
 	t := c.Theme()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		side := ui.Column(c).Width(248).BorderWidth(0, 1, 0, 0).BorderColor(pal.hairline).Shrink(0)
@@ -46,7 +46,7 @@ func (s *Shell) View(c *ui.Context) {
 			case strings.HasPrefix(s.page, pageInbox):
 				s.inboxView(c, strings.TrimPrefix(s.page, pageInbox))
 			default:
-				s.settingsView(c)
+				s.settingsView(c, pal)
 			}
 		})
 	})
@@ -144,77 +144,79 @@ func questionCard(c *ui.Context, pal *palette, q *question) {
 	})
 }
 
-func (s *Shell) settingsView(c *ui.Context) {
+// modelSettings is the settings tab of model credentials and the model.
+func (s *Shell) modelSettings(c *ui.Context) {
 	t := c.Theme()
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(24).Gap(16).MaxWidth(640).Children(func() {
-			ui.Text(c, "模型凭据").FontSize(18).Bold()
-			if len(s.creds) == 0 {
-				ui.Text(c, "还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。").TextColor(t.TextMuted)
+	ui.Text(c, "模型凭据").FontSize(18).Bold()
+	if len(s.creds) == 0 {
+		ui.Text(c, "还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。").TextColor(t.TextMuted)
+	}
+	for _, cr := range s.creds {
+		ui.Row(c).Key(cr.ID).Gap(8).AlignItems(ui.Center).Children(func() {
+			label := cr.Label + "（" + cr.Provider + "）"
+			if cr.ID == s.settings.DefaultCredential {
+				label += " · 默认"
 			}
-			for _, cr := range s.creds {
-				ui.Row(c).Key(cr.ID).Gap(8).AlignItems(ui.Center).Children(func() {
-					label := cr.Label + "（" + cr.Provider + "）"
-					if cr.ID == s.settings.DefaultCredential {
-						label += " · 默认"
-					}
-					ui.Text(c, label).Grow(1)
-					if cr.ID != s.settings.DefaultCredential && ui.Button(c, "设为默认").Clicked() {
-						st := s.settings
-						st.DefaultCredential = cr.ID
-						s.saveSettings(st)
-					}
-					if ui.Button(c, "删除").Clicked() {
-						s.removeCredential(cr.ID)
-					}
-				})
+			ui.Text(c, label).Grow(1)
+			if cr.ID != s.settings.DefaultCredential && ui.Button(c, "设为默认").Clicked() {
+				st := s.settings
+				st.DefaultCredential = cr.ID
+				s.saveSettings(st)
 			}
-			f := &s.form
-			if f.provider == "" {
-				f.provider = providerIDs()[0]
+			if ui.Button(c, "删除").Clicked() {
+				s.removeCredential(cr.ID)
 			}
-			ui.Column(c).Gap(8).Padding(12).Radius(8).Border(1, t.Border).Children(func() {
-				ui.Text(c, "添加凭据").Bold()
-				ui.Field(c, "名称", func() { ui.TextInput(c, &f.label).Placeholder("例如：DeepSeek 个人") })
-				ui.Field(c, "服务", func() { ui.Select(c, &f.provider, providerIDs()) })
-				ui.Field(c, "接口地址（可选）", func() { ui.TextInput(c, &f.baseURL).Placeholder("https://…") })
-				ui.Field(c, "API key", func() { ui.TextInput(c, &f.key).Password() })
-				if f.err != "" {
-					ui.Text(c, f.err).TextColor(t.Danger)
-				}
-				ok := strings.TrimSpace(f.label) != "" && strings.TrimSpace(f.key) != ""
-				if ui.PrimaryButton(c, "添加").Disabled(!ok).Clicked() && ok {
-					s.addCredential()
-				}
-			})
-			ui.Text(c, "模型").FontSize(18).Bold()
-			ui.Field(c, "模型名（留空用默认）", func() {
-				ui.Row(c).Gap(8).Children(func() {
-					in := ui.TextInput(c, &s.model).Placeholder("deepseek-v4-flash").Grow(1)
-					changed := strings.TrimSpace(s.model) != s.settings.Model
-					if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
-						st := s.settings
-						st.Model = strings.TrimSpace(s.model)
-						s.saveSettings(st)
-					}
-				})
-			})
-			s.updatesView(c)
-			ui.Text(c, "诊断").FontSize(18).Bold()
-			ui.Text(c, "把日志和设置打包成 zip，发给支持人员。key、token 和对话内容都不会包含在内。").TextColor(t.TextMuted)
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				if ui.Button(c, "导出诊断包…").Disabled(s.diagBusy).Clicked() && !s.diagBusy {
-					s.exportDiagnostics()
-				}
-				if s.diagBusy {
-					ui.Spinner(c)
-				}
-			})
-			if s.diagStatus != "" {
-				ui.Text(c, s.diagStatus).TextColor(t.TextMuted).Selectable()
+		})
+	}
+	f := &s.form
+	if f.provider == "" {
+		f.provider = providerIDs()[0]
+	}
+	ui.Column(c).Gap(8).Padding(12).Radius(8).Border(1, t.Border).Children(func() {
+		ui.Text(c, "添加凭据").Bold()
+		ui.Field(c, "名称", func() { ui.TextInput(c, &f.label).Placeholder("例如：DeepSeek 个人") })
+		ui.Field(c, "服务", func() { ui.Select(c, &f.provider, providerIDs()) })
+		ui.Field(c, "接口地址（可选）", func() { ui.TextInput(c, &f.baseURL).Placeholder("https://…") })
+		ui.Field(c, "API key", func() { ui.TextInput(c, &f.key).Password() })
+		if f.err != "" {
+			ui.Text(c, f.err).TextColor(t.Danger)
+		}
+		ok := strings.TrimSpace(f.label) != "" && strings.TrimSpace(f.key) != ""
+		if ui.PrimaryButton(c, "添加").Disabled(!ok).Clicked() && ok {
+			s.addCredential()
+		}
+	})
+	ui.Text(c, "模型").FontSize(18).Bold()
+	ui.Field(c, "模型名（留空用默认）", func() {
+		ui.Row(c).Gap(8).Children(func() {
+			in := ui.TextInput(c, &s.model).Placeholder("deepseek-v4-flash").Grow(1)
+			changed := strings.TrimSpace(s.model) != s.settings.Model
+			if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
+				st := s.settings
+				st.Model = strings.TrimSpace(s.model)
+				s.saveSettings(st)
 			}
 		})
 	})
+}
+
+// otherSettings is the settings tab of updates and diagnostics.
+func (s *Shell) otherSettings(c *ui.Context) {
+	t := c.Theme()
+	s.updatesView(c)
+	ui.Text(c, "诊断").FontSize(18).Bold()
+	ui.Text(c, "把日志和设置打包成 zip，发给支持人员。key、token 和对话内容都不会包含在内。").TextColor(t.TextMuted)
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		if ui.Button(c, "导出诊断包…").Disabled(s.diagBusy).Clicked() && !s.diagBusy {
+			s.exportDiagnostics()
+		}
+		if s.diagBusy {
+			ui.Spinner(c)
+		}
+	})
+	if s.diagStatus != "" {
+		ui.Text(c, s.diagStatus).TextColor(t.TextMuted).Selectable()
+	}
 }
 
 func clip(s string, n int) string {

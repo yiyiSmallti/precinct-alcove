@@ -1,13 +1,21 @@
 package shell
 
 import (
+	"fmt"
+	"strings"
+	"sync"
+
 	"github.com/egoist/mygo/ui"
+
+	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 )
 
-// palette is the window's look beyond what ui.Theme names. The look is
-// quiet and monochrome, like a native Mac app: warm neutrals, hairlines
-// instead of boxes, ink-colored primary actions, and color kept for state
-// (running, waiting on you, done, failed).
+// palette is the window's look beyond what ui.Theme names. The default
+// look is quiet, like a native Mac app: warm neutrals, hairlines instead
+// of boxes, ink-colored primary actions, and color kept for state
+// (running, waiting on you, done, failed). Settings → 外观 changes the
+// light or dark mode, the neutrals' tone, the accent, the fonts and the
+// window's zoom.
 type palette struct {
 	content  ui.Color // the middle column's ground
 	sidebar  ui.Color // the side columns' ground where there is no vibrancy
@@ -22,108 +30,203 @@ type palette struct {
 	done     ui.Color // a finished task
 	shadow   ui.Color // under floating cards and the composer
 	avatar   ui.Color // the workspace's letter tile
+
+	mono    string // the code font
+	vibrant bool   // the side columns show the window's material
 }
 
-var (
-	lightTheme, darkTheme     = workbenchTheme(false), workbenchTheme(true)
-	lightPalette, darkPalette = workbenchPalette(false), workbenchPalette(true)
-)
-
-func workbenchTheme(dark bool) *ui.Theme {
-	if dark {
-		t := ui.DarkTheme()
-		t.Background = ui.Hex("#1c1c1e")
-		t.Surface = ui.Hex("#2a2a2d")
-		t.SurfaceHover = ui.Hex("#323236")
-		t.SurfacePressed = ui.Hex("#3a3a3f")
-		t.Border = ui.Hex("#38383c")
-		t.Text = ui.Hex("#ececed")
-		t.TextMuted = ui.Hex("#9b9ba1")
-		t.Accent = ui.Hex("#ececed")
-		t.AccentHover = ui.Hex("#ffffff")
-		t.AccentPressed = ui.Hex("#d4d4d6")
-		t.AccentText = ui.Hex("#1c1c1e")
-		t.Warning = ui.Hex("#e5a54b")
-		t.Success = ui.Hex("#5fbf86")
-		t.Danger = ui.Hex("#f17a72")
-		t.Selection = ui.RGBA(100, 150, 255, 0.35)
-		t.Focus = ui.RGBA(120, 160, 255, 0.55)
-		t.Radius = 8
-		t.FontSize = 13.5
-		return t
-	}
-	t := ui.LightTheme()
-	t.Background = ui.Hex("#ffffff")
-	t.Surface = ui.Hex("#f3f2ef")
-	t.SurfaceHover = ui.Hex("#ebeae6")
-	t.SurfacePressed = ui.Hex("#e2e1dc")
-	t.Border = ui.Hex("#e4e3df")
-	t.Text = ui.Hex("#1f1f1d")
-	t.TextMuted = ui.Hex("#73726d")
-	t.Accent = ui.Hex("#1f1f1d")
-	t.AccentHover = ui.Hex("#3a3a37")
-	t.AccentPressed = ui.Hex("#000000")
-	t.AccentText = ui.Hex("#ffffff")
-	t.Warning = ui.Hex("#b5680f")
-	t.Success = ui.Hex("#2f8a57")
-	t.Danger = ui.Hex("#c4433b")
-	t.Selection = ui.RGBA(56, 116, 255, 0.2)
-	t.Focus = ui.RGBA(56, 116, 255, 0.45)
-	t.Radius = 8
-	t.FontSize = 13.5
-	return t
+// tone is one set of neutrals, for light and for dark.
+type tone struct {
+	id, name    string
+	light, dark neutrals
 }
 
-func workbenchPalette(dark bool) *palette {
-	if dark {
-		return &palette{
-			content:  ui.Hex("#1c1c1e"),
-			sidebar:  ui.Hex("#232325"),
-			selected: ui.RGBA(255, 255, 255, 0.09),
-			hover:    ui.RGBA(255, 255, 255, 0.05),
-			userMsg:  ui.Hex("#2c2c2f"),
-			code:     ui.Hex("#232326"),
-			hairline: ui.RGBA(255, 255, 255, 0.08),
-			subtle:   ui.Hex("#76767c"),
-			running:  ui.Hex("#6ea2ff"),
-			waiting:  ui.Hex("#e5a54b"),
-			done:     ui.Hex("#5fbf86"),
-			shadow:   ui.RGBA(0, 0, 0, 0.35),
-			avatar:   ui.Hex("#3a3a3f"),
+type neutrals struct {
+	bg, surface, hover, pressed, border, text, muted, sidebar, subtle, code, avatar, userMsg string
+}
+
+var tones = []tone{
+	{"warm", "暖灰",
+		neutrals{"#ffffff", "#f3f2ef", "#ebeae6", "#e2e1dc", "#e4e3df", "#1f1f1d", "#73726d", "#f6f5f2", "#a3a29c", "#f8f7f5", "#e9e7e1", "#f3f2ef"},
+		neutrals{"#1d1c1a", "#2a2927", "#33322f", "#3b3a36", "#383733", "#ecebe8", "#9d9b95", "#242320", "#77756f", "#232220", "#3a3936", "#2c2b28"}},
+	{"neutral", "中性",
+		neutrals{"#ffffff", "#f2f2f3", "#e9e9eb", "#dfdfe2", "#e3e3e6", "#1d1d1f", "#6e6e73", "#f5f5f6", "#a1a1a6", "#f7f7f8", "#e8e8ea", "#f2f2f3"},
+		neutrals{"#1c1c1e", "#2a2a2d", "#323236", "#3a3a3f", "#38383c", "#ececed", "#9b9ba1", "#232325", "#76767c", "#232326", "#3a3a3f", "#2c2c2f"}},
+	{"cool", "冷灰",
+		neutrals{"#ffffff", "#f0f2f5", "#e7eaef", "#dde1e8", "#e0e4ea", "#1b1f26", "#6a7180", "#f3f5f8", "#9da4b0", "#f6f8fa", "#e3e8ef", "#eef1f5"},
+		neutrals{"#1a1d23", "#262a32", "#2e333c", "#363c46", "#343a44", "#e8ebf0", "#969eab", "#20242b", "#6f7785", "#21252c", "#363c46", "#2a2f37"}},
+}
+
+// accent is a preset accent color, for light and for dark.
+type accent struct {
+	id, name    string
+	light, dark string // "" is the tone's ink
+}
+
+var accents = []accent{
+	{"graphite", "石墨", "", ""},
+	{"blue", "海蓝", "#2f6fe4", "#5b8ff9"},
+	{"violet", "紫藤", "#6e56cf", "#9d8bf0"},
+	{"teal", "青碧", "#0f8a83", "#3cc0b5"},
+	{"green", "松绿", "#2f8a57", "#55b97e"},
+	{"amber", "琥珀", "#c9620c", "#f0913a"},
+	{"rose", "玫红", "#c2416b", "#ef6f96"},
+}
+
+func toneOf(id string) tone {
+	for _, t := range tones {
+		if t.id == id {
+			return t
 		}
 	}
-	return &palette{
-		content:  ui.Hex("#ffffff"),
-		sidebar:  ui.Hex("#f6f5f2"),
-		selected: ui.RGBA(31, 31, 29, 0.07),
-		hover:    ui.RGBA(31, 31, 29, 0.04),
-		userMsg:  ui.Hex("#f3f2ef"),
-		code:     ui.Hex("#f8f7f5"),
-		hairline: ui.RGBA(31, 31, 29, 0.08),
-		subtle:   ui.Hex("#a3a29c"),
-		running:  ui.Hex("#2f6fe4"),
-		waiting:  ui.Hex("#c47812"),
-		done:     ui.Hex("#2f8a57"),
-		shadow:   ui.RGBA(31, 31, 29, 0.07),
-		avatar:   ui.Hex("#e9e7e1"),
-	}
+	return tones[0]
 }
 
-// useTheme switches the frame to Alcove's theme for the system's appearance
-// and returns the matching palette. Over a window material (macOS
-// vibrancy) the root stays clear, so the sidebar shows it.
-func useTheme(c *ui.Context) *palette {
-	pal := lightPalette
-	if c.Theme().Dark {
-		c.SetTheme(darkTheme)
-		pal = darkPalette
-	} else {
-		c.SetTheme(lightTheme)
+// accentColor is the accent of the appearance in light or dark, and
+// whether it is the tone's ink (graphite).
+func accentColor(ap app.Appearance, dark bool) (ui.Color, bool) {
+	if c, ok := parseHex(ap.Accent); ok {
+		if dark {
+			c = c.Mix(ui.RGB(255, 255, 255), 0.18)
+		}
+		return c, false
 	}
-	if c.Vibrancy() {
+	for _, a := range accents {
+		if a.id == ap.Accent && a.light != "" {
+			if dark {
+				return ui.Hex(a.dark), false
+			}
+			return ui.Hex(a.light), false
+		}
+	}
+	n := toneOf(ap.Tone).light
+	if dark {
+		n = toneOf(ap.Tone).dark
+	}
+	return ui.Hex(n.text), true
+}
+
+// parseHex reads a "#rrggbb" color.
+func parseHex(s string) (ui.Color, bool) {
+	var r, g, b uint8
+	if len(s) != 7 || s[0] != '#' {
+		return ui.Color{}, false
+	}
+	if _, err := fmt.Sscanf(strings.ToLower(s[1:]), "%02x%02x%02x", &r, &g, &b); err != nil {
+		return ui.Color{}, false
+	}
+	return ui.RGB(r, g, b), true
+}
+
+func hexOf(c ui.Color) string { return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B) }
+
+// onAccent is the text color that reads on an accent.
+func onAccent(c ui.Color) ui.Color {
+	l := 0.2126*float32(c.R) + 0.7152*float32(c.G) + 0.0722*float32(c.B)
+	if l > 160 {
+		return ui.Hex("#141414")
+	}
+	return ui.RGB(255, 255, 255)
+}
+
+type look struct {
+	theme *ui.Theme
+	pal   palette
+}
+
+var looks sync.Map // look key → *look
+
+// lookFor builds (once) the theme and palette of an appearance in light
+// or dark.
+func lookFor(ap app.Appearance, dark bool) *look {
+	key := fmt.Sprintf("%s|%s|%s|%s|%v", ap.Tone, ap.Accent, ap.Font, ap.CodeFont, dark)
+	if l, ok := looks.Load(key); ok {
+		return l.(*look)
+	}
+	n := toneOf(ap.Tone).light
+	t := ui.LightTheme()
+	if dark {
+		n = toneOf(ap.Tone).dark
+		t = ui.DarkTheme()
+	}
+	hx := ui.Hex
+	t.Background, t.Surface, t.SurfaceHover, t.SurfacePressed = hx(n.bg), hx(n.surface), hx(n.hover), hx(n.pressed)
+	t.Border, t.Text, t.TextMuted = hx(n.border), hx(n.text), hx(n.muted)
+	acc, ink := accentColor(ap, dark)
+	t.Accent, t.AccentText = acc, onAccent(acc)
+	if dark {
+		t.AccentHover, t.AccentPressed = acc.Mix(ui.RGB(255, 255, 255), 0.12), acc.Mix(ui.RGB(0, 0, 0), 0.1)
+		t.Warning, t.Success, t.Danger = hx("#e5a54b"), hx("#5fbf86"), hx("#f17a72")
+	} else {
+		t.AccentHover, t.AccentPressed = acc.Mix(ui.RGB(255, 255, 255), 0.14), acc.Mix(ui.RGB(0, 0, 0), 0.15)
+		t.Warning, t.Success, t.Danger = hx("#b5680f"), hx("#2f8a57"), hx("#c4433b")
+	}
+	focus := acc
+	if ink {
+		focus = hx("#3874ff")
+	}
+	t.Selection, t.Focus = focus.Alpha(0.25), focus.Alpha(0.5)
+	t.Radius, t.FontSize, t.Font = 8, 13.5, ap.Font
+
+	text := hx(n.text)
+	p := palette{
+		content: hx(n.bg), sidebar: hx(n.sidebar),
+		selected: text.Alpha(0.07), hover: text.Alpha(0.04),
+		userMsg: hx(n.userMsg), code: hx(n.code), hairline: text.Alpha(0.08),
+		subtle: hx(n.subtle), avatar: hx(n.avatar),
+		running: hx("#2f6fe4"), waiting: hx("#c47812"), done: hx("#2f8a57"),
+		shadow: text.Alpha(0.07), mono: ap.CodeFont,
+	}
+	if dark {
+		p.selected, p.hover, p.hairline = text.Alpha(0.09), text.Alpha(0.05), text.Alpha(0.08)
+		p.running, p.waiting, p.done, p.shadow = hx("#6ea2ff"), hx("#e5a54b"), hx("#5fbf86"), ui.RGBA(0, 0, 0, 0.35)
+	}
+	if !ink {
+		// A colored accent tints what is chosen and what runs.
+		p.selected, p.running = acc.Alpha(0.14), acc
+		p.userMsg = acc.Alpha(0.1).Over(hx(n.bg))
+		p.avatar = acc.Alpha(0.18).Over(hx(n.bg))
+	}
+	if p.mono == "" {
+		p.mono = "monospace"
+	}
+	l, _ := looks.LoadOrStore(key, &look{theme: t, pal: p})
+	return l.(*look)
+}
+
+// isDark reports whether an appearance shows dark, given the system's.
+func isDark(ap app.Appearance, system bool) bool {
+	switch ap.Mode {
+	case "light":
+		return false
+	case "dark":
+		return true
+	}
+	return system
+}
+
+// useTheme switches the frame to the user's look and returns its palette.
+// Over a window material (macOS vibrancy) the root stays clear, so the
+// sidebar shows it, while the look's mode is the system's (the material
+// follows the system).
+func useTheme(c *ui.Context, ap app.Appearance) *palette {
+	system := c.Theme().Dark
+	dark := isDark(ap, system)
+	l := lookFor(ap, dark)
+	c.SetTheme(l.theme)
+	z := ap.Zoom
+	if z == 0 {
+		z = 1
+	}
+	if c.Zoom() != z {
+		c.SetZoom(z)
+	}
+	pal := l.pal
+	pal.vibrant = c.Vibrancy() && dark == system
+	if pal.vibrant {
 		c.Root().Background(ui.Transparent)
 	}
-	return pal
+	return &pal
 }
 
 func icon(shapes string) *ui.SVG {

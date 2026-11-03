@@ -9,7 +9,7 @@ import (
 // sideGround paints a side column: the window's material where there is
 // one (macOS), else the sidebar color.
 func sideGround(c *ui.Context, pal *palette, col ui.Element) ui.Element {
-	if c.Vibrancy() {
+	if pal.vibrant {
 		return col.Background(ui.Transparent)
 	}
 	return col.Background(pal.sidebar)

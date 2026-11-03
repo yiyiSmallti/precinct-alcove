@@ -243,7 +243,7 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 				}
 			})
 			ui.Text(c, toolVerb(e.ToolName)).FontSize(13).FontWeight(500).Shrink(0)
-			ui.Text(c, toolSummary(e.Args)).FontSize(12).TextColor(t.TextMuted).Font("monospace").SingleLine().Grow(1).MinWidth(0)
+			ui.Text(c, toolSummary(e.Args)).FontSize(12).TextColor(t.TextMuted).Font(pal.mono).SingleLine().Grow(1).MinWidth(0)
 			arrow := ui.Icon(c, icChevron).Size(13, 13).TextColor(pal.subtle)
 			if !open {
 				arrow.Rotate(-90)
@@ -256,7 +256,7 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 			ui.Column(c).Gap(6).Padding(10, 12).Radius(8).Background(pal.code).Border(1, pal.hairline).Margin(0, 8, 6, 31).Children(func() {
 				if e.Args != "" {
 					ui.Text(c, "参数").FontSize(11).FontWeight(500).TextColor(pal.subtle)
-					ui.Text(c, clip(prettyArgs(e.Args), 2000)).FontSize(12).Font("monospace").Selectable()
+					ui.Text(c, clip(prettyArgs(e.Args), 2000)).FontSize(12).Font(pal.mono).Selectable()
 				}
 				if e.Result != "" {
 					color := t.Text
@@ -264,7 +264,7 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 						color = t.Danger
 					}
 					ui.Text(c, "输出").FontSize(11).FontWeight(500).TextColor(pal.subtle)
-					ui.Text(c, clip(e.Result, 4000)).FontSize(12).Font("monospace").TextColor(color).Selectable()
+					ui.Text(c, clip(e.Result, 4000)).FontSize(12).Font(pal.mono).TextColor(color).Selectable()
 				}
 			})
 		}

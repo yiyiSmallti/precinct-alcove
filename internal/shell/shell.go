@@ -82,6 +82,7 @@ type Shell struct {
 
 	pluginsState
 	panels       panelState
+	prefs        prefsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
 }
 
@@ -155,7 +156,7 @@ func (s *Shell) Load() {
 	s.post(func() {
 		switch {
 		case len(s.creds) == 0 || len(s.workspaces) == 0:
-			s.page = PageSettings
+			s.page, s.prefs.tab = PageSettings, tabModel
 		default:
 			s.page = pageWS + s.workspaces[0].ID
 		}

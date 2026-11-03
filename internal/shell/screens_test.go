@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -80,6 +81,20 @@ func TestScreens(t *testing.T) {
 		s.page = PageSettings
 		s.mu.Unlock()
 		shot("settings")
+		time.Sleep(300 * time.Millisecond)
+		shot("settings")
+		s.mu.Lock()
+		s.settings.Appearance = app.Appearance{Tone: "cool", Accent: "violet"}
+		s.mu.Unlock()
+		shot("settings-violet")
+		s.mu.Lock()
+		s.page, v.current = pageWS+v.ws.ID, "chat-report"
+		s.mu.Unlock()
+		shot("task-violet")
+		s.mu.Lock()
+		s.settings.Appearance = app.Appearance{Accent: "amber"}
+		s.mu.Unlock()
+		shot("task-amber")
 	}
 }
 

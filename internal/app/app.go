@@ -51,6 +51,25 @@ type Settings struct {
 	// UpdateSource is a mirror of the release files (an https directory);
 	// "" is the feed built into the app.
 	UpdateSource string `json:"updateSource,omitempty"`
+	// Appearance is how the window looks; zero is Alcove's default look.
+	Appearance Appearance `json:"appearance"`
+}
+
+// Appearance is the look the user chose in settings.
+type Appearance struct {
+	// Mode is "light" or "dark"; "" follows the system.
+	Mode string `json:"mode,omitempty"`
+	// Tone tints the neutrals: "warm" (""), "neutral" or "cool".
+	Tone string `json:"tone,omitempty"`
+	// Accent colors primary buttons, the chosen row and running tasks: a
+	// preset name ("" is graphite) or a #rrggbb color.
+	Accent string `json:"accent,omitempty"`
+	// Font and CodeFont are font families; "" is the system's and its
+	// monospace.
+	Font     string `json:"font,omitempty"`
+	CodeFont string `json:"codeFont,omitempty"`
+	// Zoom scales the whole window; 0 is 1.
+	Zoom float32 `json:"zoom,omitempty"`
 }
 
 // App is one running Alcove.
