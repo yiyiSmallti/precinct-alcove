@@ -1,0 +1,7 @@
+# Plugin signing keys every Alcove build trusts (trust.go). One base64
+# Ed25519 public key per line, from `dovetail keygen`; the private keys are
+# never in this repository.
+
+# Precinct first-party key (key id bb9bc560f011a603), generated 2026-11-03;
+# the private key stays on the release Mac (~/.precinct/keys).
+BTSXMygQ2d+h/oZyLX37TlTxl5BXtX/VoIIcGZU4ypU=
