@@ -10,7 +10,6 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
-	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 )
 
 // PreparePlugin checks a package file for the install dialog. Hand the plan
@@ -41,27 +40,13 @@ func (a *App) RestartPlugin(ctx context.Context, name string) error {
 // rebuildingStore is dsh.CLI.Rebuilding: sidecars run from the store
 // profile's node_modules, which a rebuild removes (and Windows will not
 // remove while they run), so the running ones stop first and start again
-// after.
+// after. It runs inside the plugin host's install and uninstall, under its
+// lock, so it goes by the sidecars' own specs, not the host's records.
 func (a *App) rebuildingStore(ctx context.Context, profile string) func() {
 	if profile != host.StoreProfile {
 		return nil
 	}
-	recs, err := a.Plugins.List()
-	if err != nil {
-		return nil
-	}
-	var stopped []host.Installed
-	for _, r := range recs {
-		if st, ok := a.Sidecars.Status(r.Name); ok && st.State != sidecar.Stopped && !r.Incomplete && r.Sidecar != "" {
-			a.Sidecars.Stop(ctx, r.Name)
-			stopped = append(stopped, r)
-		}
-	}
-	return func() {
-		for _, r := range stopped {
-			a.Sidecars.Start(context.WithoutCancel(ctx), a.sidecarSpec(r))
-		}
-	}
+	return a.Sidecars.StopActive(ctx)
 }
 
 // Plugin secrets are what a plugin's settings page collects in secretRef

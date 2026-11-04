@@ -1,6 +1,10 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,14 +20,28 @@ type inboxFiles struct {
 	saved map[string]int // plugin → the newest version written
 }
 
+// inboxPath is plugin's file: its name made safe to read, then a digest of
+// the whole name, so names that read alike never share a file.
 func (a *App) inboxPath(plugin string) string {
-	name := strings.NewReplacer("/", "__", "\\", "__", ":", "_").Replace(plugin)
-	return filepath.Join(a.Layout.PluginInbox(), name+".json")
+	sum := sha256.Sum256([]byte(plugin))
+	return filepath.Join(a.Layout.PluginInbox(), legacyInboxName(plugin)+"-"+hex.EncodeToString(sum[:6])+".json")
+}
+
+// legacyInboxName is the file name before the digest, still read once.
+func legacyInboxName(plugin string) string {
+	return strings.NewReplacer("/", "__", "\\", "__", ":", "_").Replace(plugin)
+}
+
+func (a *App) legacyInboxPath(plugin string) string {
+	return filepath.Join(a.Layout.PluginInbox(), legacyInboxName(plugin)+".json")
 }
 
 // LoadInbox returns the saved conversation view of plugin, nil if none.
 func (a *App) LoadInbox(plugin string) []byte {
 	b, err := os.ReadFile(a.inboxPath(plugin))
+	if errors.Is(err, fs.ErrNotExist) {
+		b, err = os.ReadFile(a.legacyInboxPath(plugin))
+	}
 	if err != nil {
 		return nil
 	}
@@ -54,6 +72,7 @@ func (a *App) SaveInbox(plugin string, seq int, data []byte) {
 		return
 	}
 	f.saved[plugin] = seq
+	os.Remove(a.legacyInboxPath(plugin))
 }
 
 // DropInbox removes plugin's saved conversation view (uninstall).
@@ -61,5 +80,6 @@ func (a *App) DropInbox(plugin string) {
 	a.inbox.mu.Lock()
 	defer a.inbox.mu.Unlock()
 	os.Remove(a.inboxPath(plugin))
+	os.Remove(a.legacyInboxPath(plugin))
 	delete(a.inbox.saved, plugin)
 }
