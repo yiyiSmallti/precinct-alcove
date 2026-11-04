@@ -252,7 +252,7 @@ func TestDailyManage(t *testing.T) {
 	if err != nil {
 		return
 	}
-	sid := "task-" + req.ID
+	sid := app.TaskSessionID(dailyPlugin, req.ID)
 	err = waitFor(func() bool { return view.has("已在工作区「演示项目」开始") }, 30*time.Second)
 	if err == nil {
 		err = waitFor(func() bool { return bot.workerRan() }, 60*time.Second)

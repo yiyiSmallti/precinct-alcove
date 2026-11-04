@@ -331,7 +331,11 @@ func (s *Shell) OnSidecarState(name string, st sidecar.Status) {
 			}
 			return
 		}
-		if c := s.chats[name]; c != nil {
+		c := s.chats[name]
+		if c == nil && s.App != nil && len(s.App.LoadInbox(name)) > 0 {
+			c = s.chat(name) // inputs saved before a restart go out too
+		}
+		if c != nil {
 			for _, e := range c.entries {
 				if e.out != nil && e.out.state == outFailed {
 					s.deliver(name, e.out)

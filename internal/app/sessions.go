@@ -57,7 +57,7 @@ func (a *App) mayRun(plugin, wsID, session string) (granted bool, err error) {
 	if w.OwnerName() == plugin {
 		return false, nil
 	}
-	if w.OwnerName() == workspace.Personal && a.grantFor(plugin, session) == wsID {
+	if g, ok := a.grantFor(plugin, session); ok && w.OwnerName() == workspace.Personal && g.Workspace == wsID {
 		return true, nil
 	}
 	return false, fmt.Errorf("%w: workspace %s does not belong to %s", sidecar.ErrNotPermitted, wsID, plugin)

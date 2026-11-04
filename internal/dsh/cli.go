@@ -31,6 +31,10 @@ type CLI struct {
 	Env []string
 	// Timeout bounds each call; zero means 5 minutes.
 	Timeout time.Duration
+	// Rebuilding, if set, is called before a profile's node_modules is
+	// removed to be rebuilt (plugin): it stops what runs from there, and
+	// the function it returns, if any, starts it again afterwards.
+	Rebuilding func(ctx context.Context, profile string) (resume func())
 }
 
 // Result is one finished dsh call.
@@ -204,6 +208,11 @@ func (c *CLI) plugin(ctx context.Context, profile string, args ...string) (Resul
 	args = append([]string{"plugin", "--profile", profile}, args...)
 	res, err := c.Run(ctx, args...)
 	if err != nil && strings.Contains(res.Stdout+res.Stderr, "ERR_PNPM_UNEXPECTED_STORE") {
+		if c.Rebuilding != nil {
+			if resume := c.Rebuilding(ctx, profile); resume != nil {
+				defer resume()
+			}
+		}
 		if rmErr := os.RemoveAll(filepath.Join(c.ProfileDir(profile), "node_modules")); rmErr != nil {
 			return res, err
 		}

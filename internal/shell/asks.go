@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
@@ -56,7 +57,7 @@ func (s *Shell) answerAsk(ask *taskAsk, ws string) {
 	s.dropAsk(ask)
 	if ws != "" {
 		if v := s.view(ws); v != nil {
-			sid := "task-" + ask.req.ID
+			sid := app.TaskSessionID(ask.plugin, ask.req.ID)
 			if v.tasks[sid] == nil {
 				s.addTask(v, tasks.Task{ID: sid, Title: ask.req.Title, Source: ask.plugin})
 			}

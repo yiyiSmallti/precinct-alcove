@@ -172,6 +172,7 @@ func New(cfg Config) (*App, error) {
 	}
 	cli := &dsh.CLI{Node: cfg.Node, Bin: cfg.DSHBin, Home: l.DSHHome(), ToolDirs: cfg.ToolDirs}
 	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg, Catalog: catalog.FromDSHBin(cfg.DSHBin)}
+	cli.Rebuilding = a.rebuildingStore
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
 	if err := a.migrateModel(); err != nil {
 		a.pluginLog("host", "warn", fmt.Sprintf("moving the saved model onto its credential: %v", err))
