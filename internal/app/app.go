@@ -580,9 +580,10 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 	}
 	if route != nil {
 		effort, tuning := a.tuning(s, route.Route, route.Model, 0)
-		return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
+		return a.ensure(ctx, alrt.LaunchSpec{
 			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: effort,
-			Owner: owner, Env: append(append([]string(nil), extra...), tuning...),
+			Tuning: effort + "\n" + strings.Join(tuning, "\n"), Owner: owner,
+			Env: append(append([]string(nil), extra...), tuning...),
 		})
 	}
 	credID := s.DefaultCredential
@@ -605,20 +606,24 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		return nil, err
 	}
 	effort, tuning := a.tuning(s, provider, model, cr.Context[model])
-	tag := effort + "\n" + strings.Join(tuning, "\n")
-	// The user switched model or credential, or retuned it, since the
-	// runtime started: an idle one restarts on the new route (sessions
-	// resume from disk); a busy one keeps its route until its sessions are
-	// done.
-	if p := a.Runtimes.Get(alrt.Key{Profile: prof, Cwd: cwd}); p != nil && p.Spec.Owner == "" &&
-		(p.Spec.Credential != credID || p.Spec.Provider != provider || p.Spec.Model != model || p.Spec.Tuning != tag) && !p.Busy() {
-		p.Stop(0)
-	}
-	return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort, Tuning: tag, Credential: credID,
+	return a.ensure(ctx, alrt.LaunchSpec{
+		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort,
+		Tuning: effort + "\n" + strings.Join(tuning, "\n"), Credential: credID,
 		// Plugin variables first: the credential always wins.
 		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})
+}
+
+// ensure starts (or returns) the runtime spec describes. The user switched
+// model or credential, or retuned it, since a runtime of the same owner
+// started: an idle one restarts on the new spec (sessions resume from
+// disk); a busy one keeps it until its sessions are done.
+func (a *App) ensure(ctx context.Context, spec alrt.LaunchSpec) (*alrt.Process, error) {
+	if p := a.Runtimes.Get(alrt.Key{Profile: spec.Profile, Cwd: spec.Cwd}); p != nil && p.Spec.Owner == spec.Owner &&
+		(p.Spec.Credential != spec.Credential || p.Spec.Provider != spec.Provider || p.Spec.Model != spec.Model || p.Spec.Tuning != spec.Tuning) && !p.Busy() {
+		p.Stop(0)
+	}
+	return a.Runtimes.Ensure(ctx, spec)
 }
 
 // tuning is how the settings reach a runtime of model on route: the

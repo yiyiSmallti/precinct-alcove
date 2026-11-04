@@ -550,6 +550,10 @@ func (s *Shell) removeWorkspace(id string) {
 	go func() {
 		err := s.App.RemoveWorkspace(context.Background(), id)
 		s.reload()
+		if err == nil {
+			// After reload: a plugin can no longer make a new page for it.
+			s.closeBrowser(id)
+		}
 		s.post(func() {
 			if err != nil {
 				s.notice = "无法移除工作区：" + describe(err)

@@ -60,11 +60,18 @@ func (s *Shell) browserTab(ws string, create bool) (*browserTab, error) {
 	tab := s.browsers[ws]
 	known := s.find(ws) != nil
 	s.mu.Unlock()
+	if !known {
+		// A removed workspace's page is no one's to drive any more.
+		if tab != nil {
+			s.closeBrowser(ws)
+		}
+		if create {
+			return nil, fmt.Errorf("no workspace %s", ws)
+		}
+		return nil, nil
+	}
 	if tab != nil || !create {
 		return tab, nil
-	}
-	if !known {
-		return nil, fmt.Errorf("no workspace %s", ws)
 	}
 	if s.NewWebView == nil {
 		return nil, errNoBrowser
