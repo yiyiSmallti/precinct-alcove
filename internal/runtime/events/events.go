@@ -40,6 +40,22 @@ type Entry struct {
 	Result   string `json:"result,omitempty"`
 	IsError  bool   `json:"isError,omitempty"`
 	Done     bool   `json:"done,omitempty"`
+	// Subagent calls only. dsh's subagent tool returns as soon as the
+	// subagent starts; these follow the subagent itself: its id, how it is
+	// doing (running, ok, error, stopped), how many tool calls it and its
+	// own subagents made, the latest of them, and its final answer.
+	Agent       string `json:"agent,omitempty"`
+	AgentStatus string `json:"agentStatus,omitempty"`
+	AgentSteps  int    `json:"agentSteps,omitempty"`
+	AgentTool   string `json:"-"`
+	AgentArgs   string `json:"-"`
+	AgentResult string `json:"agentResult,omitempty"`
+}
+
+// Busy reports whether the entry is still at work: a tool call without its
+// result, or a subagent that has not finished.
+func (e *Entry) Busy() bool {
+	return e.Kind == Tool && (!e.Done || e.AgentStatus == "running")
 }
 
 // Session is one dsh session as the conversation view shows it.
@@ -61,6 +77,12 @@ type Session struct {
 	think map[string]*Entry // reasoning being streamed
 	seq   int               // last durable seq applied; -1 before any
 	next  int
+
+	// agents maps the sessions of subagents (and of their own subagents)
+	// to the call that started them. Until the call's result names a
+	// subagent, it maps to a stand-in that is not shown.
+	agents     map[string]*Entry
+	agentCalls map[string]bool // subagent tool calls counted, by session/call id
 }
 
 // Usage splits a reply's tokens: the request's input not read from the
@@ -74,11 +96,43 @@ type Usage struct {
 
 // NewSession returns an empty session view for id.
 func NewSession(id string) *Session {
-	return &Session{ID: id, seq: -1, tools: map[string]*Entry{}, live: map[string]*Entry{}, think: map[string]*Entry{}}
+	s := &Session{ID: id}
+	s.reset()
+	return s
+}
+
+func (s *Session) reset() {
+	s.Entries, s.next, s.seq = nil, 0, -1
+	s.tools, s.live, s.think = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
+	s.agents, s.agentCalls = map[string]*Entry{}, map[string]bool{}
 }
 
 // Running reports whether a turn is in progress.
 func (s *Session) Running() bool { return s.Status == "running" }
+
+// Exited marks the subagents still running as stopped: their runtime is
+// gone. It reports whether there were any.
+func (s *Session) Exited() bool {
+	any := false
+	for _, e := range s.Entries {
+		if e.Agent != "" && e.AgentStatus == "running" {
+			e.AgentStatus, e.AgentTool, e.AgentArgs, any = "stopped", "", "", true
+		}
+	}
+	return any
+}
+
+// AgentsRunning counts the subagents of s that have not finished; the
+// session's own turn may have ended meanwhile.
+func (s *Session) AgentsRunning() int {
+	n := 0
+	for _, e := range s.Entries {
+		if e.Agent != "" && e.AgentStatus == "running" {
+			n++
+		}
+	}
+	return n
+}
 
 type envelope struct {
 	SessionID string          `json:"sessionId"`
@@ -121,8 +175,17 @@ func SessionOf(params json.RawMessage) string {
 // sent them) into s and reports whether anything visible changed.
 // Notifications for other sessions and unknown event types are ignored.
 func (s *Session) Apply(method string, params json.RawMessage) bool {
+	if method == "subagent.started" || method == "subagent.finished" {
+		return s.applySubagent(method, params)
+	}
 	var env envelope
-	if err := json.Unmarshal(params, &env); err != nil || env.SessionID != s.ID {
+	if err := json.Unmarshal(params, &env); err != nil {
+		return false
+	}
+	if env.SessionID != s.ID {
+		if a := s.agents[env.SessionID]; a != nil && method == "session.event" {
+			return s.applyAgentEvent(a, env.SessionID, env.Event)
+		}
 		return false
 	}
 	switch method {
@@ -257,6 +320,9 @@ func (s *Session) applyEvent(e event) bool {
 		}
 		t := s.tool(d.Message.ToolCallID, "", "")
 		t.Result, t.IsError, t.Done = textOf(d.Message.Content), d.Message.IsError, true
+		if id := startedAgent(t.Result); id != "" && !t.IsError {
+			s.link(t, id)
+		}
 		return true
 	case "turn/end":
 		var d struct {
@@ -391,6 +457,109 @@ func (s *Session) tool(id, name, args string) *Entry {
 	return t
 }
 
+// startedAgent returns the subagent id in the result of dsh's subagent
+// tool ("started subagent <id>"), or "".
+func startedAgent(result string) string {
+	id, ok := strings.CutPrefix(strings.TrimSpace(result), "started subagent ")
+	if !ok || strings.ContainsAny(id, " \n") {
+		return ""
+	}
+	return id
+}
+
+// link makes call t the entry of subagent id, taking over what its
+// stand-in has gathered.
+func (s *Session) link(t *Entry, id string) {
+	if t.Agent != "" {
+		return
+	}
+	t.Agent, t.AgentStatus = id, "running"
+	if p := s.agents[id]; p != nil && p != t {
+		t.AgentStatus, t.AgentSteps, t.AgentTool, t.AgentArgs, t.AgentResult = p.AgentStatus, p.AgentSteps, p.AgentTool, p.AgentArgs, p.AgentResult
+		for k, v := range s.agents {
+			if v == p {
+				s.agents[k] = t
+			}
+		}
+	}
+	s.agents[id] = t
+}
+
+func (s *Session) applySubagent(method string, params json.RawMessage) bool {
+	var d struct {
+		Parent string  `json:"parentSessionId"`
+		Child  string  `json:"childSessionId"`
+		Status string  `json:"status"`
+		Last   []block `json:"lastAssistantMessage"`
+	}
+	if json.Unmarshal(params, &d) != nil || d.Child == "" {
+		return false
+	}
+	a := s.agents[d.Child]
+	if method == "subagent.started" {
+		switch {
+		case a != nil:
+		case d.Parent == s.ID:
+			s.agents[d.Child] = &Entry{Kind: Tool, Agent: d.Child, AgentStatus: "running"}
+		case s.agents[d.Parent] != nil:
+			// A subagent's own subagents count toward it.
+			s.agents[d.Child] = s.agents[d.Parent]
+		}
+		return false
+	}
+	if a == nil || a.Agent != d.Child || a.AgentStatus != "running" {
+		return false
+	}
+	a.AgentStatus, a.AgentTool, a.AgentArgs = d.Status, "", ""
+	if a.AgentStatus == "" {
+		a.AgentStatus = "ok"
+	}
+	a.AgentResult = textOf(d.Last)
+	return a.Key != ""
+}
+
+// applyAgentEvent counts the tool calls of a subagent's session toward the
+// call that started it.
+func (s *Session) applyAgentEvent(a *Entry, session string, raw json.RawMessage) bool {
+	var e event
+	if json.Unmarshal(raw, &e) != nil || a.AgentStatus != "running" {
+		return false
+	}
+	call := func(id, name, args string) bool {
+		k := session + "/" + id
+		if id == "" || s.agentCalls[k] {
+			return false
+		}
+		s.agentCalls[k] = true
+		a.AgentSteps++
+		a.AgentTool, a.AgentArgs = name, args
+		return a.Key != ""
+	}
+	switch e.Type {
+	case "tool/call":
+		var d struct {
+			CallID    string `json:"callId"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}
+		json.Unmarshal(e.Data, &d)
+		return call(d.CallID, d.Name, d.Arguments)
+	case "assistant/message":
+		var d struct {
+			Message message `json:"message"`
+		}
+		json.Unmarshal(e.Data, &d)
+		changed := false
+		for _, b := range d.Message.Content {
+			if b.Type == "tool-call" && call(b.ID, b.Name, b.Arguments) {
+				changed = true
+			}
+		}
+		return changed
+	}
+	return false
+}
+
 func textOf(blocks []block) string {
 	var parts []string
 	for _, b := range blocks {
@@ -434,8 +603,7 @@ func (s *Session) Snapshot() Snapshot {
 // Restore replaces s's entries with a snapshot's. Tool calls that never
 // finished are shown as such.
 func (s *Session) Restore(snap Snapshot) {
-	s.Entries, s.next = nil, 0
-	s.tools, s.live, s.think = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
+	s.reset()
 	s.Title, s.seq, s.Context = snap.Title, snap.Seq, snap.Context
 	if snap.Usage != nil {
 		s.Usage = *snap.Usage
@@ -447,6 +615,9 @@ func (s *Session) Restore(snap Snapshot) {
 			if e.Result == "" {
 				e.Result = "没有结果（运行时已退出）"
 			}
+		}
+		if e.AgentStatus == "running" {
+			e.AgentStatus = "stopped"
 		}
 		s.add(&e)
 	}

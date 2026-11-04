@@ -52,6 +52,10 @@ type Config struct {
 	// asks to install or update and reports whether the user agreed; nil
 	// declines every such request.
 	ConfirmInstall func(ctx context.Context, plugin string, plan *host.Plan) bool
+	// ConfirmTask asks the user whether a plugin may run a task in one of
+	// their own workspaces (task.start) and returns the workspace they
+	// picked; false when they declined or ctx ended. nil declines all.
+	ConfirmTask func(ctx context.Context, plugin string, req sidecar.TaskRequest) (string, bool)
 	// PluginsChanged is called after plugins were installed or updated
 	// without the plugin page's own buttons (a market, a preinstall).
 	PluginsChanged func()
@@ -144,6 +148,11 @@ type App struct {
 	cancel context.CancelFunc
 	// sessions are plugin sessions (session.prompt), by workspace and id.
 	sessions pluginSessions
+	// grants are the workspace tasks the user agreed to (task.start),
+	// loaded on first use.
+	grantsMu sync.Mutex
+	grants   []TaskGrant
+	inbox    inboxFiles
 }
 
 // New loads Alcove's state from cfg.DataDir, creating it on first start.
@@ -196,6 +205,7 @@ func New(cfg Config) (*App, error) {
 			Detach:        a.detachWorkspace,
 			PromptSession: a.promptForPlugin,
 			CancelSession: a.cancelForPlugin,
+			StartTask:     a.startTask,
 			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
 			Market:        market{a},

@@ -64,6 +64,13 @@ type Shell struct {
 	Updater update.Updater
 	// NewWebView makes a page for the browser; nil: no browser.
 	NewWebView func() (*mygo.WebView, error)
+	// Notify shows a system notification for a new item in plugin's
+	// conversation view; SetBadge shows the unread total on the app icon
+	// ("" clears it); Active reports whether the window is in front. Nil:
+	// none of these.
+	Notify   func(plugin, title, subtitle, body string)
+	SetBadge func(text string)
+	Active   func() bool
 
 	mu          sync.Mutex
 	page        string
@@ -92,11 +99,14 @@ type Shell struct {
 	diagBusy    bool
 	diagStatus  string
 	contribs    map[string]sidecar.Contribution
+	contribSeq  map[string]int // when each was registered: the plugin's order
+	contribN    int
 	browsers    map[string]*browserTab // by workspace id
 	updates     updatesState
 
 	pluginsState
 	panels       panelState
+	runtimes     runtimesState
 	saves        transcriptSaves
 	prefs        prefsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
@@ -303,11 +313,23 @@ func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
 		}
 		sid := events.SessionOf(e.Params)
 		t := v.tasks[sid]
+		if t == nil && !taskSession(sid) {
+			// A subagent's progress goes to the task that started it.
+			for _, tk := range v.tasks {
+				if tk.session.Apply(e.Method, e.Params) {
+					if e.Method == "subagent.finished" {
+						s.saveTranscript(v, tk)
+					}
+					return
+				}
+			}
+			return
+		}
 		if t == nil {
 			if !taskSession(sid) {
 				return // subagents and sessions Alcove did not start
 			}
-			t = s.addTask(v, tasks.Task{ID: sid, Source: sourceOf(v.ws, sid)})
+			t = s.addTask(v, tasks.Task{ID: sid, Source: s.sourceOf(v.ws, sid)})
 		}
 		s.apply(v, t, e)
 	})
@@ -325,11 +347,15 @@ func (s *Shell) OnExit(k alrt.Key, runtimeID string, err error) {
 		}
 		v.runtimeID = ""
 		for _, t := range v.tasks {
+			stopped := t.session.Exited()
 			if t.session.Running() {
 				t.session.Status = "idle"
 				if err != nil {
 					t.err = "运行时退出：" + err.Error()
 				}
+				stopped = true
+			}
+			if stopped {
 				s.saveTranscript(v, t)
 			}
 			t.stopping = false
@@ -476,7 +502,17 @@ func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.
 // Register, Update and Unregister are the sidecars' UI sink. Contributions
 // are kept for the plugin views.
 func (s *Shell) Register(plugin string, c sidecar.Contribution) error {
-	s.post(func() { s.contribs[plugin+"#"+c.ID] = c })
+	s.post(func() {
+		key := plugin + "#" + c.ID
+		if _, ok := s.contribSeq[key]; !ok {
+			if s.contribSeq == nil {
+				s.contribSeq = map[string]int{}
+			}
+			s.contribN++
+			s.contribSeq[key] = s.contribN
+		}
+		s.contribs[key] = c
+	})
 	return nil
 }
 
@@ -491,7 +527,11 @@ func (s *Shell) Update(plugin, id string, data json.RawMessage) error {
 }
 
 func (s *Shell) Unregister(plugin, id string) {
-	s.post(func() { delete(s.contribs, plugin+"#"+id) })
+	s.post(func() {
+		delete(s.contribs, plugin+"#"+id)
+		// A new version registers its pages afresh, in its own order.
+		delete(s.contribSeq, plugin+"#"+id)
+	})
 }
 
 // createWorkspace asks for a folder and adds it.

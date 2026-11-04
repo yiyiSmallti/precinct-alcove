@@ -14,7 +14,7 @@ import (
 //	action "submit"      the page's 保存 button
 //	action <button id>   a button field
 //
-// both with payload { values: { <field id>: value } }: text → string,
+// both with payload { values: { <field id>: value } }: text, textarea → string,
 // toggle → bool, select → the option's value, secretRef → { ref } (only when
 // the user entered a new secret; the value itself goes to the system
 // credential store and never to the plugin).
@@ -38,7 +38,7 @@ type settingsSection struct {
 
 type settingsField struct {
 	ID          string          `json:"id"`
-	Type        string          `json:"type"` // text | secretRef | toggle | select | button
+	Type        string          `json:"type"` // text | textarea | secretRef | toggle | select | button
 	Label       string          `json:"label"`
 	Help        string          `json:"help"`
 	Placeholder string          `json:"placeholder"`
@@ -79,7 +79,7 @@ type settingsForm struct {
 }
 
 type fieldValue struct {
-	text   string // text, secretRef (new secret), select (option label)
+	text   string // text, textarea, secretRef (new secret), select (option label)
 	on     bool   // toggle
 	hasRef bool   // secretRef: the plugin already has one stored
 }
@@ -98,7 +98,7 @@ func (s *Shell) pluginForm(plugin string, c sidecar.Contribution) *settingsForm 
 		for _, fd := range sec.Fields {
 			v := &fieldValue{}
 			switch fd.Type {
-			case "text":
+			case "text", "textarea":
 				json.Unmarshal(fd.Value, &v.text)
 			case "toggle":
 				json.Unmarshal(fd.Value, &v.on)
@@ -138,7 +138,7 @@ func (s *Shell) submit(plugin, id string, f *settingsForm, action string) {
 				continue
 			}
 			switch fd.Type {
-			case "text":
+			case "text", "textarea":
 				values[fd.ID] = v.text
 			case "toggle":
 				values[fd.ID] = v.on

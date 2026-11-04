@@ -9,14 +9,16 @@ import (
 )
 
 // The settings page: 外观 (the window's look), 模型 (credentials and the
-// model) and 通用 (最近会话's folder, updates and diagnostics).
+// model), 运行时 (the running runtimes) and 通用 (最近会话's folder, updates
+// and diagnostics).
 
 const (
-	sysFont  = "系统默认"
-	sysMono  = "默认等宽字体"
-	tabLook  = 0
-	tabModel = 1
-	tabOther = 2
+	sysFont     = "系统默认"
+	sysMono     = "默认等宽字体"
+	tabLook     = 0
+	tabModel    = 1
+	tabRuntimes = 2
+	tabOther    = 3
 )
 
 // prefsState is the settings page's own state.
@@ -41,7 +43,7 @@ func (s *Shell) settingsView(c *ui.Context, pal *palette) {
 	topBar(c, pal, func() {
 		ui.Text(c, "设置").FontSize(14).Bold().Shrink(0)
 		ui.Row(c).Gap(2).AlignItems(ui.Center).Padding(0, 0, 0, 16).Children(func() {
-			for i, label := range []string{"外观", "模型", "通用"} {
+			for i, label := range []string{"外观", "模型", "运行时", "通用"} {
 				if tabButton(c, pal, label, s.prefs.tab == i) {
 					s.prefs.tab = i
 				}
@@ -56,6 +58,8 @@ func (s *Shell) settingsView(c *ui.Context, pal *palette) {
 				s.appearanceSettings(c, pal)
 			case tabModel:
 				s.modelSettings(c, pal)
+			case tabRuntimes:
+				s.runtimeSettings(c, pal)
 			default:
 				s.otherSettings(c, pal)
 			}

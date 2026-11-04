@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -36,6 +37,18 @@ func listRow(c *ui.Context, pal *palette, key, label string, sel bool, fn func()
 }
 
 // navRow is a list row with an icon and a label.
+// unreadBadge is a conversation's unread count in the sidebar; nothing at 0.
+func unreadBadge(c *ui.Context, pal *palette, n int) {
+	if n <= 0 {
+		return
+	}
+	text := fmt.Sprint(n)
+	if n > 99 {
+		text = "99+"
+	}
+	ui.Text(c, text).FontSize(11).Bold().TextColor(c.Theme().AccentText).Background(pal.running).Padding(0, 6).Radius(8).Shrink(0)
+}
+
 func navRow(c *ui.Context, pal *palette, key string, ic *ui.SVG, label string, sel bool) bool {
 	t := c.Theme()
 	return listRow(c, pal, key, label, sel, func() {

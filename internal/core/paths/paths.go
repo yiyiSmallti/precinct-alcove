@@ -58,6 +58,14 @@ func (l Layout) Transcripts() string {
 	return filepath.Join(l.Root, "tasks")
 }
 func (l Layout) Plugins() string { return filepath.Join(l.Root, "plugins") }
+
+// PluginInbox holds each plugin's conversation view, one file per plugin.
+func (l Layout) PluginInbox() string { return filepath.Join(l.Root, "plugins", "inbox") }
+
+// TaskGrants records the tasks the user let plugins run in their own
+// workspaces (task.start).
+func (l Layout) TaskGrants() string { return filepath.Join(l.Root, "plugins", "task-grants.json") }
+
 func (l Layout) Logs() string    { return filepath.Join(l.Root, "logs") }
 func (l Layout) DSHHome() string { return filepath.Join(l.Root, "dsh") }
 func (l Layout) PluginSettings() string {

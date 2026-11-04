@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -54,6 +55,16 @@ func stateColor(c *ui.Context, pal *palette, r host.Installed, st sidecar.Status
 		return c.Theme().Danger
 	}
 	return pal.subtle
+}
+
+// pluginMark is a plugin's picture beside its name: its avatar, or the
+// puzzle-piece mark.
+func (s *Shell) pluginMark(c *ui.Context, name string, size float32) {
+	if b := s.avatars[name]; b != nil {
+		avatar(c, b, size)
+		return
+	}
+	pluginTile(c, size)
 }
 
 // pluginTile is the puzzle-piece mark beside a plugin's name.
@@ -172,10 +183,10 @@ func (s *Shell) pluginRow(c *ui.Context, pal *palette, r host.Installed) {
 	st, known := s.sidecars[r.Name]
 	ui.Column(c).Key(r.Name).Padding(12, 16).Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
 		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-			pluginTile(c, 32)
+			s.pluginMark(c, r.Name, 32)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, displayName(r.Name)).FontSize(13).FontWeight(500).SingleLine()
+					ui.Text(c, s.pluginTitle(r.Name)).FontSize(13).FontWeight(500).SingleLine()
 					tag(c, pal, r.Version)
 				})
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -240,7 +251,7 @@ func (s *Shell) pluginView(c *ui.Context, pal *palette, name string) {
 			s.page = PagePlugins
 		}
 		ui.Text(c, "/").FontSize(14).TextColor(pal.subtle)
-		ui.Text(c, displayName(name)).FontSize(14).Bold().Grow(1).SingleLine()
+		ui.Text(c, s.pluginTitle(name)).FontSize(14).Bold().Grow(1).SingleLine()
 		if s.busy[name] {
 			ui.Spinner(c)
 		}
@@ -253,10 +264,10 @@ func (s *Shell) pluginView(c *ui.Context, pal *palette, name string) {
 			}
 			settingsGroup(c, pal, "概况", func() {
 				ui.Row(c).Padding(14, 16).Gap(12).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
-					pluginTile(c, 40)
+					s.pluginMark(c, name, 40)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, displayName(name)).FontSize(15).FontWeight(600).SingleLine()
+							ui.Text(c, s.pluginTitle(name)).FontSize(15).FontWeight(600).SingleLine()
 							tag(c, pal, r.Version)
 						})
 						ui.Text(c, name).FontSize(11.5).TextColor(t.TextMuted).Selectable()
@@ -286,11 +297,41 @@ func (s *Shell) pluginView(c *ui.Context, pal *palette, name string) {
 					})
 				}
 			})
+			// A conversation plugin's pages open on their own, as from its
+			// conversation's title bar; the others are drawn here.
+			if links := s.pageLinks(name); hasCap(r, "inbox") && len(links) > 0 {
+				settingsGroup(c, pal, "页面", func() {
+					if linkRow(c, pal, "inbox", icChat, "对话") {
+						s.page = pageInbox + name
+					}
+					for _, pg := range links {
+						if linkRow(c, pal, "page:"+pg.id, icFile, pg.title) {
+							s.page = pageView + name + "#" + pg.id
+						}
+					}
+				})
+				return
+			}
 			for _, ct := range s.contributions(name, "settings_page") {
 				s.settingsPageView(c, pal, name, ct, false, true)
 			}
 		})
 	})
+}
+
+// linkRow is a row of a settings group that opens a page.
+func linkRow(c *ui.Context, pal *palette, key string, ic *ui.SVG, label string) bool {
+	t := c.Theme()
+	r := ui.Row(c).Key(key).Padding(12, 16).Gap(10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Cursor(ui.CursorPointer).Focusable().Label(label).Transition(fade)
+	if r.Hovered() {
+		r.Background(pal.hover)
+	}
+	r.Children(func() {
+		ui.Icon(c, ic).Size(15, 15).TextColor(t.TextMuted)
+		ui.Text(c, label).FontSize(13).Grow(1)
+		ui.Icon(c, icForward).Size(14, 14).TextColor(pal.subtle)
+	})
+	return r.Clicked()
 }
 
 // pluginPageView is one settings page of a plugin as a page of its own,
@@ -303,19 +344,42 @@ func (s *Shell) pluginPageView(c *ui.Context, pal *palette, name, id string) {
 		s.pluginView(c, pal, name)
 		return
 	}
+	t := c.Theme()
 	f := s.pluginForm(name, *ct)
 	title := f.page.Title
 	if title == "" {
 		title = displayName(r.Name)
 	}
 	topBar(c, pal, func() {
-		ui.Text(c, title).FontSize(14).Bold().Grow(1).SingleLine()
+		// 日常助手 / 提醒与日程: the plugin's name leads back to its
+		// conversation (or its page when it has none).
+		s.pluginMark(c, name, 22)
+		back := ui.Row(c).Cursor(ui.CursorPointer).Label(s.pluginTitle(name))
+		back.Children(func() {
+			txt := ui.Text(c, s.pluginTitle(name)).FontSize(14).TextColor(t.TextMuted).SingleLine()
+			if back.Hovered() {
+				txt.TextColor(t.Text)
+			}
+		})
+		if back.Clicked() {
+			s.page = pagePlugin + name
+			if hasCap(r, "inbox") {
+				s.page = pageInbox + name
+			}
+		}
+		ui.Text(c, "/").FontSize(14).TextColor(pal.subtle)
+		ui.Text(c, title).FontSize(14).Bold().SingleLine().Shrink(1).MinWidth(0)
+		ui.Spacer(c)
 		if f.busy || s.busy[name] {
 			ui.Spinner(c)
 		}
-		if ui.Button(c, "插件详情").Clicked() {
-			s.page = pagePlugin + name
+		var others []pageLink
+		for _, pg := range s.pageLinks(name) {
+			if pg.id != id {
+				others = append(others, pg)
+			}
 		}
+		s.pageLinkBar(c, pal, name, others, "插件详情")
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(28, 40, 40).Gap(16).MaxWidth(760).Children(func() {
@@ -472,7 +536,7 @@ func (s *Shell) sectionView(c *ui.Context, pal *palette, plugin, id string, f *s
 		switch fd.Type {
 		case "button":
 			buttons = append(buttons, fd)
-		case "text", "secretRef", "toggle", "select":
+		case "text", "textarea", "secretRef", "toggle", "select":
 			inputs = append(inputs, fd)
 		}
 	}
@@ -512,11 +576,23 @@ func (s *Shell) sectionView(c *ui.Context, pal *palette, plugin, id string, f *s
 		if sec.Title != "" || sec.Description != "" {
 			ui.Column(c).Gap(4).Children(header)
 		}
-		// One text input and its buttons share a line: an address and 刷新.
-		inline := !narrow && len(inputs) == 1 && inputs[0].Type != "toggle" && len(buttons) > 0 && len(buttons) <= 2
+		// One input besides switches shares its line with the section's
+		// buttons: an address and 刷新, a time and 保存.
+		var lone *settingsField
+		for i, fd := range inputs {
+			if fd.Type == "toggle" {
+				continue
+			}
+			if lone != nil {
+				lone = nil
+				break
+			}
+			lone = &inputs[i]
+		}
+		inline := !narrow && lone != nil && lone.Type != "textarea" && len(buttons) > 0 && len(buttons) <= 2
 		for _, fd := range inputs {
 			var trailing func()
-			if inline {
+			if inline && fd.ID == lone.ID {
 				trailing = buttonRow
 			}
 			s.fieldView(c, pal, f, fd, narrow, trailing)
@@ -532,7 +608,7 @@ func (s *Shell) sectionView(c *ui.Context, pal *palette, plugin, id string, f *s
 }
 
 // fieldView is one input field: its label and help on the left, the
-// control on the right.
+// control on the right; a textarea takes the full width under its label.
 // trailing, if any, draws after the control on its line.
 func (s *Shell) fieldView(c *ui.Context, pal *palette, f *settingsForm, fd settingsField, narrow bool, trailing func()) {
 	t := c.Theme()
@@ -542,15 +618,16 @@ func (s *Shell) fieldView(c *ui.Context, pal *palette, f *settingsForm, fd setti
 		label = fd.ID
 	}
 	changed := false
+	stacked := narrow || fd.Type == "textarea"
 	var row ui.Element
-	if narrow {
+	if stacked {
 		row = ui.Column(c).Key(fd.ID).Gap(6)
 	} else {
 		row = ui.Row(c).Key(fd.ID).Gap(24).AlignItems(ui.Start)
 	}
 	row.Children(func() {
 		lc := ui.Column(c).Gap(3)
-		if !narrow {
+		if !stacked {
 			lc.Width(160).Shrink(0).Padding(7, 0, 0)
 		}
 		lc.Children(func() {
@@ -568,6 +645,8 @@ func (s *Shell) fieldView(c *ui.Context, pal *palette, f *settingsForm, fd setti
 			switch fd.Type {
 			case "text":
 				changed = ui.TextInput(c, &v.text).Placeholder(fd.Placeholder).Disabled(f.busy).Grow(1).Changed()
+			case "textarea":
+				changed = ui.TextArea(c, &v.text).Placeholder(fd.Placeholder).Label(label).Disabled(f.busy).Lines(8, 24).Grow(1).Changed()
 			case "secretRef":
 				ph := "输入后保存，只存在系统凭据库里"
 				if v.hasRef {
@@ -594,7 +673,9 @@ func (s *Shell) fieldView(c *ui.Context, pal *palette, f *settingsForm, fd setti
 	}
 }
 
-// inboxView is a plugin's conversation view.
+// inboxView is a plugin's conversation view, laid out as a task's: the
+// messages in a centered column, what waits on the user and the message box
+// pinned at the foot.
 func (s *Shell) inboxView(c *ui.Context, pal *palette, name string) {
 	t := c.Theme()
 	r, ok := s.installed(name)
@@ -603,71 +684,207 @@ func (s *Shell) inboxView(c *ui.Context, pal *palette, name string) {
 		return
 	}
 	ch := s.chat(name)
+	s.markRead(name)
 	st, known := s.sidecars[name]
-	ui.Row(c).Padding(10, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		if b := s.avatars[name]; b != nil {
-			avatar(c, b, 24)
+	topBar(c, pal, func() {
+		s.pluginMark(c, name, 22)
+		ui.Text(c, s.pluginTitle(name)).FontSize(14).Bold().SingleLine().Shrink(1).MinWidth(0)
+		ui.Spacer(c)
+		if !known || st.State != sidecar.Running {
+			status(c, stateColor(c, pal, r, st, known), stateText(r, st, known))
+			ui.Box(c).Width(8)
 		}
-		ui.Text(c, s.pluginTitle(name)).Bold().Grow(1)
-		ui.Text(c, stateText(r, st, known)).FontSize(12).TextColor(t.TextMuted)
-		if ui.Button(c, "插件设置").Clicked() {
-			s.page = pagePlugin + name
-		}
+		// The plugin's own pages (reminders, memory…) are a click away.
+		s.pageLinkBar(c, pal, name, s.pageLinks(name), "插件设置")
 	})
+	intro := s.inboxIntro(name)
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(16, 20).Gap(12).Children(func() {
-			for _, ct := range s.contributions(name, "card") {
-				s.cardView(c, name, s.contribCard(name, ct), "c:"+ct.ID)
-			}
-			if len(ch.entries) == 0 {
-				ui.Text(c, "在下面输入，消息会交给 "+s.pluginTitle(name)+"。").TextColor(t.TextMuted)
-			}
-			for i, e := range ch.entries {
-				switch {
-				case e.out != nil:
-					s.outgoingView(c, name, e.out, i)
-				case e.item.Kind == "card":
-					s.cardView(c, name, e.item, i)
-				default:
-					ui.Column(c).Key(i).MaxWidth(760).Children(func() {
-						markdown.View(c, e.item.Text, nil)
+		ui.Column(c).Padding(28, 32, 32).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Width(720).MaxWidthPercent(100).Gap(16).Children(func() {
+				for _, ct := range s.contributions(name, "card") {
+					s.cardView(c, pal, name, s.contribCard(name, ct), "c:"+ct.ID)
+				}
+				if len(ch.entries) == 0 {
+					s.introView(c, pal, name, intro, ch)
+				}
+				for i, e := range ch.entries {
+					switch {
+					case e.out != nil:
+						s.outgoingView(c, pal, name, e.out, i)
+					case e.item.Kind == "card":
+						s.cardView(c, pal, name, e.item, i)
+					default:
+						ui.Column(c).Key(i).Children(func() {
+							markdown.View(c, e.item.Text, nil)
+						})
+					}
+				}
+				if !ch.waiting.IsZero() && time.Since(ch.waiting) < replyWait {
+					ui.Row(c).Key("waiting").Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Spinner(c).Size(13, 13).TextColor(pal.running)
+						ui.Text(c, s.pluginTitle(name)+" 正在处理…").FontSize(13).TextColor(t.TextMuted)
 					})
 				}
-			}
-			if !ch.waiting.IsZero() && time.Since(ch.waiting) < replyWait {
-				ui.Row(c).Key("waiting").Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Spinner(c).Size(13, 13).TextColor(pal.running)
-					ui.Text(c, s.pluginTitle(name)+" 正在处理…").FontSize(13).TextColor(t.TextMuted)
-				})
-			}
+			})
 		})
 	})
-	ui.Row(c).Gap(8).Padding(12, 20).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		// A text area reports no Submitted: Enter sends, Shift+Enter (any
-		// modifier) breaks the line, as in the task composer.
-		ui.TextArea(c, &ch.input).Lines(1, 8).Placeholder("输入消息…  ↵ 发送 · ⇧↵ 换行").Grow(1).
-			OnTextKey(func(k ui.TextKey) bool {
-				if k.Key != ui.KeyEnter || k.Mods != 0 {
-					return false
-				}
-				if text := strings.TrimSpace(k.Text()); text != "" {
-					k.SetText("")
-					s.sendInbox(name, ch, text)
-				}
-				return true
-			})
-		text := strings.TrimSpace(ch.input)
-		if primaryButton(c, "发送", text != "") && text != "" {
-			ch.input = ""
-			s.sendInbox(name, ch, text)
+	ui.Column(c).Padding(0, 32, 20).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Width(720).MaxWidthPercent(100).Gap(10).Children(func() {
+			for i, ask := range s.asksOf(name) {
+				s.askCard(c, pal, ask, fmt.Sprint("ask:", i, ask.req.ID))
+			}
+			if intro != nil && len(intro.Suggestions) > 0 && len(ch.entries) > 0 {
+				// The intro's examples stay at hand once the conversation started.
+				ui.Row(c).Key("chips").Gap(6).Wrap().Children(func() {
+					for i, sg := range intro.Suggestions {
+						chip := ui.Row(c).Key(i).Padding(4, 11).Radius(13).Border(1, t.Border).Background(pal.content).Cursor(ui.CursorPointer).Focusable().Label(sg.Text).Tooltip(sg.Text).Transition(fade)
+						if chip.Hovered() {
+							chip.Background(pal.hover)
+						}
+						chip.Children(func() { ui.Text(c, sg.Label).FontSize(12).TextColor(t.TextMuted).SingleLine() })
+						if chip.Clicked() {
+							ch.input = sg.Text
+						}
+					}
+				})
+			}
+			messageBox(c, pal, &ch.input, "给"+s.pluginTitle(name)+"发消息…", 1, false, func(text string) {
+				s.sendInbox(name, ch, text)
+			}, nil)
+		})
+	})
+}
+
+// pageLink is one of a plugin's settings pages, by its title.
+type pageLink struct{ id, title string }
+
+// pageLinks are the plugin's titled settings pages.
+func (s *Shell) pageLinks(plugin string) []pageLink {
+	var out []pageLink
+	for _, ct := range s.contributions(plugin, "settings_page") {
+		var pg struct {
+			Title string `json:"title"`
+		}
+		if json.Unmarshal(ct.Raw, &pg) == nil && pg.Title != "" {
+			out = append(out, pageLink{ct.ID, pg.Title})
+		}
+	}
+	return out
+}
+
+// maxHeaderLinks is how many page links a header shows.
+const maxHeaderLinks = 4
+
+// pageLinkBar shows links to a plugin's pages and a way to its settings
+// (labelled settings); past maxHeaderLinks the rest go under 更多 with it.
+func (s *Shell) pageLinkBar(c *ui.Context, pal *palette, name string, links []pageLink, settings string) {
+	shown := links
+	if len(links) > maxHeaderLinks {
+		shown = links[:maxHeaderLinks-1]
+	}
+	for _, pg := range shown {
+		if quietButton(c, pal, pg.title).Key("page:" + pg.id).Clicked() {
+			s.page = pageView + name + "#" + pg.id
+		}
+	}
+	if len(shown) == len(links) {
+		if iconButton(c, pal, icGear, settings, false).Clicked() {
+			s.page = pagePlugin + name
+		}
+		return
+	}
+	iconButton(c, pal, icMore, "更多页面", false).PopoverMenuButton(func(m *ui.Menu) {
+		for _, pg := range links[len(shown):] {
+			if m.Item(pg.title).Chosen() {
+				s.page = pageView + name + "#" + pg.id
+			}
+		}
+		m.Separator()
+		if m.Item(settings).Chosen() {
+			s.page = pagePlugin + name
 		}
 	})
 }
 
-func (s *Shell) outgoingView(c *ui.Context, plugin string, o *outgoing, key int) {
+// quietButton is a text button of a title bar: muted, tinted on hover.
+func quietButton(c *ui.Context, pal *palette, label string) ui.Element {
+	t := c.Theme()
+	b := ui.Row(c).Height(28).Padding(0, 10).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer).Focusable().Label(label).Transition(fade)
+	col := t.TextMuted
+	if b.Hovered() {
+		b.Background(pal.hover)
+		col = t.Text
+	}
+	b.Children(func() { ui.Text(c, label).FontSize(13).TextColor(col).SingleLine() })
+	return b
+}
+
+// inboxIntroSpec is an inbox_intro contribution: what a plugin's empty
+// conversation view says, and examples that fill the input.
+type inboxIntroSpec struct {
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	Suggestions []struct {
+		Label string `json:"label"`
+		Text  string `json:"text"`
+	} `json:"suggestions"`
+}
+
+// inboxIntro is the plugin's first inbox_intro contribution, nil if none.
+func (s *Shell) inboxIntro(plugin string) *inboxIntroSpec {
+	for _, ct := range s.contributions(plugin, "inbox_intro") {
+		var in inboxIntroSpec
+		if json.Unmarshal(ct.Raw, &in) == nil {
+			return &in
+		}
+	}
+	return nil
+}
+
+// introView is an empty conversation view: the plugin's introduction and
+// its examples, each filling the input.
+func (s *Shell) introView(c *ui.Context, pal *palette, name string, in *inboxIntroSpec, ch *chat) {
+	t := c.Theme()
+	ui.Column(c).Key("intro").Padding(32, 0, 8).Gap(12).Children(func() {
+		s.pluginMark(c, name, 44)
+		if in == nil {
+			ui.Text(c, "在下面输入，消息会交给 "+s.pluginTitle(name)+"。").FontSize(14).TextColor(t.TextMuted)
+			return
+		}
+		title := in.Title
+		if title == "" {
+			title = s.pluginTitle(name)
+		}
+		ui.Text(c, title).FontSize(22).FontWeight(650).Padding(4, 0, 0)
+		if in.Body != "" {
+			ui.Column(c).Children(func() { markdown.View(c, in.Body, nil) })
+		}
+		if len(in.Suggestions) == 0 {
+			return
+		}
+		ui.Text(c, "试试这样说").FontSize(11.5).FontWeight(500).TextColor(t.TextMuted).Padding(8, 0, 0)
+		ui.Row(c).Gap(10).Wrap().Children(func() {
+			for i, sg := range in.Suggestions {
+				card := ui.Column(c).Key(i).Width(355).MaxWidthPercent(100).Gap(4).Padding(12, 14).Radius(12).Border(1, t.Border).Background(pal.content).Cursor(ui.CursorPointer).Focusable().Label(sg.Label).Transition(fade)
+				if card.Hovered() {
+					card.Border(1, t.Accent.Alpha(0.45)).Background(pal.hover)
+				}
+				card.Children(func() {
+					ui.Text(c, sg.Label).FontSize(13).FontWeight(600).SingleLine()
+					ui.Text(c, sg.Text).FontSize(12.5).TextColor(t.TextMuted).MaxLines(2).Ellipsis("…")
+				})
+				if card.Clicked() {
+					ch.input = sg.Text
+				}
+			}
+		})
+	})
+}
+
+func (s *Shell) outgoingView(c *ui.Context, pal *palette, plugin string, o *outgoing, key int) {
 	t := c.Theme()
 	ui.Column(c).Key(key).Gap(4).AlignItems(ui.End).Children(func() {
-		ui.Text(c, o.text).Selectable().Padding(8, 12).Radius(12).Background(t.Surface).MaxWidth(560)
+		ui.Text(c, o.text).FontSize(14).Selectable().Padding(10, 15).Radius(18).Background(pal.userMsg).MaxWidth(540)
 		switch o.state {
 		case outSending:
 			ui.Text(c, "发送中…").FontSize(12).TextColor(t.TextMuted)
@@ -682,17 +899,17 @@ func (s *Shell) outgoingView(c *ui.Context, plugin string, o *outgoing, key int)
 	})
 }
 
-func (s *Shell) cardView(c *ui.Context, plugin string, it *inboxItem, key any) {
+func (s *Shell) cardView(c *ui.Context, pal *palette, plugin string, it *inboxItem, key any) {
 	t := c.Theme()
-	ui.Column(c).Key(key).Gap(8).Padding(12).Radius(8).Border(1, t.Border).MaxWidth(760).Children(func() {
+	ui.Column(c).Key(key).Gap(8).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Children(func() {
 		if it.Card.Title != "" {
-			ui.Text(c, it.Card.Title).Bold()
+			ui.Text(c, it.Card.Title).FontSize(13.5).Bold()
 		}
 		if it.Card.Body != "" {
 			markdown.View(c, it.Card.Body, nil)
 		}
 		if len(it.Card.Actions) > 0 {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(8).Padding(4, 0, 0).AlignItems(ui.Center).Children(func() {
 				for _, a := range it.Card.Actions {
 					if styledButton(c, a.Label, a.Style).Key(a.ID).Disabled(it.busy != "").Clicked() && it.busy == "" {
 						s.cardAction(plugin, it, a.ID)
@@ -704,7 +921,7 @@ func (s *Shell) cardView(c *ui.Context, plugin string, it *inboxItem, key any) {
 			})
 		}
 		if it.err != "" {
-			ui.Text(c, it.err).TextColor(t.Danger)
+			ui.Text(c, it.err).FontSize(12.5).TextColor(t.Danger)
 		}
 	})
 }

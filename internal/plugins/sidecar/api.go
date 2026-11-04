@@ -41,6 +41,11 @@ type Services struct {
 	// running turn (workspace_session cap).
 	PromptSession func(ctx context.Context, plugin, workspaceID, sessionID, text string) (string, error)
 	CancelSession func(ctx context.Context, plugin, workspaceID, sessionID string) (bool, error)
+	// StartTask asks the user to run a task of the plugin's in one of
+	// their own workspaces and, once they agree, prompts it there as the
+	// plugin's session task-<id>, which PromptSession and CancelSession
+	// then accept (workspace_task cap). It returns when the user answered.
+	StartTask func(ctx context.Context, plugin string, req TaskRequest) (TaskStart, error)
 	// KeychainRef returns an opaque reference to a stored credential.
 	KeychainRef func(plugin, name string) (string, error)
 	// Log writes a line to the plugin's log.
@@ -110,6 +115,25 @@ type InstallResult struct {
 	Version   string `json:"version,omitempty"`
 }
 
+// TaskRequest is a plugin's task.start: Prompt is the session's first
+// message, Title what the user is asked about and the task is called.
+type TaskRequest struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Prompt string `json:"prompt"`
+	// Detail is what the user reads before deciding (markdown).
+	Detail string `json:"detail,omitempty"`
+}
+
+// TaskStart is how task.start ended. A task the user agreed to before (a
+// sidecar asking again after a restart) is accepted without asking.
+type TaskStart struct {
+	Accepted    bool   `json:"accepted"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	SessionID   string `json:"sessionId,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 // Workspace is what sidecars see of a workspace.
 type Workspace struct {
 	ID      string `json:"id"`
@@ -136,7 +160,7 @@ type UISink interface {
 // Contribution is one declarative UI element. Raw is the whole object.
 type Contribution struct {
 	ID   string `json:"id"`
-	Type string `json:"type"` // settings_page | sidebar_item | card
+	Type string `json:"type"` // settings_page | sidebar_item | card | inbox_intro
 	Raw  json.RawMessage
 }
 
@@ -145,6 +169,7 @@ var contributionCaps = map[string]string{
 	"settings_page": "settings_page",
 	"sidebar_item":  "sidebar_item",
 	"card":          "inbox",
+	"inbox_intro":   "inbox",
 }
 
 // methodCaps gates host methods; methods not listed need no capability.
@@ -156,6 +181,7 @@ var methodCaps = map[string]string{
 	"workspace.detach":           "provider_endpoint",
 	"session.prompt":             "workspace_session",
 	"session.cancel":             "workspace_session",
+	"task.start":                 "workspace_task",
 	"plugins.list":               "plugin_install",
 	"plugins.trustedKeys":        "plugin_install",
 	"plugins.install":            "plugin_install",
@@ -265,6 +291,22 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 			ok, err = svc.CancelSession(ctx, p.name, q.WorkspaceID, q.SessionID)
 			res = map[string]any{"cancelled": ok}
 		}
+		if errors.Is(err, ErrNotPermitted) {
+			return nil, notGranted("%v", err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	case "task.start":
+		var q TaskRequest
+		if err := json.Unmarshal(raw, &q); err != nil || q.ID == "" || q.Title == "" || q.Prompt == "" {
+			return nil, invalid(errors.New("task.start needs id, title and prompt"))
+		}
+		if svc.StartTask == nil {
+			return nil, unavailable(method)
+		}
+		res, err := svc.StartTask(ctx, p.name, q)
 		if errors.Is(err, ErrNotPermitted) {
 			return nil, notGranted("%v", err)
 		}

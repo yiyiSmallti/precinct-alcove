@@ -65,6 +65,7 @@ var KnownCapabilities = map[string]bool{
 	"runtime_launch_hook": true,
 	"provider_endpoint":   true,
 	"workspace_session":   true,
+	"workspace_task":      true,
 	"background":          true,
 	"inbox":               true,
 	"deep_link":           true,

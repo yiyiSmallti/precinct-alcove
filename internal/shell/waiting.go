@@ -37,7 +37,7 @@ func (s *Shell) waitingCards() []waitingCard {
 
 // waitingTotal counts what waits on the user, for the sidebar.
 func (s *Shell) waitingTotal() int {
-	n := len(s.waitingCards())
+	n := len(s.waitingCards()) + len(s.taskAsks)
 	for _, v := range s.views {
 		n += len(v.approvals) + len(v.questions)
 	}
@@ -67,16 +67,20 @@ func (s *Shell) waitingView(c *ui.Context, pal *palette) {
 						questionCard(c, pal, q)
 					}
 				}
+				for i, ask := range s.taskAsks {
+					total++
+					s.askCard(c, pal, ask, fmt.Sprint("ask:", i, ask.plugin, ask.req.ID))
+				}
 				for _, wc := range s.waitingCards() {
 					total++
 					ui.Row(c).Key("ctx:"+wc.plugin+wc.item.ID).Gap(6).AlignItems(ui.Center).Padding(6, 0, 0).Children(func() {
 						ui.Icon(c, icCloud).Size(13, 13).TextColor(t.TextMuted)
 						ui.Text(c, "来自 "+displayName(wc.plugin)).FontSize(12).TextColor(t.TextMuted)
 					})
-					s.cardView(c, wc.plugin, wc.item, "w:"+wc.plugin+wc.item.ID)
+					s.cardView(c, pal, wc.plugin, wc.item, "w:"+wc.plugin+wc.item.ID)
 				}
 				if total == 0 {
-					emptyState(c, icCheck, t.Success, "没有要你处理的事", "任务需要确认、提问，或云端 bot 想在本机运行任务时，会出现在这里。", nil)
+					emptyState(c, icCheck, t.Success, "没有要你处理的事", "任务需要确认、提问，或助手和云端 bot 想在工作区里运行任务时，会出现在这里。", nil)
 				}
 			})
 		})

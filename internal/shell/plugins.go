@@ -64,6 +64,7 @@ type pluginsState struct {
 	chats      map[string]*chat
 	cards      map[string]*contribCard // card contributions, by plugin#id
 	avatars    map[string]*ui.Bitmap   // alcove.avatar of installed plugins, by name
+	taskAsks   []*taskAsk              // workspace task requests waiting for the user
 }
 
 // contribCard is a card contribution (ui.register type card) with its
@@ -83,6 +84,9 @@ type chat struct {
 	// item from it since: the view shows it is working on a reply, for at
 	// most replyWait (it may decide an input needs none).
 	waiting time.Time
+	saved   int // versions handed to the app to store
+	// unread counts the items that came while the view was not shown.
+	unread int
 }
 
 // replyWait is how long the conversation view shows a plugin working on
@@ -140,8 +144,80 @@ func (s *Shell) chat(plugin string) *chat {
 	if c == nil {
 		c = &chat{byID: map[string]*chatEntry{}}
 		s.chats[plugin] = c
+		if s.App != nil {
+			c.restore(s.App.LoadInbox(plugin))
+		}
 	}
 	return c
+}
+
+// maxSavedEntries is how much of a conversation view is kept across
+// restarts.
+const maxSavedEntries = 300
+
+type savedEntry struct {
+	Item *inboxItem `json:"item,omitempty"`
+	Out  *savedOut  `json:"out,omitempty"`
+}
+
+type savedOut struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text"`
+	TS        time.Time `json:"ts"`
+	Delivered bool      `json:"delivered,omitempty"`
+}
+
+// restore reads a saved view. Cards come back without their buttons: the
+// plugin that still waits on one posts it again. Inputs never
+// acknowledged are sent again once the plugin runs.
+func (c *chat) restore(data []byte) {
+	var saved []savedEntry
+	if len(data) == 0 || json.Unmarshal(data, &saved) != nil {
+		return
+	}
+	for _, e := range saved {
+		switch {
+		case e.Item != nil:
+			if e.Item.Card != nil {
+				e.Item.Card.Actions = nil
+			}
+			ce := &chatEntry{item: e.Item}
+			c.byID[e.Item.ID] = ce
+			c.entries = append(c.entries, ce)
+		case e.Out != nil:
+			o := &outgoing{id: e.Out.ID, text: e.Out.Text, ts: e.Out.TS, state: outFailed}
+			if e.Out.Delivered {
+				o.state = outDelivered
+			}
+			c.entries = append(c.entries, &chatEntry{out: o})
+		}
+	}
+}
+
+// save hands the view to the app to store (under mu).
+func (s *Shell) saveChat(plugin string, c *chat) {
+	if s.App == nil {
+		return
+	}
+	entries := c.entries
+	if len(entries) > maxSavedEntries {
+		entries = entries[len(entries)-maxSavedEntries:]
+	}
+	saved := make([]savedEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.item != nil {
+			saved = append(saved, savedEntry{Item: e.item})
+		} else {
+			saved = append(saved, savedEntry{Out: &savedOut{ID: e.out.id, Text: e.out.text, TS: e.out.ts, Delivered: e.out.state == outDelivered}})
+		}
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return
+	}
+	c.saved++
+	seq := c.saved
+	go s.App.SaveInbox(plugin, seq, data)
 }
 
 // Inbox is the sidecars' inbox.post: it shows item in the plugin's
@@ -162,6 +238,7 @@ func (s *Shell) Inbox(plugin string, raw json.RawMessage) error {
 	}
 	s.post(func() {
 		c := s.chat(plugin)
+		defer s.saveChat(plugin, c)
 		if e := c.byID[it.ID]; e != nil {
 			e.item = &it
 			return
@@ -170,8 +247,77 @@ func (s *Shell) Inbox(plugin string, raw json.RawMessage) error {
 		c.byID[it.ID] = e
 		c.entries = append(c.entries, e)
 		c.waiting = time.Time{}
+		s.noteNew(plugin, c, &it)
 	})
 	return nil
+}
+
+// noteNew counts a new item as unread unless its view is shown, and
+// notifies unless the user is looking at it.
+func (s *Shell) noteNew(plugin string, c *chat, it *inboxItem) {
+	shown := s.page == pageInbox+plugin
+	if !shown {
+		c.unread++
+		s.badge()
+	}
+	if s.Notify == nil || (shown && (s.Active == nil || s.Active())) {
+		return
+	}
+	subtitle, body := "", it.Text
+	if it.Card != nil {
+		subtitle, body = it.Card.Title, it.Card.Body
+	}
+	go s.Notify(plugin, s.pluginTitle(plugin), plainText(subtitle, 60), plainText(body, 200))
+}
+
+// markRead clears plugin's unread count; its view is shown.
+func (s *Shell) markRead(plugin string) {
+	if c := s.chats[plugin]; c != nil && c.unread > 0 {
+		c.unread = 0
+		s.badge()
+	}
+}
+
+func (s *Shell) unread(plugin string) int {
+	if c := s.chats[plugin]; c != nil {
+		return c.unread
+	}
+	return 0
+}
+
+// badge shows the unread total on the app icon.
+func (s *Shell) badge() {
+	if s.SetBadge == nil {
+		return
+	}
+	n := 0
+	for _, c := range s.chats {
+		n += c.unread
+	}
+	text := ""
+	if n > 0 {
+		text = fmt.Sprint(min(n, 99))
+	}
+	go s.SetBadge(text)
+}
+
+// OpenInbox shows plugin's conversation view (a notification was clicked).
+func (s *Shell) OpenInbox(plugin string) {
+	s.post(func() {
+		if _, ok := s.installed(plugin); ok {
+			s.page = pageInbox + plugin
+		}
+	})
+}
+
+// plainText is markdown as one line of text, at most n runes.
+func plainText(md string, n int) string {
+	r := strings.NewReplacer("**", "", "__", "", "`", "", "#", "")
+	out := strings.Join(strings.Fields(r.Replace(md)), " ")
+	if rs := []rune(out); len(rs) > n {
+		out = string(rs[:n]) + "…"
+	}
+	return out
 }
 
 // OnSidecarState is the sidecar manager's state hook. A sidecar coming back
@@ -205,6 +351,7 @@ func newID() string {
 func (s *Shell) sendInbox(plugin string, c *chat, text string) {
 	o := &outgoing{id: newID(), text: text, ts: time.Now()}
 	c.entries = append(c.entries, &chatEntry{out: o})
+	s.saveChat(plugin, c)
 	s.deliver(plugin, o)
 }
 
@@ -224,6 +371,7 @@ func (s *Shell) deliver(plugin string, o *outgoing) {
 				return
 			}
 			o.state = outDelivered
+			s.saveChat(plugin, ch)
 			ch.waiting = time.Now()
 			// Redraw when the wait runs out, to drop the indicator.
 			time.AfterFunc(replyWait, func() { s.post(func() {}) })
@@ -406,6 +554,7 @@ func (s *Shell) uninstall(name string) {
 			}
 			delete(s.sidecars, name)
 			delete(s.chats, name)
+			go s.App.DropInbox(name)
 			for k := range s.forms {
 				if strings.HasPrefix(k, name+"#") {
 					delete(s.forms, k)
@@ -490,6 +639,7 @@ var capNames = map[string]string{
 	"workspace_hook":      "知道工作区的创建、打开与移除",
 	"provider_endpoint":   "提供模型服务地址",
 	"workspace_session":   "在自己管理的工作区里运行任务",
+	"workspace_task":      "请你选一个工作区来运行它的任务（每次都由你确认）",
 	"deep_link":           "处理 alcove:// 链接",
 	"policy_write":        "修改策略设置（例如关闭本地执行）",
 	"plugin_install":      "从插件市场安装和更新插件（每次都由你确认）",
@@ -529,7 +679,14 @@ func (s *Shell) contributions(plugin, typ string) []sidecar.Contribution {
 			out = append(out, c)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	// In the order the plugin registered them (its ready lists them so).
+	seq := func(c sidecar.Contribution) int { return s.contribSeq[plugin+"#"+c.ID] }
+	sort.Slice(out, func(i, j int) bool {
+		if a, b := seq(out[i]), seq(out[j]); a != b {
+			return a < b
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

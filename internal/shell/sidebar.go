@@ -54,16 +54,27 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 			s.page = PageWaiting
 		}
 		for _, n := range s.pluginNav() {
-			if navRow(c, pal, n.page, n.icon, n.title, s.page == n.page) {
+			unread := 0
+			if p, ok := strings.CutPrefix(n.page, pageInbox); ok {
+				unread = s.unread(p)
+			}
+			if listRow(c, pal, n.page, n.title, s.page == n.page, func() {
+				ui.Icon(c, n.icon).Size(15, 15).TextColor(t.TextMuted)
+				ui.Text(c, n.title).FontSize(13).SingleLine().Grow(1).MinWidth(0)
+				unreadBadge(c, pal, unread)
+			}) {
 				s.page = n.page
 			}
 		}
 		if as := s.assistants(); len(as) > 0 {
 			sectionLabel(c, "助手")
 			for _, n := range as {
-				if listRow(c, pal, n.page, n.title, s.page == n.page, func() {
+				// The assistant's own pages belong to it too.
+				own := s.page == n.page || strings.HasPrefix(s.page, pageView+strings.TrimPrefix(n.page, pageInbox)+"#")
+				if listRow(c, pal, n.page, n.title, own, func() {
 					avatar(c, n.avatar, 20)
 					ui.Text(c, n.title).FontSize(13).SingleLine().Grow(1).MinWidth(0)
+					unreadBadge(c, pal, s.unread(strings.TrimPrefix(n.page, pageInbox)))
 				}) {
 					s.page = n.page
 				}
@@ -240,6 +251,8 @@ func (s *Shell) taskRow(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 				dot(c, pal.waiting)
 			case running:
 				ui.Spinner(c).Size(12, 12).TextColor(pal.running)
+			case tk.meta.Source != "" && s.avatars[tk.meta.Source] != nil && tk.meta.Source != v.ws.OwnerName():
+				avatar(c, s.avatars[tk.meta.Source], 14)
 			case tk.meta.Source != "":
 				ui.Icon(c, icCloud).Size(13, 13).TextColor(pal.subtle)
 			default:

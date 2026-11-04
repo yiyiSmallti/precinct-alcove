@@ -142,7 +142,7 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 		if e.Kind == events.Tool {
 			calls++
 			switch {
-			case !e.Done:
+			case e.Busy():
 				running++
 			case e.IsError:
 				failed++
@@ -158,6 +158,8 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 				status(c, pal.waiting, "等你确认")
 			case tk.session.Running() || tk.starting:
 				status(c, pal.running, "运行中")
+			case tk.session.AgentsRunning() > 0:
+				status(c, pal.running, "子代理运行中")
 			case len(tk.session.Entries) > 0:
 				status(c, pal.done, "已完成")
 			default:

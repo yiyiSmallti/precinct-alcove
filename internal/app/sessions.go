@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 	"github.com/yiyiSmallti/precinct-alcove/internal/runtime/events"
@@ -45,16 +46,21 @@ func (ps *pluginSessions) get(ws, id string) *pluginSession {
 	return ps.byID[ws+"\x00"+id]
 }
 
-// ownedBy returns the workspace if plugin owns it.
-func (a *App) ownedBy(plugin, wsID string) error {
+// mayRun checks that plugin may run session in the workspace: one it owns,
+// or one of the user's own where the user agreed to that task (task.start).
+// granted reports the latter.
+func (a *App) mayRun(plugin, wsID, session string) (granted bool, err error) {
 	w, err := a.Workspaces.Find(wsID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if w.OwnerName() != plugin {
-		return fmt.Errorf("%w: workspace %s does not belong to %s", sidecar.ErrNotPermitted, wsID, plugin)
+	if w.OwnerName() == plugin {
+		return false, nil
 	}
-	return nil
+	if w.OwnerName() == workspace.Personal && a.grantFor(plugin, session) == wsID {
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: workspace %s does not belong to %s", sidecar.ErrNotPermitted, wsID, plugin)
 }
 
 // promptForPlugin queues text on the plugin's session in its workspace,
@@ -63,7 +69,8 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 	if !pluginSessionID.MatchString(sessionID) {
 		return "", fmt.Errorf("%w: plugin session ids look like task-<id>", sidecar.ErrNotPermitted)
 	}
-	if err := a.ownedBy(plugin, wsID); err != nil {
+	granted, err := a.mayRun(plugin, wsID, sessionID)
+	if err != nil {
 		return "", err
 	}
 	a.RefreshBridge(ctx, wsID)
@@ -73,7 +80,7 @@ func (a *App) promptForPlugin(ctx context.Context, plugin, wsID, sessionID, text
 	}
 	// A detach between the check above and the open gives a runtime on
 	// another route: never send the plugin's task there.
-	if p.Spec.Owner != plugin {
+	if granted && p.Spec.Owner != "" || !granted && p.Spec.Owner != plugin {
 		return "", fmt.Errorf("%w: workspace %s no longer belongs to %s", sidecar.ErrNotPermitted, wsID, plugin)
 	}
 	a.sessions.mu.Lock()
@@ -177,7 +184,7 @@ func lastAnswer(v *events.Session) (text, failed string) {
 // cancelForPlugin cancels the plugin session's running turn (and drops what
 // is queued). A session that is not running is fine.
 func (a *App) cancelForPlugin(ctx context.Context, plugin, wsID, sessionID string) (bool, error) {
-	if err := a.ownedBy(plugin, wsID); err != nil {
+	if _, err := a.mayRun(plugin, wsID, sessionID); err != nil {
 		return false, err
 	}
 	a.sessions.mu.Lock()

@@ -148,7 +148,7 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	topBar(c, pal, func() {
 		ui.Text(c, taskTitle(tk)).FontSize(14).Bold().SingleLine().Shrink(1).MinWidth(0)
 		if tk.meta.Source != "" {
-			tag(c, pal, "云端 bot")
+			tag(c, pal, s.sourceLabel(v.ws, tk.meta.Source))
 		}
 		ui.Spacer(c)
 		switch {
@@ -156,6 +156,8 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 			status(c, pal.waiting, "等你确认")
 		case running:
 			status(c, pal.running, "运行中")
+		case sess.AgentsRunning() > 0:
+			status(c, pal.running, "子代理运行中")
 		case len(sess.Entries) > 0:
 			status(c, pal.done, "已完成")
 		}
@@ -163,7 +165,7 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 		s.browserToggle(c, pal, v)
 		s.panelToggle(c, pal, v)
 		more := iconButton(c, pal, icMore, "更多", false)
-		more.PopoverMenu(func(m *ui.Menu) {
+		more.PopoverMenuButton(func(m *ui.Menu) {
 			if m.Item("从列表移除").Disabled(sess.Running()).Chosen() {
 				s.forget(v, tk)
 			}
@@ -216,8 +218,14 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 // model and its thinking effort), with a round send (and stop) button in
 // its corner. tk is nil for a task not started yet.
 func (s *Shell) composer(c *ui.Context, pal *palette, v *wsView, tk *taskView, input *string, placeholder string, lines int, busy bool, send func(string), stop func()) {
-	t := c.Theme()
 	s.runBar(c, pal, v, tk)
+	messageBox(c, pal, input, placeholder, lines, busy, send, stop)
+}
+
+// messageBox is the rounded input with its send (and stop) button, shared
+// by tasks and plugin conversations.
+func messageBox(c *ui.Context, pal *palette, input *string, placeholder string, lines int, busy bool, send func(string), stop func()) {
+	t := c.Theme()
 	box := ui.Column(c).Padding(12, 12, 10, 14).Gap(4).Radius(14).Background(pal.content).Transition(fade)
 	// Typing lights the box in the accent.
 	if box.FocusWithin() {
@@ -298,16 +306,21 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 		r.Children(func() {
 			ui.Row(c).Width(14).Justify(ui.Center).Shrink(0).Children(func() {
 				switch {
-				case !e.Done:
+				case e.Busy():
 					ui.Spinner(c).Size(12, 12).TextColor(pal.running)
-				case e.IsError:
+				case e.IsError || e.AgentStatus == "error" || e.AgentStatus == "stopped":
 					ui.Icon(c, icX).Size(13, 13).TextColor(t.Danger)
 				default:
 					ui.Icon(c, icCheck).Size(13, 13).TextColor(pal.subtle)
 				}
 			})
 			ui.Text(c, toolVerb(e.ToolName)).FontSize(13).FontWeight(500).Shrink(0)
-			ui.Text(c, entrySummary(*e)).FontSize(12).TextColor(t.TextMuted).Font(pal.mono).SingleLine().Grow(1).MinWidth(0)
+			if e.Agent != "" {
+				ui.Text(c, entrySummary(*e)).FontSize(12).TextColor(t.TextMuted).SingleLine().Shrink(1).MinWidth(0)
+				ui.Text(c, agentProgress(*e)).FontSize(12).TextColor(pal.subtle).SingleLine().Grow(1).MinWidth(0)
+			} else {
+				ui.Text(c, entrySummary(*e)).FontSize(12).TextColor(t.TextMuted).Font(pal.mono).SingleLine().Grow(1).MinWidth(0)
+			}
 			arrow := ui.Icon(c, icChevron).Size(13, 13).TextColor(pal.subtle)
 			if !open {
 				arrow.Rotate(-90)
@@ -322,7 +335,13 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 					ui.Text(c, "参数").FontSize(11).FontWeight(500).TextColor(pal.subtle)
 					ui.Text(c, clip(prettyArgs(e.Args), 2000)).FontSize(12).Font(pal.mono).Selectable()
 				}
-				if e.Result != "" {
+				switch {
+				case e.Agent != "":
+					if e.AgentResult != "" {
+						ui.Text(c, "子代理的回答").FontSize(11).FontWeight(500).TextColor(pal.subtle)
+						ui.Text(c, clip(e.AgentResult, 4000)).FontSize(12).Selectable()
+					}
+				case e.Result != "":
 					color := t.Text
 					if e.IsError {
 						color = t.Danger
@@ -368,8 +387,41 @@ func toolVerb(name string) string {
 		return "后退"
 	case "browser_screenshot":
 		return "截图"
+	case "subagent":
+		return "子代理"
 	}
 	return name
+}
+
+// agentProgress is what a subagent call's line says after its task: its
+// steps so far and what it is doing, or how it ended.
+func agentProgress(e events.Entry) string {
+	steps := ""
+	if e.AgentSteps > 0 {
+		steps = fmt.Sprintf("%d 步", e.AgentSteps)
+	}
+	join := func(parts ...string) string {
+		var out []string
+		for _, p := range parts {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return strings.Join(out, " · ")
+	}
+	switch e.AgentStatus {
+	case "running":
+		doing := "开始"
+		if e.AgentTool != "" {
+			doing = strings.TrimSpace("正在" + toolVerb(e.AgentTool) + " " + toolSummary(e.AgentArgs))
+		}
+		return join(steps, doing)
+	case "ok":
+		return join(steps, "已完成")
+	case "stopped":
+		return join(steps, "已停止")
+	}
+	return join(steps, "出错")
 }
 
 // entrySummary is what a tool entry's line shows after its verb. A click
