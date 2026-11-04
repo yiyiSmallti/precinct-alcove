@@ -357,7 +357,7 @@ func (s *Shell) workspaceTab(c *ui.Context, pal *palette, v *wsView) {
 		return
 	}
 	for _, ct := range pages {
-		s.settingsPageView(c, owner, ct)
+		s.settingsPageView(c, pal, owner, ct, true, true)
 	}
 }
 

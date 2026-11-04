@@ -50,6 +50,10 @@ type LaunchSpec struct {
 	// empty for the personal credential). Launch ignores it; callers
 	// compare it to catch a runtime started before an ownership change.
 	Owner string
+	// Tuning records the settings the launch was made with besides the
+	// route (reasoning effort, compaction); Launch ignores it, callers
+	// compare it to restart a runtime the user retuned.
+	Tuning string
 	// Bridge, when set, lets the alcove-bridge bundle in this process connect
 	// back for approvals and questions.
 	Bridge       *Bridge
@@ -177,6 +181,13 @@ func (p *Process) ExitErr() error { return p.exitErr }
 
 // Stderr returns the last lines the runtime wrote to stderr.
 func (p *Process) Stderr(lines int) string { return p.stderr.Tail(lines) }
+
+// Busy reports whether a session of the process is running.
+func (p *Process) Busy() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.busy) > 0
+}
 
 // Pin keeps the process alive regardless of idle time.
 func (p *Process) Pin(on bool) {

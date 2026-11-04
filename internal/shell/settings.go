@@ -232,7 +232,9 @@ func fontField(c *ui.Context, pick *string, options []string, label string) bool
 // settingsGroup is a titled box of setting rows, divided by hairlines.
 func settingsGroup(c *ui.Context, pal *palette, title string, rows func()) {
 	ui.Column(c).Gap(8).Children(func() {
-		ui.Text(c, title).FontSize(13).Bold().Padding(0, 2)
+		if title != "" {
+			ui.Text(c, title).FontSize(13).Bold().Padding(0, 2)
+		}
 		// The rows' bottom hairlines would double the box's own at the
 		// end: the last one is pushed under the clipped edge.
 		ui.Column(c).Radius(10).Border(1, pal.hairline).Background(pal.content).Clip().Children(func() {

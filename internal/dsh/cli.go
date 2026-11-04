@@ -161,6 +161,12 @@ func (c *CLI) Environ() []string {
 	// pnpm's update notice is noise in captured output.
 	env = setEnv(env, "NO_UPDATE_NOTIFIER", "1")
 	env = setEnv(env, "npm_config_update_notifier", "false")
+	// Keep pnpm's store and cache under Alcove's own data: the user's global
+	// store may sit on another volume (macOS then blocks the first mkdir there
+	// on a permission prompt for Alcove), and plugin installs must not depend
+	// on or touch the user's own pnpm state.
+	env = setEnv(env, "npm_config_store_dir", filepath.Join(c.Home, "pnpm", "store"))
+	env = setEnv(env, "npm_config_cache_dir", filepath.Join(c.Home, "pnpm", "cache"))
 	for _, kv := range c.Env {
 		if k, v, ok := strings.Cut(kv, "="); ok {
 			env = setEnv(env, k, v)
@@ -182,12 +188,28 @@ func (c *CLI) Version(ctx context.Context) (string, error) {
 // PluginAdd installs spec (here always an absolute .tgz path inside Alcove's
 // package store) into profile, creating the profile on first use.
 func (c *CLI) PluginAdd(ctx context.Context, profile, spec string) (Result, error) {
-	return c.Run(ctx, "plugin", "--profile", profile, "add", spec)
+	return c.plugin(ctx, profile, "add", spec)
 }
 
 // PluginRemove removes the named package from profile.
 func (c *CLI) PluginRemove(ctx context.Context, profile, name string) (Result, error) {
-	return c.Run(ctx, "plugin", "--profile", profile, "remove", name)
+	return c.plugin(ctx, profile, "remove", name)
+}
+
+// plugin runs `dsh plugin` on profile. A profile installed against another
+// pnpm store (the user's global one, before Environ pinned Alcove's own)
+// makes pnpm refuse with ERR_PNPM_UNEXPECTED_STORE; its node_modules is
+// rebuilt from the profile's lockfile into the current store, once.
+func (c *CLI) plugin(ctx context.Context, profile string, args ...string) (Result, error) {
+	args = append([]string{"plugin", "--profile", profile}, args...)
+	res, err := c.Run(ctx, args...)
+	if err != nil && strings.Contains(res.Stdout+res.Stderr, "ERR_PNPM_UNEXPECTED_STORE") {
+		if rmErr := os.RemoveAll(filepath.Join(c.ProfileDir(profile), "node_modules")); rmErr != nil {
+			return res, err
+		}
+		return c.Run(ctx, args...)
+	}
+	return res, err
 }
 
 // DumpConfig composes profile without booting it; an error means the profile

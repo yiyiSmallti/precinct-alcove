@@ -29,7 +29,10 @@ DOVETAIL_DAILY_TGZ=$(ls /tmp/daily/precinct-daily-*.tgz) go test -tags e2e -run 
 installer/build.sh                    # macOS arm64 与 amd64 各一个 .app/.dmg + Windows x64 安装包，产物在 build/
 installer/build.sh darwin-arm64       # 只打一个平台
 ALCOVE_RESTAGE=0 installer/build.sh   # 复用已备好的运行时
+ALCOVE_SIGN="Apple Development: …" installer/build.sh   # 用固定证书签名，不用 ad hoc
 ```
+
+本机自用的构建建议设 `ALCOVE_SIGN`（`security find-identity -v -p codesigning` 列出可用证书）。ad hoc 签名按哈希认应用，每次重新构建在钥匙串看来都是新应用，启动读凭据时会再要登录密码；用证书签名后重新构建也沿用已授予的访问。
 
 `installer/stage-runtime.sh` 把随包运行时（Node 24 官方构建，按 SHASUMS256 校验；锁版本的 dsh 与 pnpm；pnpm 垫片；bridge 包）放进 `resources/`，`mygo build` 再把它装进应用的资源目录（Windows 在 exe 旁，macOS 在 `Contents/Resources`）。npm 按目标平台装原生可选包，不跑安装脚本（它们会为构建机编译）。每个平台一份，放 `resources/<平台>/runtime`，约 300 MB，不进仓库。为了体积（通用版 `.app` 1170 MB、`.dmg` 256 MB，现在 arm64 为 308 MB、60 MB，amd64 为 315 MB、80 MB）：
 

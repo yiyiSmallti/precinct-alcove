@@ -22,9 +22,10 @@ var logo = func() *ui.Bitmap {
 }()
 
 // sidebar is the left column: the app's name, a new task, what waits on
-// you, 最近会话 (the tasks outside a project), the project switcher over
-// the project's tasks by when they last moved, the plugins' conversations,
-// and the way to plugins and settings.
+// you, the plugins' own entries (the market, their conversations) and the
+// assistants (plugins with a picture and a conversation view), the
+// project switcher over the project's tasks by when they last moved, 最近会话
+// (the tasks outside a project), and the way to plugins and settings.
 func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	t := c.Theme()
 	v := s.view(s.curWS)
@@ -52,10 +53,32 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 		}) {
 			s.page = PageWaiting
 		}
+		for _, n := range s.pluginNav() {
+			if navRow(c, pal, n.page, n.icon, n.title, s.page == n.page) {
+				s.page = n.page
+			}
+		}
+		if as := s.assistants(); len(as) > 0 {
+			sectionLabel(c, "助手")
+			for _, n := range as {
+				if listRow(c, pal, n.page, n.title, s.page == n.page, func() {
+					avatar(c, n.avatar, 20)
+					ui.Text(c, n.title).FontSize(13).SingleLine().Grow(1).MinWidth(0)
+				}) {
+					s.page = n.page
+				}
+			}
+		}
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, 10, 12).Gap(1).Children(func() {
+			pv := s.view(s.curProj)
+			s.workspaceSwitcher(c, pal, pv)
+			if pv != nil {
+				s.taskList(c, pal, pv)
+			}
 			if sv := s.view(s.scratchID); sv != nil {
+				ui.Box(c).Height(14)
 				sectionLabel(c, "最近会话")
 				recent := ordered(sv)
 				if len(recent) == 0 {
@@ -63,20 +86,6 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 				}
 				for _, tk := range recent {
 					s.taskRow(c, pal, sv, tk)
-				}
-				ui.Box(c).Height(14)
-			}
-			pv := s.view(s.curProj)
-			s.workspaceSwitcher(c, pal, pv)
-			if pv != nil {
-				s.taskList(c, pal, pv)
-			}
-			if nav := s.pluginNav(); len(nav) > 0 {
-				sectionLabel(c, "助手")
-				for _, n := range nav {
-					if navRow(c, pal, n.page, icChat, n.title, s.page == n.page) {
-						s.page = n.page
-					}
 				}
 			}
 		})

@@ -13,9 +13,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/catalog"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/pkg"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 )
@@ -118,15 +121,60 @@ func TestScreens(t *testing.T) {
 		shot("settings-other")
 		s.mu.Lock()
 		s.prefs.tab = tabModel
-		s.creds = []credentials.Credential{{ID: "c1", Label: "DeepSeek 个人", Provider: "deepseek-official"}, {ID: "c2", Label: "OpenAI 工作", Provider: "openai", Model: "gpt-6.1-sol"}}
+		s.creds = []credentials.Credential{{ID: "c1", Label: "DeepSeek 个人", Provider: "deepseek-official"}, {ID: "c2", Label: "OpenAI 工作", Provider: "openai", Model: "gpt-6.1-sol", Context: map[string]int{"gpt-6.1-sol": 1050000}}}
 		s.settings.DefaultCredential = "c2"
-		s.model, s.modelFor, s.savedModel = "gpt-6.1-sol", "c2", "gpt-6.1-sol"
-		s.form.provider = "Kimi（月之暗面）"
+		s.settings.ReasoningEffort = "high"
+		// Model facts from the runtime's catalog, when one is given.
+		s.App.Catalog = catalog.FromDSHBin(os.Getenv("ALCOVE_E2E_DSH"))
+
+		s.form = credForm{open: true, provider: "Kimi（月之暗面）", protocol: credentials.Protocols[0].Name}
 		s.mu.Unlock()
 		shot("settings-model")
 		s.mu.Lock()
+		s.form = credForm{}
+		for i := range s.creds {
+			if s.creds[i].ID == "c2" {
+				s.creds[i].Models = []string{"gpt-6.1-sol", "gpt-5.5", "o4-mini"}
+			}
+		}
+		s.picks = map[string]*modelPick{"c1": {remote: []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-pro-thinking", "deepseek-v3.2", "deepseek-coder-v4"}, picked: []string{"deepseek-v4-flash", "deepseek-v4-pro"}}}
+		s.mu.Unlock()
+		shot("settings-model-pick")
+		s.mu.Lock()
+		s.picks = nil
+		s.page = pageWS + s.scratchID
+		if sv := s.view(s.scratchID); sv != nil {
+			sv.current = ""
+		}
+		s.mu.Unlock()
+		shot("new-model")
+		s.mu.Lock()
+		s.runMenu = true
+		s.mu.Unlock()
+		shot("new-run")
+		// A task on the personal credentials that took some context.
+		s.mu.Lock()
+		s.runMenu = false
+		s.page = pageWS + v.ws.ID
+		owner := v.ws.Owner
+		v.ws.Owner = workspace.Personal
+		v.tasks["chat-report"].session.Context = 712400
+		s.mu.Unlock()
+		shot("task-run")
+		s.mu.Lock()
+		s.runMenu = true
+		s.mu.Unlock()
+		shot("task-run-panel")
+		s.mu.Lock()
+		s.runMenu = false
+		v.ws.Owner = owner
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.page = PageSettings
+		s.mu.Unlock()
+		s.mu.Lock()
 		s.creds = append(s.creds, credentials.Credential{ID: "c3", Label: "公司网关", Provider: credentials.Custom, BaseURL: "https://llm.example.com/v1", API: "openai-completions", Model: "qwen3-coder"})
-		s.form.provider = "自定义（兼容接口）"
+		s.form = credForm{open: true, provider: "自定义（兼容接口）", protocol: credentials.Protocols[0].Name}
 		s.mu.Unlock()
 		shot("settings-model-custom")
 		s.mu.Lock()
@@ -136,6 +184,51 @@ func TestScreens(t *testing.T) {
 		s.page = PagePlugins
 		s.mu.Unlock()
 		shot("plugins")
+		market := `{"id":"market","type":"settings_page","title":"插件市场","submit":false,"sections":[
+			{"fields":[
+				{"id":"index","type":"text","label":"索引地址","help":"3 个插件 · 11月3日 07:15 读取","placeholder":"https://…/index.json 或本机文件夹","value":"https://plugins.example.com/"},
+				{"id":"refresh","type":"button","label":"刷新"}]},
+			{"title":"dovetail","caption":"@precinct/dovetail\n最新 0.1.1 · 已安装 0.1.0","description":"插件市场：从签名索引浏览、安装和更新 Alcove 插件，也能从本机镜像文件夹离线导入","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/dovetail","type":"button","label":"更新","style":"primary"}]},
+			{"title":"cloister","caption":"@precinct/cloister\n最新 0.1.0-alpha.0","description":"组织功能：加入组织、策略、事件流、组织 bot 回合、组织工作区、同步与租约、云端任务","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/cloister","type":"button","label":"安装","style":"primary"}]},
+			{"title":"daily","caption":"@precinct/daily\n最新 0.1.0-alpha.0","description":"个人日常助手：对话视图、定时提醒和 daily 运行时","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/daily","type":"button","label":"安装","style":"primary"}]}]}`
+		s.Register("@precinct/dovetail", sidecar.Contribution{ID: "market", Type: "settings_page", Raw: json.RawMessage(market)})
+		s.Register("@precinct/dovetail", sidecar.Contribution{ID: "market-nav", Type: "sidebar_item", Raw: json.RawMessage(`{"id":"market-nav","type":"sidebar_item","title":"插件市场 · 1 个更新","icon":"puzzle","viewId":"market"}`)})
+		s.mu.Lock()
+		s.plugins = []host.Installed{
+			{Name: "@precinct/dovetail", Version: "0.1.0", Sidecar: "bin/dovetail", Capabilities: []string{"settings_page", "sidebar_item", "plugin_install"}},
+			{Name: "@precinct/cloister", Version: "0.1.0-alpha.0", Sidecar: "bin/cloister", Capabilities: []string{"settings_page", "provider_endpoint", "workspace_hook"}},
+			{Name: "@precinct/daily", Version: "0.1.0-alpha.0", Sidecar: "bin/daily", Capabilities: []string{"inbox", "background"}},
+		}
+		s.sidecars = map[string]sidecar.Status{
+			"@precinct/dovetail": {State: sidecar.Running},
+			"@precinct/cloister": {State: sidecar.Running},
+			"@precinct/daily":    {State: sidecar.Crashed, Crashes: 3, LastError: "exit status 2", Stderr: "panic: open bot/state.db: permission denied"},
+		}
+		s.mu.Unlock()
+		shot("plugins-list")
+		s.mu.Lock()
+		s.page = pagePlugin + "@precinct/dovetail"
+		s.mu.Unlock()
+		shot("plugin-detail")
+		s.mu.Lock()
+		s.page = pageView + "@precinct/dovetail#market"
+		s.mu.Unlock()
+		shot("plugin-market")
+		s.mu.Lock()
+		s.plan = &host.Plan{Package: &pkg.Package{Name: "@precinct/dovetail", Version: "0.1.1", Description: "插件市场：从签名索引浏览、安装和更新 Alcove 插件",
+			Alcove: &pkg.Alcove{Capabilities: []string{"settings_page", "sidebar_item", "plugin_install"}}},
+			Profiles: []string{"alcove-plugins"}, Replaces: &host.Installed{Name: "@precinct/dovetail", Version: "0.1.0"}}
+		s.planFrom = "@precinct/dovetail"
+		s.mu.Unlock()
+		shot("plugin-plan")
+		s.mu.Lock()
+		s.plan, s.planFrom = nil, ""
+		s.page = pagePlugin + "@precinct/daily"
+		s.mu.Unlock()
+		shot("plugin-crashed")
+		s.mu.Lock()
+		s.plugins, s.sidecars = nil, nil
+		s.mu.Unlock()
 	}
 }
 

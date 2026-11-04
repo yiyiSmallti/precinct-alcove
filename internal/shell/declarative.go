@@ -22,11 +22,17 @@ import (
 type settingsPage struct {
 	Title    string            `json:"title"`
 	Sections []settingsSection `json:"sections"`
+	// Submit false drops the page's 保存, for pages whose buttons submit
+	// the values themselves.
+	Submit *bool `json:"submit"`
 }
 
 type settingsSection struct {
 	Title       string          `json:"title"`
+	Caption     string          `json:"caption"` // card: short facts under the title
 	Description string          `json:"description"`
+	Display     string          `json:"display"` // "card": one small card in a grid
+	Icon        string          `json:"icon"`    // card: a sidebar_item icon name
 	Fields      []settingsField `json:"fields"`
 }
 

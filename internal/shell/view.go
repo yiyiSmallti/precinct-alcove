@@ -6,7 +6,6 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 )
 
@@ -45,6 +44,9 @@ func (s *Shell) View(c *ui.Context) {
 				s.pluginsView(c, pal)
 			case strings.HasPrefix(s.page, pagePlugin):
 				s.pluginView(c, pal, strings.TrimPrefix(s.page, pagePlugin))
+			case strings.HasPrefix(s.page, pageView):
+				plugin, id, _ := strings.Cut(strings.TrimPrefix(s.page, pageView), "#")
+				s.pluginPageView(c, pal, plugin, id)
 			case strings.HasPrefix(s.page, pageInbox):
 				s.inboxView(c, pal, strings.TrimPrefix(s.page, pageInbox))
 			default:
@@ -145,150 +147,6 @@ func questionCard(c *ui.Context, pal *palette, q *question) {
 			select {
 			case q.answer <- out:
 			default:
-			}
-		}
-	})
-}
-
-// modelSettings is the settings tab of model credentials and the model.
-func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
-	t := c.Theme()
-	settingsGroup(c, pal, "模型凭据", func() {
-		if len(s.creds) == 0 {
-			ui.Text(c, "还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。").FontSize(13).TextColor(t.TextMuted).Padding(14, 16)
-		}
-		def := s.defaultCred()
-		for _, cr := range s.creds {
-			ui.Row(c).Key(cr.ID).Padding(12, 16).Gap(10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, cr.Label).FontSize(13).FontWeight(500).SingleLine()
-						if def != nil && cr.ID == def.ID {
-							tag(c, pal, "默认")
-						}
-					})
-					sub := providerName(cr.Provider) + " · " + credentials.ModelOf(cr)
-					if cr.Provider == credentials.Custom {
-						sub = "自定义 · " + hostOf(cr.BaseURL) + " · " + cr.Model
-					}
-					ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
-				})
-				if (def == nil || cr.ID != def.ID) && ui.Button(c, "设为默认").Clicked() {
-					st := s.settings
-					st.DefaultCredential = cr.ID
-					s.saveSettings(st)
-				}
-				if ui.Button(c, "删除").Clicked() {
-					s.removeCredential(cr.ID)
-				}
-			})
-		}
-	})
-	if def := s.defaultCred(); def != nil {
-		p, _ := credentials.ProviderOf(def.Provider)
-		custom := p.ID == credentials.Custom
-		hint := "「" + def.Label + "」用的模型，留空用服务的默认模型。"
-		if custom {
-			hint = "「" + def.Label + "」用的模型，填接口支持的模型名。"
-		}
-		settingsGroup(c, pal, "模型", func() {
-			prefRow(c, pal, "模型名", hint, func() {
-				ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
-					ui.Row(c).Gap(8).Children(func() {
-						in := ui.TextInput(c, &s.model).Placeholder(firstOf(p.Models)).Grow(1)
-						changed := strings.TrimSpace(s.model) != def.Model && !(custom && strings.TrimSpace(s.model) == "")
-						if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
-							s.setModel(def.ID, s.model)
-						}
-					})
-					modelChips(c, pal, p.Models, &s.model)
-				})
-			})
-		})
-	}
-	f := &s.form
-	if f.provider == "" {
-		f.provider = credentials.Providers[0].Name
-	}
-	if f.provider != f.shown {
-		// Another service: its own model and address.
-		f.model, f.baseURL, f.shown = "", "", f.provider
-	}
-	if f.protocol == "" {
-		f.protocol = credentials.Protocols[0].Name
-	}
-	p, _ := providerNamed(f.provider)
-	custom := p.ID == credentials.Custom
-	settingsGroup(c, pal, "添加凭据", func() {
-		prefRow(c, pal, "服务", "", func() { ui.Select(c, &f.provider, providerNames()).Width(260) })
-		prefRow(c, pal, "名称", "在列表里认出它。", func() {
-			name := p.Name + " 个人"
-			if custom {
-				name = "公司网关"
-			}
-			ui.TextInput(c, &f.label).Placeholder("例如：" + name).Grow(1)
-		})
-		if custom {
-			prefRow(c, pal, "接口地址", "服务商文档里的 Base URL。", func() {
-				ui.TextInput(c, &f.baseURL).Placeholder("https://api.example.com/v1").Grow(1)
-			})
-			prefRow(c, pal, "协议", "接口兼容哪家的 API。", func() { ui.Select(c, &f.protocol, protocolNames()).Width(260) })
-		}
-		prefRow(c, pal, "API key", "只存在系统凭据库里。", func() {
-			ui.TextInput(c, &f.key).Password().Grow(1)
-		})
-		if custom {
-			prefRow(c, pal, "模型", "接口支持的模型名。", func() {
-				ui.TextInput(c, &f.model).Placeholder("例如：qwen3-coder").Grow(1)
-			})
-		} else {
-			prefRow(c, pal, "模型", "留空用 "+firstOf(p.Models)+"；也可以填这个服务的其他模型名。", func() {
-				ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
-					ui.TextInput(c, &f.model).Placeholder(firstOf(p.Models)).Grow(1)
-					modelChips(c, pal, p.Models, &f.model)
-				})
-			})
-		}
-		if p.BaseEnv != "" && !custom {
-			prefRow(c, pal, "接口地址", "可选，留空用服务的默认地址。", func() {
-				ui.TextInput(c, &f.baseURL).Placeholder("https://…").Grow(1)
-			})
-		}
-		ui.Row(c).Padding(12, 16).Gap(8).AlignItems(ui.Center).Children(func() {
-			if f.err != "" {
-				ui.Text(c, f.err).FontSize(12.5).TextColor(t.Danger).Grow(1).MinWidth(0)
-			} else {
-				ui.Spacer(c)
-			}
-			ok := strings.TrimSpace(f.label) != "" && strings.TrimSpace(f.key) != ""
-			if custom {
-				ok = ok && strings.TrimSpace(f.baseURL) != "" && strings.TrimSpace(f.model) != ""
-			}
-			if primaryButton(c, "添加", ok) {
-				s.addCredential()
-			}
-		})
-	})
-}
-
-// modelChips offers a service's models: a click fills *field with one.
-func modelChips(c *ui.Context, pal *palette, models []string, field *string) {
-	t := c.Theme()
-	ui.Row(c).Gap(6).Wrap().Children(func() {
-		for _, m := range models {
-			chip := ui.Row(c).Key("model:"+m).Height(24).Padding(0, 9).AlignItems(ui.Center).Radius(12).Border(1, pal.hairline).Cursor(ui.CursorPointer).Focusable().Label(m).Transition(fade)
-			on := strings.TrimSpace(*field) == m
-			switch {
-			case on:
-				chip.Background(t.Accent.Alpha(0.12)).Border(1, t.Accent.Alpha(0.4))
-			case chip.Hovered():
-				chip.Background(pal.hover)
-			}
-			chip.Children(func() {
-				ui.Text(c, m).FontSize(12).TextColor(t.TextMuted)
-			})
-			if chip.Clicked() {
-				*field = m
 			}
 		}
 	})

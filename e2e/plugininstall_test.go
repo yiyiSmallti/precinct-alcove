@@ -167,13 +167,25 @@ func TestPluginInstall(t *testing.T) {
 	_, err = cli.PluginAdd(ctx, targets[0], rec.Stored)
 	r.step("原始 .tgz 删除后 profile 仍可操作", err, "")
 
-	again := mk("1.0.1", nil)
+	again := mk("1.0.0", nil)
 	signWith(again, priv)
 	plan2, err := h.Prepare(ctx, again)
 	if err == nil {
 		err = expectProblem(plan2, "already-installed")
 	}
-	r.step("同名包已安装时拒绝重复安装", err, "")
+	h.Discard(plan2)
+	r.step("同名同版本已安装时拒绝重复安装", err, "")
+
+	// Another version of an installed package is an update, not a conflict:
+	// the plan names the version it replaces and has no problems.
+	next := mk("1.0.1", nil)
+	signWith(next, priv)
+	planUp, err := h.Prepare(ctx, next)
+	if err == nil && (planUp.Replaces == nil || planUp.Replaces.Version != "1.0.0" || !planUp.OK()) {
+		err = fmt.Errorf("replaces %v, problems %v", planUp.Replaces, planUp.Problems)
+	}
+	h.Discard(planUp)
+	r.step("同名不同版本识别为更新：计划指明替换的版本，无冲突", err, "")
 
 	// An unreadable target manifest is not "already removed": uninstall must
 	// fail and keep the archive and the record.

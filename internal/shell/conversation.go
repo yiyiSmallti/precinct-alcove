@@ -2,6 +2,7 @@ package shell
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -25,20 +26,26 @@ func (s *Shell) workspaceView(c *ui.Context, pal *palette, v *wsView) {
 				s.taskView(c, pal, v, tk)
 			}
 		})
-		if !s.panels.hidden {
+		switch {
+		case v.browsing:
+			s.browserPane(c, pal, v)
+		case !s.panels.hidden:
 			s.panel(c, pal, v, tk)
 		}
 	})
 }
 
-// panelToggle shows or hides the right panel.
-func (s *Shell) panelToggle(c *ui.Context, pal *palette) {
+// panelToggle shows or hides the right panel, which the browser pane
+// takes the place of while it shows.
+func (s *Shell) panelToggle(c *ui.Context, pal *palette, v *wsView) {
+	shown := !s.panels.hidden && !v.browsing
 	label := "隐藏右栏"
-	if s.panels.hidden {
+	if !shown {
 		label = "显示右栏"
 	}
-	if iconButton(c, pal, icPanel, label, !s.panels.hidden).Clicked() {
-		s.panels.hidden = !s.panels.hidden
+	if iconButton(c, pal, icPanel, label, shown).Clicked() {
+		s.panels.hidden = shown
+		v.browsing = false
 	}
 }
 
@@ -70,7 +77,8 @@ func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 	as, qs := v.pending(nil)
 	topBar(c, pal, func() {
 		ui.Spacer(c)
-		s.panelToggle(c, pal)
+		s.browserToggle(c, pal, v)
+		s.panelToggle(c, pal, v)
 	})
 	// A scroll area does not center what it holds, so the column takes its
 	// height from the last frame, drawing one more when that height changed
@@ -100,7 +108,7 @@ func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 			for _, q := range qs {
 				questionCard(c, pal, q)
 			}
-			s.composer(c, pal, &v.draft, "例如：把 data/ 下的报表汇总成季度报告", 3, false, func(text string) {
+			s.composer(c, pal, v, nil, &v.draft, "例如：把 data/ 下的报表汇总成季度报告", 3, false, func(text string) {
 				s.send(v, nil, text)
 			}, nil)
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 4).Children(func() {
@@ -152,7 +160,8 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 			status(c, pal.done, "已完成")
 		}
 		ui.Box(c).Width(8)
-		s.panelToggle(c, pal)
+		s.browserToggle(c, pal, v)
+		s.panelToggle(c, pal, v)
 		more := iconButton(c, pal, icMore, "更多", false)
 		more.PopoverMenu(func(m *ui.Menu) {
 			if m.Item("从列表移除").Disabled(sess.Running()).Chosen() {
@@ -196,17 +205,19 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 			if sess.Running() && !tk.stopping {
 				onStop = func() { s.stop(v, tk) }
 			}
-			s.composer(c, pal, &tk.input, "补充要求或继续追问…", 1, tk.starting, func(text string) {
+			s.composer(c, pal, v, tk, &tk.input, "补充要求或继续追问…", 1, tk.starting, func(text string) {
 				s.send(v, tk, text)
 			}, onStop)
 		})
 	})
 }
 
-// composer is the message box, with a round send (and stop) button in its
-// corner.
-func (s *Shell) composer(c *ui.Context, pal *palette, input *string, placeholder string, lines int, busy bool, send func(string), stop func()) {
+// composer is the message box under the run bar (the task's context, the
+// model and its thinking effort), with a round send (and stop) button in
+// its corner. tk is nil for a task not started yet.
+func (s *Shell) composer(c *ui.Context, pal *palette, v *wsView, tk *taskView, input *string, placeholder string, lines int, busy bool, send func(string), stop func()) {
 	t := c.Theme()
+	s.runBar(c, pal, v, tk)
 	box := ui.Column(c).Padding(12, 12, 10, 14).Gap(4).Radius(14).Background(pal.content).Transition(fade)
 	// Typing lights the box in the accent.
 	if box.FocusWithin() {
@@ -215,15 +226,28 @@ func (s *Shell) composer(c *ui.Context, pal *palette, input *string, placeholder
 		box.Border(1, t.Border).Shadow(0, 4, 18, 0, pal.shadow)
 	}
 	box.Children(func() {
-		in := ui.TextArea(c, input).Placeholder(placeholder).Background(ui.Transparent).Border(0, ui.Transparent).Padding(0).FontSize(14).Lines(lines, 10).MinHeight(0)
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		// A text area reports no Submitted: Enter sends through OnTextKey,
+		// Shift+Enter (any modifier) breaks the line, and an input method's
+		// own Enter never reaches it.
+		ui.TextArea(c, input).Placeholder(placeholder).Label("消息").Background(ui.Transparent).Border(0, ui.Transparent).Padding(0).FontSize(14).Lines(lines, 10).MinHeight(0).
+			OnTextKey(func(k ui.TextKey) bool {
+				if k.Key != ui.KeyEnter || k.Mods != 0 {
+					return false
+				}
+				if text := strings.TrimSpace(k.Text()); text != "" && !busy {
+					k.SetText("")
+					send(text)
+				}
+				return true
+			})
+		ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "↵ 发送 · ⇧↵ 换行").FontSize(11).TextColor(pal.subtle).Grow(1).SingleLine()
 			if stop != nil && roundButton(c, pal, icStop, "停止", false, false) {
 				stop()
 			}
 			text := strings.TrimSpace(*input)
 			off := text == "" || busy
-			if (roundButton(c, pal, icSend, "发送", true, off) || in.Submitted()) && !off {
+			if roundButton(c, pal, icSend, "发送", true, off) && !off {
 				*input = ""
 				send(text)
 			}
@@ -283,7 +307,7 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 				}
 			})
 			ui.Text(c, toolVerb(e.ToolName)).FontSize(13).FontWeight(500).Shrink(0)
-			ui.Text(c, toolSummary(e.Args)).FontSize(12).TextColor(t.TextMuted).Font(pal.mono).SingleLine().Grow(1).MinWidth(0)
+			ui.Text(c, entrySummary(*e)).FontSize(12).TextColor(t.TextMuted).Font(pal.mono).SingleLine().Grow(1).MinWidth(0)
 			arrow := ui.Icon(c, icChevron).Size(13, 13).TextColor(pal.subtle)
 			if !open {
 				arrow.Rotate(-90)
@@ -328,8 +352,57 @@ func toolVerb(name string) string {
 		return "搜索"
 	case "fetch", "webfetch", "web_fetch":
 		return "访问网页"
+	case "browser_open":
+		return "打开网页"
+	case "browser_snapshot":
+		return "阅读页面"
+	case "browser_click":
+		return "点击"
+	case "browser_type":
+		return "输入"
+	case "browser_press":
+		return "按键"
+	case "browser_scroll":
+		return "滚动页面"
+	case "browser_back":
+		return "后退"
+	case "browser_screenshot":
+		return "截图"
 	}
 	return name
+}
+
+// entrySummary is what a tool entry's line shows after its verb. A click
+// or an entry into a page names the element it reached, once the call is
+// done and its result says so ({"result":{"clicked":"[e3] link \"关于\""}}).
+func entrySummary(e events.Entry) string {
+	switch strings.ToLower(e.ToolName) {
+	case "browser_click", "browser_type":
+		var r struct {
+			Result struct{ Clicked, Typed string } `json:"result"`
+		}
+		var a struct{ Ref, Text string }
+		json.Unmarshal([]byte(e.Args), &a)
+		if json.Unmarshal([]byte(e.Result), &r) == nil {
+			if el := r.Result.Clicked + r.Result.Typed; el != "" {
+				// "[e3] link "关于我们" → /about": the element without its ref.
+				if _, rest, ok := strings.Cut(el, "] "); ok {
+					el = rest
+				}
+				if a.Text != "" {
+					return oneLine(fmt.Sprintf("“%s” → %s", a.Text, el))
+				}
+				return oneLine(el)
+			}
+		}
+		if a.Text != "" {
+			return oneLine(fmt.Sprintf("“%s” → %s", a.Text, a.Ref))
+		}
+		return a.Ref
+	case "browser_snapshot", "browser_back", "browser_screenshot":
+		return ""
+	}
+	return toolSummary(e.Args)
 }
 
 // toolSummary is the one argument that says what a call does: the command,

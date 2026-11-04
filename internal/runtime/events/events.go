@@ -47,6 +47,12 @@ type Session struct {
 	ID     string
 	Title  string
 	Status string // running | idle | ...
+	// Context is how many tokens the conversation took as of the latest
+	// reply (its request and the reply itself, as dsh's token meter counts
+	// them); 0 before any. It shrinks with the reply after a compaction.
+	Context int
+	// Usage is the token count of the latest reply, as it makes Context.
+	Usage Usage
 	// Entries in display order.
 	Entries []*Entry
 
@@ -55,6 +61,15 @@ type Session struct {
 	think map[string]*Entry // reasoning being streamed
 	seq   int               // last durable seq applied; -1 before any
 	next  int
+}
+
+// Usage splits a reply's tokens: the request's input not read from the
+// cache, read from it and written to it, and the reply's output.
+type Usage struct {
+	Input      int `json:"inputTokens"`
+	Output     int `json:"outputTokens"`
+	CacheRead  int `json:"cacheReadTokens"`
+	CacheWrite int `json:"cacheWriteTokens"`
 }
 
 // NewSession returns an empty session view for id.
@@ -173,9 +188,13 @@ func (s *Session) applyEvent(e event) bool {
 		var d struct {
 			Turn, Step int
 			Message    message `json:"message"`
+			Usage      *Usage  `json:"usage"`
 		}
 		if json.Unmarshal(e.Data, &d) != nil {
 			return false
+		}
+		if u := d.Usage; u != nil {
+			s.Context, s.Usage = u.Input+u.CacheRead+u.CacheWrite+u.Output, *u
 		}
 		prefix := fmt.Sprintf("%d/%d/", d.Turn, d.Step)
 		s.dropStreamed(s.think, prefix)
@@ -388,13 +407,19 @@ func textOf(blocks []block) string {
 type Snapshot struct {
 	Title   string  `json:"title,omitempty"`
 	Seq     int     `json:"seq"`
+	Context int     `json:"context,omitempty"`
+	Usage   *Usage  `json:"usage,omitempty"`
 	Entries []Entry `json:"entries"`
 }
 
 // Snapshot returns the finished part of s: entries still streaming are
 // left out.
 func (s *Session) Snapshot() Snapshot {
-	out := Snapshot{Title: s.Title, Seq: s.seq}
+	out := Snapshot{Title: s.Title, Seq: s.seq, Context: s.Context}
+	if s.Usage != (Usage{}) {
+		u := s.Usage
+		out.Usage = &u
+	}
 	for _, e := range s.Entries {
 		if e.Streaming {
 			continue
@@ -411,7 +436,10 @@ func (s *Session) Snapshot() Snapshot {
 func (s *Session) Restore(snap Snapshot) {
 	s.Entries, s.next = nil, 0
 	s.tools, s.live, s.think = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
-	s.Title, s.seq = snap.Title, snap.Seq
+	s.Title, s.seq, s.Context = snap.Title, snap.Seq, snap.Context
+	if snap.Usage != nil {
+		s.Usage = *snap.Usage
+	}
 	for i := range snap.Entries {
 		e := snap.Entries[i]
 		if e.Kind == Tool && !e.Done {

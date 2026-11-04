@@ -74,7 +74,10 @@ func main() {
 	}
 	s := shell.New(nil)
 	s.Version, s.Updater = Version, &update.MyGo{}
-	cfg.Answerer, cfg.SidecarUI, cfg.Inbox = s, s, s.Inbox
+	cfg.Answerer, cfg.SidecarUI, cfg.Inbox, cfg.Browser = s, s, s.Inbox, s
+	cfg.ConfirmInstall, cfg.PluginsChanged = s.ConfirmInstall, s.PluginsChanged
+	// The plugin market ships with Alcove (installer/stage-market.sh).
+	cfg.Preinstall, _ = filepath.Glob(filepath.Join(rt, "plugins", "*.tgz"))
 	a, err := app.New(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -105,6 +108,13 @@ func main() {
 		}
 		win := mygo.NewWindow(opts)
 		s.Post = win.Update
+		// The browser's pages keep their sign-ins and site data apart from
+		// the user's browsers and from Alcove's own.
+		browsing := mygo.NewSession("browser")
+		s.NewWebView = func() (*mygo.WebView, error) {
+			return win.NewWebView(mygo.WebViewOptions{URL: "about:blank", BackgroundColor: "#ffffff",
+				Page: mygo.PageOptions{Session: browsing, SwipeNavigation: true, PinchZoom: true}})
+		}
 		s.OpenPath = mygo.Shell.OpenPath
 		s.Reveal = mygo.Shell.ShowItemInFolder
 		s.PickFolder = func() (string, error) {

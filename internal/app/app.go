@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/catalog"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/identity"
@@ -40,17 +41,34 @@ type Config struct {
 	Secrets       credentials.SecretStore // nil: the system credential store
 	Answerer      alrt.Answerer           // approval cards and question forms
 	SidecarUI     sidecar.UISink
-	Inbox         func(plugin string, item json.RawMessage) error
+	// Browser is the window's browser (browser capability); nil: none.
+	Browser sidecar.Browser
+	Inbox   func(plugin string, item json.RawMessage) error
 	// ScratchDir is the default folder of tasks outside a project, whose
 	// workspace Alcove adds when it is missing (the window lists its tasks
 	// as 最近会话); "" adds none.
 	ScratchDir string
+	// ConfirmInstall shows a package a plugin market (plugin_install cap)
+	// asks to install or update and reports whether the user agreed; nil
+	// declines every such request.
+	ConfirmInstall func(ctx context.Context, plugin string, plan *host.Plan) bool
+	// PluginsChanged is called after plugins were installed or updated
+	// without the plugin page's own buttons (a market, a preinstall).
+	PluginsChanged func()
+	// Preinstall are signed packages shipped with Alcove (the market): each
+	// is installed on the first start that finds it, and updated when the
+	// shipped version is newer. One the user uninstalled stays uninstalled.
+	Preinstall []string
 }
 
 // Settings are Alcove's own preferences (settings.json).
 type Settings struct {
 	DefaultCredential string `json:"defaultCredential,omitempty"`
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"`
+	// ReasoningEffort is the effort tasks run at (catalog.Efforts); ""
+	// and one the model does not take leave the provider's default.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// Compaction is when a conversation nearing its window is compacted.
+	Compaction Compaction `json:"compaction"`
 	// UpdateSource is a mirror of the release files (an https directory);
 	// "" is the feed built into the app.
 	UpdateSource string `json:"updateSource,omitempty"`
@@ -60,6 +78,18 @@ type Settings struct {
 	// Appearance is how the window looks; zero is Alcove's default look.
 	Appearance Appearance `json:"appearance"`
 }
+
+// Compaction tunes dsh's compaction-basic for every task.
+type Compaction struct {
+	// Off stops automatic compaction; a full window then fails the turn.
+	Off bool `json:"off,omitempty"`
+	// Threshold is how full the context gets before it is compacted, in
+	// percent of the window (or of the model's cap); 0 is DefaultThreshold.
+	Threshold int `json:"threshold,omitempty"`
+}
+
+// DefaultThreshold is compaction-basic's own thresholdRatio, in percent.
+const DefaultThreshold = 80
 
 // Appearance is the look the user chose in settings.
 type Appearance struct {
@@ -92,6 +122,8 @@ type App struct {
 	Bridge     *alrt.Bridge
 	Runtimes   *alrt.Manager
 	Sidecars   *sidecar.Manager
+	// Catalog is what the bundled runtime knows of each model.
+	Catalog *catalog.Catalog
 
 	// OnRuntimeExit is called after a runtime exits (the UI's hook); set it
 	// before Start.
@@ -130,7 +162,7 @@ func New(cfg Config) (*App, error) {
 		cfg.Secrets = credentials.MygoSecrets{}
 	}
 	cli := &dsh.CLI{Node: cfg.Node, Bin: cfg.DSHBin, Home: l.DSHHome(), ToolDirs: cfg.ToolDirs}
-	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg}
+	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg, Catalog: catalog.FromDSHBin(cfg.DSHBin)}
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
 	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
@@ -163,6 +195,8 @@ func New(cfg Config) (*App, error) {
 			CancelSession: a.cancelForPlugin,
 			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
+			Market:        market{a},
+			Browser:       cfg.Browser,
 		},
 	}
 	return a, nil
@@ -189,6 +223,9 @@ func (a *App) Start(ctx context.Context) error {
 		if !r.Incomplete && r.Sidecar != "" {
 			a.Sidecars.Start(ctx, a.sidecarSpec(r))
 		}
+	}
+	if len(a.cfg.Preinstall) > 0 {
+		go a.preinstall(ctx)
 	}
 	return nil
 }
@@ -539,9 +576,10 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		return nil, err
 	}
 	if route != nil {
+		effort, tuning := a.tuning(s, route.Route, route.Model, 0)
 		return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: s.ReasoningEffort,
-			Owner: owner, Env: append([]string(nil), extra...),
+			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: effort,
+			Owner: owner, Env: append(append([]string(nil), extra...), tuning...),
 		})
 	}
 	credID := s.DefaultCredential
@@ -555,15 +593,87 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		}
 		credID = list[0].ID
 	}
+	cr, err := a.Creds.Get(credID)
+	if err != nil {
+		return nil, err
+	}
 	provider, model, env, err := a.Creds.LaunchEnv(credID)
 	if err != nil {
 		return nil, err
 	}
+	effort, tuning := a.tuning(s, provider, model, cr.Context[model])
+	tag := effort + "\n" + strings.Join(tuning, "\n")
+	// The user switched model or credential, or retuned it, since the
+	// runtime started: an idle one restarts on the new route (sessions
+	// resume from disk); a busy one keeps its route until its sessions are
+	// done.
+	if p := a.Runtimes.Get(alrt.Key{Profile: prof, Cwd: cwd}); p != nil && p.Spec.Owner == "" &&
+		(p.Spec.Provider != provider || p.Spec.Model != model || p.Spec.Tuning != tag) && !p.Busy() {
+		p.Stop(0)
+	}
 	return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: s.ReasoningEffort,
+		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort, Tuning: tag,
 		// Plugin variables first: the credential always wins.
-		Env: append(append([]string(nil), extra...), env...),
+		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})
+}
+
+// tuning is how the settings reach a runtime of model on route: the
+// reasoning effort it takes (none when the model takes no such effort),
+// and the variables bridge/cordis.patch.yml reads (the compaction settings,
+// a route patch, the default model). limit is the context
+// chosen for the model in tokens (0: the runtime's window).
+func (a *App) tuning(s Settings, route, model string, limit int) (effort string, env []string) {
+	m, listed := a.Catalog.Lookup(route, model)
+	if m.Supports(s.ReasoningEffort) {
+		effort = s.ReasoningEffort
+	}
+	// A cap past the runtime's window, up to the widest a catalog states,
+	// widens it; one below scales the compaction ratios, so a conversation
+	// is compacted before it outgrows the cap.
+	window, scale := m.Context, 1.0
+	switch {
+	case limit > window && limit <= m.Max:
+		window = limit
+	case limit > 0 && window > 0 && limit < window:
+		scale = float64(limit) / float64(window)
+	}
+	// pi-ai serves only the models its catalog lists; another one the
+	// service offers is declared for this runtime's route, and a widened
+	// window is set on the route's entry for the model.
+	var patch map[string]any
+	switch {
+	case !listed && a.Catalog.Routes(route):
+		entry := map[string]any{"id": model}
+		if window != m.Context {
+			entry["contextWindow"] = window
+		}
+		patch = map[string]any{"models": []any{entry}}
+	case window != m.Context:
+		patch = map[string]any{"modelOverrides": map[string]any{model: map[string]any{"contextWindow": window}}}
+	}
+	if patch != nil {
+		b, _ := json.Marshal(map[string]any{route: patch})
+		env = append(env, "ALCOVE_ROUTE_PATCH="+string(b))
+	}
+	pct := s.Compaction.Threshold
+	if pct <= 0 || pct >= 100 {
+		pct = DefaultThreshold
+	}
+	cfg, _ := json.Marshal(map[string]any{
+		"auto":           !s.Compaction.Off,
+		"thresholdRatio": float64(pct) / 100 * scale,
+		// compaction-basic's default verbatim tail, kept under the cap.
+		"retainRatio": 0.16 * scale,
+	})
+	// Agents the runtime makes on its own (a plugin's engine, subagents)
+	// take dsh's default model; the bridge sets it to this route.
+	def := map[string]string{"provider": route, "model": model}
+	if effort != "" {
+		def["reasoningEffort"] = effort
+	}
+	b, _ := json.Marshal(def)
+	return effort, append(env, "ALCOVE_COMPACTION="+string(cfg), "ALCOVE_DEFAULT_MODEL="+string(b))
 }
 
 // ensureForPlugin is runtime.ensure for sidecars with the background
@@ -590,6 +700,13 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 	}
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() || !filepath.IsAbs(cwd) {
 		return "", fmt.Errorf("runtime.ensure: %q is not an existing absolute directory", cwd)
+	}
+	// As for a workspace (RefreshBridge): a profile made by an older Alcove
+	// gets the shipped bridge before its runtime starts.
+	if a.Runtimes.Get(alrt.Key{Profile: prof, Cwd: cwd}) == nil {
+		if _, err := a.Profiles.RefreshBridge(ctx, prof); err != nil {
+			a.pluginLog("host", "warn", fmt.Sprintf("profile %s: updating the bridge: %v", prof, err))
+		}
 	}
 	p, err := a.launch(ctx, prof, cwd, env, nil, "")
 	if err != nil {
@@ -672,6 +789,23 @@ func (a *App) detachWorkspace(ctx context.Context, plugin, id string) error {
 
 // InstallPlugin installs a checked plan and starts its sidecar.
 func (a *App) InstallPlugin(ctx context.Context, plan *host.Plan) (*host.Installed, error) {
+	if plan.Replaces != nil {
+		// An update: the old sidecar and the runtimes of the plugin's own
+		// profiles stop while the versions are swapped.
+		name := plan.Replaces.Name
+		a.Sidecars.Stop(ctx, name)
+		a.stopOwnRuntimes(name)
+		rec, err := a.Plugins.Install(ctx, plan)
+		// Whatever is installed now, new or put back, runs again.
+		if recs, lerr := a.Plugins.List(); lerr == nil {
+			for _, r := range recs {
+				if r.Name == name && !r.Incomplete && r.Sidecar != "" {
+					a.Sidecars.Start(context.WithoutCancel(ctx), a.sidecarSpec(r))
+				}
+			}
+		}
+		return rec, err
+	}
 	rec, err := a.Plugins.Install(ctx, plan)
 	if err != nil {
 		return nil, err
@@ -685,7 +819,18 @@ func (a *App) InstallPlugin(ctx context.Context, plan *host.Plan) (*host.Install
 // UninstallPlugin stops its sidecar, then removes the package everywhere.
 func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 	a.Sidecars.Stop(ctx, name)
-	// Stop the runtimes it ran in its own profiles (e.g. daily).
+	a.stopOwnRuntimes(name)
+	// Secrets go first: if the credential store refuses, the plugin stays
+	// installed and uninstalling again retries the cleanup.
+	if err := a.forgetPluginSecrets(name); err != nil {
+		return fmt.Errorf("remove %s's secrets: %w", name, err)
+	}
+	return a.Plugins.Uninstall(ctx, name)
+}
+
+// stopOwnRuntimes stops the runtimes plugin name ran in its own profiles
+// (e.g. daily), not workspace ones.
+func (a *App) stopOwnRuntimes(name string) {
 	recs, _ := a.Plugins.List()
 	own := map[string]bool{}
 	for _, r := range recs {
@@ -703,12 +848,6 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 			a.Runtimes.Stop(k)
 		}
 	}
-	// Secrets go first: if the credential store refuses, the plugin stays
-	// installed and uninstalling again retries the cleanup.
-	if err := a.forgetPluginSecrets(name); err != nil {
-		return fmt.Errorf("remove %s's secrets: %w", name, err)
-	}
-	return a.Plugins.Uninstall(ctx, name)
 }
 
 // Settings reads settings.json.

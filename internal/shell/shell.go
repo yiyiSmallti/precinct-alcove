@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egoist/mygo"
+
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
@@ -60,6 +62,8 @@ type Shell struct {
 	Version string
 	// Updater checks for and installs new versions; nil hides updates.
 	Updater update.Updater
+	// NewWebView makes a page for the browser; nil: no browser.
+	NewWebView func() (*mygo.WebView, error)
 
 	mu          sync.Mutex
 	page        string
@@ -67,6 +71,11 @@ type Shell struct {
 	curProj     string                  // the project the sidebar's switcher shows
 	scratchID   string                  // the workspace of tasks outside a project (最近会话)
 	wsMenu      bool                    // the workspace switcher is open
+	runMenu     bool                    // the run panel (model, effort, context) is open
+	ctxMenu     bool                    // the context panel (what the task's context holds) is open
+	effortPos   float64                 // the effort slider's position
+	effortAnim  float32                 // where its fill is drawn, gliding to the position
+	effortAt    time.Time               // when the fill was last drawn
 	index       map[string][]tasks.Task // tasks by workspace, as last read
 	workspaces  []workspace.Workspace
 	views       map[string]*wsView // by workspace id
@@ -74,17 +83,16 @@ type Shell struct {
 	creds       []credentials.Credential
 	settings    app.Settings
 	form        credForm
-	model       string  // the default credential's model field being edited
-	modelFor    string  // the credential model was filled for
-	savedModel  string  // its saved model, as last read
-	notice      string  // one line shown at the top, e.g. an error
-	startErr    string  // why Alcove could not start; tasks are refused
-	preparing   bool    // 最近会话's workspace is being added on first start
-	newTaskH    float32 // the new task page's height in the last frame
-	scratchBusy bool    // 最近会话 is moving to another folder
+	picks       map[string]*modelPick // credential id → its open model picker
+	notice      string                // one line shown at the top, e.g. an error
+	startErr    string                // why Alcove could not start; tasks are refused
+	preparing   bool                  // 最近会话's workspace is being added on first start
+	newTaskH    float32               // the new task page's height in the last frame
+	scratchBusy bool                  // 最近会话 is moving to another folder
 	diagBusy    bool
 	diagStatus  string
 	contribs    map[string]sidecar.Contribution
+	browsers    map[string]*browserTab // by workspace id
 	updates     updatesState
 
 	pluginsState
@@ -106,6 +114,7 @@ type wsView struct {
 	approvals     []*approval
 	questions     []*question
 	confirmRemove bool
+	browsing      bool // the browser pane shows
 }
 
 // taskView is one task: a dsh session of the workspace.
@@ -135,17 +144,17 @@ type question struct {
 }
 
 type credForm struct {
+	open                       bool // the form shows, under provider's row
 	label, baseURL, key, model string
-	provider                   string // the provider's Name, as the select shows it
+	provider                   string // the provider's Name
 	protocol                   string // a custom endpoint's protocol, by Name
-	shown                      string // the provider the fields were last cleared for
 	err                        string
 }
 
 // New returns a shell for a; call Load once a is started.
 func New(a *app.App) *Shell {
 	return &Shell{App: a, Lang: "zh", views: map[string]*wsView{}, byRuntime: map[string]string{}, index: map[string][]tasks.Task{},
-		contribs: map[string]sidecar.Contribution{},
+		contribs: map[string]sidecar.Contribution{}, browsers: map[string]*browserTab{},
 		pluginsState: pluginsState{sidecars: map[string]sidecar.Status{}, busy: map[string]bool{},
 			forms: map[string]*settingsForm{}, chats: map[string]*chat{}, cards: map[string]*contribCard{}}}
 }
@@ -158,6 +167,18 @@ func (s *Shell) post(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fn()
+}
+
+// now runs fn under mu at once, on the caller's goroutine, and has the window
+// redraw. Unlike post, its effects are visible when it returns: the window's
+// Post only queues fn for the UI thread.
+func (s *Shell) now(fn func()) {
+	s.mu.Lock()
+	fn()
+	s.mu.Unlock()
+	if s.Post != nil {
+		s.Post(func() {})
+	}
 }
 
 // Load reads workspaces, credentials and settings and opens 最近会话, the
@@ -238,16 +259,6 @@ func (s *Shell) reload() {
 	}
 	s.post(func() {
 		s.workspaces, s.creds, s.settings = wss, creds, st
-		// The model field follows the saved value unless it is being edited
-		// for the credential still the default.
-		if c := s.defaultCred(); c == nil {
-			s.model, s.modelFor = "", ""
-		} else if c.ID != s.modelFor || s.model == s.savedModel {
-			s.model, s.modelFor = c.Model, c.ID
-		}
-		if c := s.defaultCred(); c != nil {
-			s.savedModel = c.Model
-		}
 		if err1 == nil {
 			s.index = idx
 		}
@@ -390,7 +401,7 @@ func (s *Shell) Approve(ctx context.Context, runtimeID string, req alrt.Approval
 	a := &approval{req: req, answer: make(chan string, 1)}
 	ok := false
 	ws := s.runtimeWorkspace(runtimeID)
-	s.post(func() {
+	s.now(func() {
 		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.approvals = append(v.approvals, a)
 			ok = true
@@ -433,7 +444,7 @@ func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.
 	}
 	ok := false
 	ws := s.runtimeWorkspace(runtimeID)
-	s.post(func() {
+	s.now(func() {
 		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.questions = append(v.questions, q)
 			ok = true
@@ -577,6 +588,8 @@ func (s *Shell) addCredential() {
 				return
 			}
 			s.form = credForm{}
+			// Its models come next, from the service's own list.
+			s.openPick(*c)
 		})
 	}()
 }
@@ -606,13 +619,103 @@ func (s *Shell) saveSettings(st app.Settings) {
 	}()
 }
 
-// setModel changes the model of credential id.
-func (s *Shell) setModel(id, model string) {
+// modelPick is a credential's model picker on the settings page: the
+// service's models, fetched when it opens, and the ones ticked.
+type modelPick struct {
+	fetching bool
+	remote   []string
+	err      string
+	picked   []string // in the order ticked
+	filter   string
+	saving   bool
+}
+
+func (m *modelPick) has(model string) bool {
+	for _, p := range m.picked {
+		if p == model {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *modelPick) toggle(model string) {
+	for i, p := range m.picked {
+		if p == model {
+			m.picked = append(m.picked[:i], m.picked[i+1:]...)
+			return
+		}
+	}
+	m.picked = append(m.picked, model)
+}
+
+// openPick opens credential cr's model picker with its enabled models
+// ticked, and asks the service for the rest.
+func (s *Shell) openPick(cr credentials.Credential) {
+	if s.picks == nil {
+		s.picks = map[string]*modelPick{}
+	}
+	m := &modelPick{picked: append([]string(nil), credentials.EnabledModels(cr)...)}
+	s.picks[cr.ID] = m
+	if !credentials.CanList(cr) {
+		return
+	}
+	m.fetching = true
 	go func() {
-		err := s.App.Creds.SetModel(id, model)
+		list, err := s.App.Creds.RemoteModels(context.Background(), cr.ID)
+		s.post(func() {
+			m.fetching = false
+			if err != nil {
+				m.err = describe(err)
+				return
+			}
+			m.remote = list
+		})
+	}()
+}
+
+// savePick stores the ticked models of credential cr; when the model it
+// runs is no longer among them, it runs the first ticked one.
+func (s *Shell) savePick(cr credentials.Credential, m *modelPick) {
+	picked := append([]string(nil), m.picked...)
+	m.saving, m.err = true, ""
+	go func() {
+		err := s.App.Creds.SetModels(cr.ID, picked)
+		if err == nil && len(picked) > 0 {
+			cur, keep := credentials.ModelOf(cr), false
+			for _, p := range picked {
+				keep = keep || p == cur
+			}
+			if !keep {
+				err = s.App.Creds.SetModel(cr.ID, picked[0])
+			}
+		}
+		s.reload()
+		s.post(func() {
+			m.saving = false
+			if err != nil {
+				m.err = describe(err)
+				return
+			}
+			delete(s.picks, cr.ID)
+		})
+	}()
+}
+
+// switchModel makes model of credential id the one tasks run with.
+func (s *Shell) switchModel(id, model string) {
+	go func() {
+		st, err := s.App.Settings()
+		if err == nil && st.DefaultCredential != id {
+			st.DefaultCredential = id
+			err = s.App.SaveSettings(st)
+		}
+		if err == nil {
+			err = s.App.Creds.SetModel(id, model)
+		}
 		s.reload()
 		if err != nil {
-			s.post(func() { s.notice = "无法保存模型：" + describe(err) })
+			s.post(func() { s.notice = "无法切换模型：" + describe(err) })
 		}
 	}()
 }
@@ -629,16 +732,6 @@ func (s *Shell) defaultCred() *credentials.Credential {
 		return &s.creds[0]
 	}
 	return nil
-}
-
-// providerNames lists the credential providers as the settings page names
-// them, in credentials.Providers' order.
-func providerNames() []string {
-	names := make([]string, len(credentials.Providers))
-	for i, p := range credentials.Providers {
-		names[i] = p.Name
-	}
-	return names
 }
 
 func providerNamed(name string) (credentials.Provider, bool) {
