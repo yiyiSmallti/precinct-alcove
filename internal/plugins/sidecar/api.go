@@ -306,6 +306,18 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 		if svc.StartTask == nil {
 			return nil, unavailable(method)
 		}
+		// The request waits for the user; it must not outlive the sidecar
+		// that made it (exited, restarted or uninstalled), or a stale
+		// confirmation could still start the task.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-a.pr.conn.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 		res, err := svc.StartTask(ctx, p.name, q)
 		if errors.Is(err, ErrNotPermitted) {
 			return nil, notGranted("%v", err)

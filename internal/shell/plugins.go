@@ -62,6 +62,7 @@ type pluginsState struct {
 	busy       map[string]bool // plugin → uninstall or restart running
 	forms      map[string]*settingsForm
 	chats      map[string]*chat
+	chatGen    int                     // the newest chat's gen
 	cards      map[string]*contribCard // card contributions, by plugin#id
 	avatars    map[string]*ui.Bitmap   // alcove.avatar of installed plugins, by name
 	taskAsks   []*taskAsk              // workspace task requests waiting for the user
@@ -85,6 +86,7 @@ type chat struct {
 	// most replyWait (it may decide an input needs none).
 	waiting time.Time
 	saved   int // versions handed to the app to store
+	gen     int // which chat this is: an uninstall drops saves of earlier ones
 	// unread counts the items that came while the view was not shown.
 	unread int
 }
@@ -142,7 +144,8 @@ const (
 func (s *Shell) chat(plugin string) *chat {
 	c := s.chats[plugin]
 	if c == nil {
-		c = &chat{byID: map[string]*chatEntry{}}
+		s.chatGen++
+		c = &chat{byID: map[string]*chatEntry{}, gen: s.chatGen}
 		s.chats[plugin] = c
 		if s.App != nil {
 			c.restore(s.App.LoadInbox(plugin))
@@ -217,7 +220,7 @@ func (s *Shell) saveChat(plugin string, c *chat) {
 	}
 	c.saved++
 	seq := c.saved
-	go s.App.SaveInbox(plugin, seq, data)
+	go s.App.SaveInbox(plugin, c.gen, seq, data)
 }
 
 // Inbox is the sidecars' inbox.post: it shows item in the plugin's
@@ -558,7 +561,7 @@ func (s *Shell) uninstall(name string) {
 			}
 			delete(s.sidecars, name)
 			delete(s.chats, name)
-			go s.App.DropInbox(name)
+			go s.App.DropInbox(name, s.chatGen)
 			for k := range s.forms {
 				if strings.HasPrefix(k, name+"#") {
 					delete(s.forms, k)

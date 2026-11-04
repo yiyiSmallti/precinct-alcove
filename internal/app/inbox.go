@@ -16,8 +16,9 @@ import (
 // plugin.
 
 type inboxFiles struct {
-	mu    sync.Mutex
-	saved map[string]int // plugin → the newest version written
+	mu      sync.Mutex
+	saved   map[string][2]int // plugin → the newest {gen, version} written
+	dropped map[string]int    // plugin → the newest gen uninstalled
 }
 
 // inboxPath is plugin's file: its name made safe to read, then a digest of
@@ -48,16 +49,17 @@ func (a *App) LoadInbox(plugin string) []byte {
 	return b
 }
 
-// SaveInbox stores version seq of plugin's conversation view. Saves may
-// run concurrently: one older than the last written is dropped.
-func (a *App) SaveInbox(plugin string, seq int, data []byte) {
+// SaveInbox stores version seq of plugin's conversation view gen (one
+// per view the window made). Saves may run concurrently: one older than
+// the last written is dropped, and so is one of a view uninstalled since.
+func (a *App) SaveInbox(plugin string, gen, seq int, data []byte) {
 	f := &a.inbox
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.saved == nil {
-		f.saved = map[string]int{}
+		f.saved = map[string][2]int{}
 	}
-	if seq <= f.saved[plugin] {
+	if last := f.saved[plugin]; gen <= f.dropped[plugin] || gen < last[0] || (gen == last[0] && seq <= last[1]) {
 		return
 	}
 	path := a.inboxPath(plugin)
@@ -71,15 +73,21 @@ func (a *App) SaveInbox(plugin string, seq int, data []byte) {
 		a.pluginLog("host", "warn", "saving the conversation view of "+plugin+": "+err.Error())
 		return
 	}
-	f.saved[plugin] = seq
+	f.saved[plugin] = [2]int{gen, seq}
 	os.Remove(a.legacyInboxPath(plugin))
 }
 
-// DropInbox removes plugin's saved conversation view (uninstall).
-func (a *App) DropInbox(plugin string) {
-	a.inbox.mu.Lock()
-	defer a.inbox.mu.Unlock()
+// DropInbox removes plugin's saved conversation view (uninstall); saves
+// of views up to gen that are still on their way are dropped too.
+func (a *App) DropInbox(plugin string, gen int) {
+	f := &a.inbox
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	os.Remove(a.inboxPath(plugin))
 	os.Remove(a.legacyInboxPath(plugin))
-	delete(a.inbox.saved, plugin)
+	delete(f.saved, plugin)
+	if f.dropped == nil {
+		f.dropped = map[string]int{}
+	}
+	f.dropped[plugin] = max(f.dropped[plugin], gen)
 }

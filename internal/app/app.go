@@ -430,10 +430,11 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 // default credential and the plugins' launch hooks. An attached workspace
 // runs only on its owner's route.
 func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, error) {
-	// attach/detach can change the owner while a launch is in flight (they
-	// stop the runtime, but the launch may not have reached the runtime
-	// manager yet). Check the runtime against the owner afterwards and
-	// start again if they differ.
+	// attach/detach can change the owner, and moving the tasks folder the
+	// directory, while a launch is in flight (they stop the runtime, but
+	// the launch may not have reached the runtime manager yet). Check the
+	// runtime against the workspace afterwards and start again if they
+	// differ.
 	for try := 0; ; try++ {
 		w, err := a.Workspaces.Find(id)
 		if err != nil {
@@ -449,13 +450,13 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 			a.Runtimes.Stop(k)
 			return nil, err
 		}
-		if p.Spec.Owner == ownerKey(now) {
+		if p.Spec.Owner == ownerKey(now) && now.Dir == w.Dir {
 			a.opened(p, k, sidecarView(now))
 			return p, nil
 		}
 		a.Runtimes.Stop(k)
 		if try == 2 {
-			return nil, fmt.Errorf("workspace %s changed owner while opening; try again", w.Name)
+			return nil, fmt.Errorf("workspace %s changed while opening; try again", w.Name)
 		}
 	}
 }
