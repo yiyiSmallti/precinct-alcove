@@ -15,6 +15,8 @@
 //     (or not listed, or cannot be cancelled), or the card keeps its buttons;
 //   - the persona never reaches the prompt, or a change made while the
 //     engine runs (persona.set) waits for the next start;
+//   - a new bot starts without the default persona, or it cannot be had
+//     back after being cleared;
 //   - SOUL.md saved on the page or edited by hand does not reach the next
 //     turn, or an over-long one is taken (or cut) silently;
 //   - a skill made on the page is not where the engine looks for skills;
@@ -167,6 +169,16 @@ func TestDailyMore(t *testing.T) {
 	if err != nil {
 		return
 	}
+	soulFile := filepath.Join(dataDir, "bot", "SOUL.md")
+	if b, rerr := os.ReadFile(soulFile); rerr != nil || !strings.Contains(string(b), "这是默认人设") {
+		err = fmt.Errorf("SOUL.md %q %v", b, rerr)
+	} else if !strings.Contains(page("persona"), "这是默认人设") || !strings.Contains(page("persona"), "恢复默认人设") {
+		err = fmt.Errorf("the persona page: %q", page("persona"))
+	}
+	r.step("新 bot 带默认人设：首次启动写出 SOUL.md，「人设与风格」页显示它和「恢复默认人设」按钮", err, "")
+	if err != nil {
+		return
+	}
 
 	// 2. Before the engine first starts: a persona and a skill.
 	err = action("persona", "submit", map[string]any{"name": "小日", "call": "老王", "tone": "warm", "length": "short", "emoji": false, "extra": ""})
@@ -177,13 +189,13 @@ func TestDailyMore(t *testing.T) {
 	if err != nil {
 		return
 	}
-	err = action("skills", "create", map[string]any{"name": "weekly-report", "when": "我让你写周报时", "how": "按本周完成、进行中、下周计划三段写", "path": ""})
+	err = action("skills", "create", map[string]any{"name": "weekly-report", "when": "用于: 我让你写周报时", "how": "按本周完成、进行中、下周计划三段写", "path": ""})
 	if err == nil {
 		err = waitFor(func() bool { return strings.Contains(page("skills"), "delete:weekly-report") }, 10*time.Second)
 	}
 	skillFile := filepath.Join(dataDir, "bot", ".dsh", "skills", "weekly-report", "SKILL.md")
 	if err == nil {
-		if b, rerr := os.ReadFile(skillFile); rerr != nil || !strings.HasPrefix(string(b), "---\nname: weekly-report\ndescription: 我让你写周报时\n---") {
+		if b, rerr := os.ReadFile(skillFile); rerr != nil || !strings.HasPrefix(string(b), "---\nname: weekly-report\ndescription: \"用于: 我让你写周报时\"\n---") {
 			err = fmt.Errorf("SKILL.md %q %v", b, rerr)
 		}
 	}
@@ -198,13 +210,15 @@ func TestDailyMore(t *testing.T) {
 		switch {
 		case !bot.saw("称呼用户为「老王」"):
 			err = fmt.Errorf("the persona is not in the prompt")
-		case !bot.saw("weekly-report"):
-			err = fmt.Errorf("the skill is not offered to the model")
+		case !bot.saw("这是默认人设"):
+			err = fmt.Errorf("the default persona is not in the prompt")
+		case !bot.saw("weekly-report") || !bot.saw("用于: 我让你写周报时"):
+			err = fmt.Errorf("the skill (with its description) is not offered to the model")
 		case !bot.saw(`"web_fetch"`) && !bot.saw(`"web_search"`):
 			err = fmt.Errorf("the main session has no web tools")
 		}
 	}
-	r.step("首个回合：模型请求里有人设（## Persona）、新技能 weekly-report 和联网工具", err, "")
+	r.step("首个回合：模型请求里有人设（## Persona，含默认人设全文）、新技能 weekly-report 和联网工具", err, "")
 	if err != nil {
 		return
 	}
@@ -225,7 +239,6 @@ func TestDailyMore(t *testing.T) {
 	}
 
 	// The long persona, SOUL.md: saved on the page, then edited by hand.
-	soulFile := filepath.Join(dataDir, "bot", "SOUL.md")
 	persona := map[string]any{"name": "小月", "call": "老王", "tone": "warm", "length": "short", "emoji": false, "extra": ""}
 	withSoul := func(text string) map[string]any {
 		m := map[string]any{"soul": text}
@@ -295,6 +308,25 @@ func TestDailyMore(t *testing.T) {
 		}
 	}
 	r.step("超过 8000 字：页面保存被拒、文件不变；手写超长时页面提示只用了前 8000 字；清空后删除 SOUL.md", err, "")
+	if err != nil {
+		return
+	}
+	err = action("persona", "default", withSoul(""))
+	if err == nil {
+		if b, rerr := os.ReadFile(soulFile); rerr != nil || !strings.Contains(string(b), "这是默认人设") {
+			err = fmt.Errorf("SOUL.md %q %v", b, rerr)
+		}
+	}
+	if err == nil {
+		err = waitFor(func() bool { return hostState(dataDir, `"personaPending"`) == "" }, 30*time.Second)
+	}
+	if err == nil {
+		err = turn("in-2d", "回来了", "收到：回来了")
+	}
+	if err == nil && !(bot.sawLast("这是默认人设") && bot.sawLast("你叫「小月」")) {
+		err = fmt.Errorf("the restored default persona is not in the next turn's prompt")
+	}
+	r.step("「恢复默认人设」：SOUL.md 写回默认人设，下一个回合的提示词里有它（名字仍是「小月」）", err, "")
 	if err != nil {
 		return
 	}

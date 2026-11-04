@@ -147,9 +147,9 @@ func TestDailyTidy(t *testing.T) {
 
 	// 2. A conversation: overlapping memories, a one-off, a request made twice.
 	steps := [][3]string{
-		{"t-1", "记住：咖啡|喜欢美式咖啡", "记下了：咖啡"},
-		{"t-2", "记住：咖啡|美式不加糖", "记下了：咖啡"},
-		{"t-3", "记住：体检|11 月 1 日上午 10 点体检", "记下了：体检"},
+		{"t-1", "记住：咖啡|喜欢美式咖啡", "记下了：喜欢美式咖啡"},
+		{"t-2", "记住：咖啡|美式不加糖", "记下了：美式不加糖"},
+		{"t-3", "记住：体检|11 月 1 日上午 10 点体检", "记下了：11 月 1 日上午 10 点体检"},
 		{"t-4", "写周报：本周修了登录问题", "周报：本周修了登录问题"},
 		{"t-5", "写周报：本周上线了导出，记得分三段", "周报：本周上线了导出"},
 	}
@@ -341,7 +341,7 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 	switch {
 	case strings.HasPrefix(text, "记住："):
 		label, fact, _ := strings.Cut(strings.TrimPrefix(text, "记住："), "|")
-		plan = []fakemodel.ToolCall{{Name: "memory_write", Input: map[string]any{"label": label, "text": fact, "trigger_id": trigger}}, reply("记下了：" + label), ignore}
+		plan = []fakemodel.ToolCall{{Name: "memory_write", Input: map[string]any{"label": label, "text": fact, "trigger_id": trigger}}, reply("记下了：" + fact), ignore}
 	case strings.HasPrefix(text, "写周报："):
 		plan = []fakemodel.ToolCall{reply("周报：" + strings.TrimPrefix(text, "写周报：")), ignore}
 	case strings.HasPrefix(text, "（闲时整理）"):
