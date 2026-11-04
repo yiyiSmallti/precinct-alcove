@@ -611,11 +611,11 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 	// resume from disk); a busy one keeps its route until its sessions are
 	// done.
 	if p := a.Runtimes.Get(alrt.Key{Profile: prof, Cwd: cwd}); p != nil && p.Spec.Owner == "" &&
-		(p.Spec.Provider != provider || p.Spec.Model != model || p.Spec.Tuning != tag) && !p.Busy() {
+		(p.Spec.Credential != credID || p.Spec.Provider != provider || p.Spec.Model != model || p.Spec.Tuning != tag) && !p.Busy() {
 		p.Stop(0)
 	}
 	return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort, Tuning: tag,
+		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort, Tuning: tag, Credential: credID,
 		// Plugin variables first: the credential always wins.
 		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})

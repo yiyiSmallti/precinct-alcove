@@ -81,8 +81,10 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 				ui.Box(c).Height(14)
 				sectionLabel(c, "最近会话")
 				recent := ordered(sv)
-				if len(recent) == 0 {
-					ui.Text(c, "还没有会话").FontSize(12.5).TextColor(pal.subtle).Padding(4, 8)
+				// With a project selected, 新任务 goes there: this is the way
+				// back to the default folder before it has a conversation.
+				if len(recent) == 0 && navRow(c, pal, "new-scratch", icPlus, "新会话", s.page == pageWS+s.scratchID && sv.current == "") {
+					s.newTask(s.scratchID)
 				}
 				for _, tk := range recent {
 					s.taskRow(c, pal, sv, tk)

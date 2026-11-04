@@ -50,6 +50,9 @@ type LaunchSpec struct {
 	// empty for the personal credential). Launch ignores it; callers
 	// compare it to catch a runtime started before an ownership change.
 	Owner string
+	// Credential records the credential the route came from; Launch ignores
+	// it, callers compare it: two custom endpoints can share route and model.
+	Credential string
 	// Tuning records the settings the launch was made with besides the
 	// route (reasoning effort, compaction); Launch ignores it, callers
 	// compare it to restart a runtime the user retuned.

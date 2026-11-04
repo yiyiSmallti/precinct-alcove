@@ -113,7 +113,9 @@ func (a *App) preinstallOne(ctx context.Context, path string) (bool, error) {
 		return false, nil // the plugin page offers the cleanup
 	case cur != nil:
 		if newer, err := pkg.Satisfies(cur.Version, "<"+p.Version); err != nil || !newer {
-			return false, nil
+			// Installed before Alcove shipped it, at this version or later:
+			// still mark it offered, or uninstalling it would bring it back.
+			return false, offer(listPath, offered, p.Name)
 		}
 	}
 	plan, err := a.Plugins.Prepare(ctx, path)
@@ -127,12 +129,15 @@ func (a *App) preinstallOne(ctx context.Context, path string) (bool, error) {
 	if _, err := a.InstallPlugin(ctx, plan); err != nil {
 		return false, err
 	}
-	if !contains(offered, p.Name) {
-		if err := fsutil.WriteJSON(listPath, append(offered, p.Name), 0o600); err != nil {
-			return true, err
-		}
+	return true, offer(listPath, offered, p.Name)
+}
+
+// offer adds name to the shipped packages installed once (preinstalled.json).
+func offer(listPath string, offered []string, name string) error {
+	if contains(offered, name) {
+		return nil
 	}
-	return true, nil
+	return fsutil.WriteJSON(listPath, append(offered, name), 0o600)
 }
 
 // requiredFirst orders shipped packages so that each comes after the shipped
