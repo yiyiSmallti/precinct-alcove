@@ -110,7 +110,7 @@ func (c *Catalog) widestOf(model string) int {
 			}
 		}
 	}
-	return c.widest[model]
+	return c.widest[model[strings.LastIndex(model, "/")+1:]]
 }
 
 // Routes reports whether route is one the catalog describes, so an

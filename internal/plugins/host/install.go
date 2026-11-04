@@ -332,6 +332,8 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 		if cur, ok := installed[p.Name]; !ok || cur.Incomplete || cur.SHA256 != r.SHA256 {
 			probs = append(probs, pkg.Problem{Code: "already-installed", Message: fmt.Sprintf("%s %s is no longer the installed version", r.Name, r.Version)})
 		}
+		// A plugin installed since Prepare may need the version replaced.
+		probs = append(probs, dependentProblems(p, installed)...)
 	}
 	if len(probs) > 0 {
 		return nil, &StepError{Step: "check", Err: fmt.Errorf("installed plugins changed after the check: %s", probs[0])}
@@ -358,24 +360,36 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	}
 	done, step, prof, err := h.addEverywhere(ctx, p.Name, stored, plan.Profiles)
 	if err != nil {
-		se := stepError(step, prof, err)
-		se.RolledBack = h.undo(context.WithoutCancel(ctx), p.Name, done) == nil
-		if se.RolledBack {
-			os.Remove(stored)
-			return nil, se
-		}
-		// Keep a record of what is left so List shows it and Uninstall can
-		// retry the cleanup.
-		if all, err := h.load(); err == nil {
-			all[p.Name] = Installed{
-				Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
-				Profiles: withoutStore(done), SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(), Incomplete: true,
-			}
-			h.save(all)
-		}
-		return nil, se
+		return nil, h.rollbackAdd(ctx, plan, stored, done, stepError(step, prof, err))
 	}
-	return h.record(plan, stored, plan.Profiles)
+	rec, err := h.record(plan, stored, plan.Profiles)
+	if err != nil {
+		// Without its record the package could not be uninstalled: take it
+		// out of the profiles again.
+		return nil, h.rollbackAdd(ctx, plan, stored, done, err.(*StepError))
+	}
+	return rec, nil
+}
+
+// rollbackAdd undoes a fresh install that failed at se, done being the
+// profiles it touched.
+func (h *Host) rollbackAdd(ctx context.Context, plan *Plan, stored string, done []string, se *StepError) *StepError {
+	p := plan.Package
+	se.RolledBack = h.undo(context.WithoutCancel(ctx), p.Name, done) == nil
+	if se.RolledBack {
+		os.Remove(stored)
+		return se
+	}
+	// Keep a record of what is left so List shows it and Uninstall can
+	// retry the cleanup.
+	if all, err := h.load(); err == nil {
+		all[p.Name] = Installed{
+			Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
+			Profiles: withoutStore(done), SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(), Incomplete: true,
+		}
+		h.save(all)
+	}
+	return se
 }
 
 // addEverywhere adds the stored package to the store profile and then to
@@ -453,10 +467,14 @@ func (h *Host) replace(ctx context.Context, plan *Plan, stored string) (*Install
 		return rollback(stepError(step, prof, err), done)
 	}
 	rec, err := h.record(plan, stored, profiles)
-	if err == nil && old.Stored != stored {
+	if err != nil {
+		// The old record still stands: put back the version it describes.
+		return rollback(err.(*StepError), done)
+	}
+	if old.Stored != stored {
 		os.Remove(old.Stored)
 	}
-	return rec, err
+	return rec, nil
 }
 
 // restore adds the old version back to the profiles in at that lack it.

@@ -164,6 +164,9 @@ func New(cfg Config) (*App, error) {
 	cli := &dsh.CLI{Node: cfg.Node, Bin: cfg.DSHBin, Home: l.DSHHome(), ToolDirs: cfg.ToolDirs}
 	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg, Catalog: catalog.FromDSHBin(cfg.DSHBin)}
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
+	if err := a.migrateModel(); err != nil {
+		a.pluginLog("host", "warn", fmt.Sprintf("moving the saved model onto its credential: %v", err))
+	}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
 	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
 	a.Plugins = &host.Host{
@@ -855,6 +858,40 @@ func (a *App) Settings() (Settings, error) {
 	var s Settings
 	err := fsutil.ReadJSON(a.Layout.Settings(), &s)
 	return s, err
+}
+
+// migrateModel moves the model versions before 0.1 kept in settings.json
+// onto the credential they ran it with (the default one, else the first):
+// credentials now carry their own model.
+func (a *App) migrateModel() error {
+	var legacy struct {
+		Model string `json:"model"`
+	}
+	if err := fsutil.ReadJSON(a.Layout.Settings(), &legacy); err != nil || legacy.Model == "" {
+		return err
+	}
+	s, err := a.Settings()
+	if err != nil {
+		return err
+	}
+	id := s.DefaultCredential
+	if id == "" {
+		list, err := a.Creds.List()
+		if err != nil || len(list) == 0 {
+			return err // no credential yet: keep the model for when one exists
+		}
+		id = list[0].ID
+	}
+	cr, err := a.Creds.Get(id)
+	if err != nil {
+		return err
+	}
+	if cr.Model == "" {
+		if err := a.Creds.SetModel(id, legacy.Model); err != nil {
+			return err
+		}
+	}
+	return a.SaveSettings(s) // Settings has no model field: this drops it
 }
 
 // SaveSettings writes settings.json.

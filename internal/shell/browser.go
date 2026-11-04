@@ -146,6 +146,18 @@ func (s *Shell) Browse(ctx context.Context, plugin, ws string, op sidecar.Browse
 		}
 		return s.browserState(tab), nil
 	case "close":
+		tab, err := s.browserTab(ws, false)
+		if err != nil {
+			return nil, err
+		}
+		if tab != nil {
+			s.mu.Lock()
+			held := tab.held
+			s.mu.Unlock()
+			if held {
+				return nil, errHeld // the user's page until they hand it back
+			}
+		}
 		s.closeBrowser(ws)
 		return sidecar.BrowserState{}, nil
 	}
