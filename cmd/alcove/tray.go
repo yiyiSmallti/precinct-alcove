@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/png"
 	"log"
+	"math"
 	"sync/atomic"
 
 	"github.com/egoist/mygo"
@@ -71,23 +72,55 @@ func (b *background) quit() {
 	mygo.App.Quit()
 }
 
-// trayIcon draws Alcove's mark, an arch, as a 32×32 black-on-transparent
-// template image.
+// trayIcon draws Alcove's mark, the nook of its logo with a cushion on the
+// floor, as a 36×36 black-on-transparent template image: the menu bar shows
+// it 18pt high, so this is its 2x size. Edges are 4×4 supersampled.
 func trayIcon() []byte {
-	const n = 32
+	const n, ss = 36, 4
+	nook := [][2]float64{{8.5, 28}, {8.5, 13.5}, {18, 8.5}, {27.5, 13.5}, {27.5, 28}}
+	ink := func(x, y float64) bool {
+		// The nook's wall: a 2.5-wide band inside the pentagon rounded by 4.
+		if d := polyDist(x, y, nook) - 4; d <= 0 && d >= -2.5 {
+			return true
+		}
+		// The cushion, a rounded rectangle resting on the floor.
+		cx, cy := min(max(x, 14.6), 21.4), min(max(y, 25.1), 25.9)
+		return math.Hypot(x-cx, y-cy) <= 3.6
+	}
 	img := image.NewNRGBA(image.Rect(0, 0, n, n))
-	ink := color.NRGBA{A: 255}
 	for y := 0; y < n; y++ {
 		for x := 0; x < n; x++ {
-			dx, dy := float64(x)-15.5, float64(y)-14.0
-			outer := (y >= 14 && y <= 28 && x >= 5 && x <= 26) || (y < 14 && dx*dx+dy*dy <= 10.5*10.5)
-			inner := (y >= 14 && y <= 28 && x >= 10 && x <= 21) || (y < 14 && dx*dx+dy*dy <= 6*6)
-			if outer && !inner {
-				img.SetNRGBA(x, y, ink)
+			hit := 0
+			for j := 0; j < ss; j++ {
+				for i := 0; i < ss; i++ {
+					if ink(float64(x)+(float64(i)+0.5)/ss, float64(y)+(float64(j)+0.5)/ss) {
+						hit++
+					}
+				}
 			}
+			img.SetNRGBA(x, y, color.NRGBA{A: uint8(hit * 255 / (ss * ss))})
 		}
 	}
 	var buf bytes.Buffer
 	png.Encode(&buf, img)
 	return buf.Bytes()
+}
+
+// polyDist is the signed distance from (x, y) to a convex polygon given
+// clockwise in image coordinates: negative inside.
+func polyDist(x, y float64, poly [][2]float64) float64 {
+	inside, d := true, math.Inf(1)
+	for i, a := range poly {
+		b := poly[(i+1)%len(poly)]
+		ex, ey, px, py := b[0]-a[0], b[1]-a[1], x-a[0], y-a[1]
+		if ex*py-ey*px < 0 {
+			inside = false
+		}
+		t := min(max((px*ex+py*ey)/(ex*ex+ey*ey), 0), 1)
+		d = min(d, math.Hypot(px-t*ex, py-t*ey))
+	}
+	if inside {
+		return -d
+	}
+	return d
 }

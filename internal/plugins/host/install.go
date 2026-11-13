@@ -71,7 +71,9 @@ type Installed struct {
 	Targets      []string  `json:"targets"`  // alcove.profiles as declared, e.g. personal, daily
 	Capabilities []string  `json:"capabilities"`
 	Sidecar      string    `json:"sidecar,omitempty"` // relative path for this OS
-	SignedBy     int       `json:"signedBy"`          // index into TrustedKeys, -1 when unsigned
+	Title        string    `json:"title,omitempty"`
+	Avatar       string    `json:"avatar,omitempty"` // relative path of a PNG
+	SignedBy     int       `json:"signedBy"`         // index into TrustedKeys, -1 when unsigned
 	InstalledAt  time.Time `json:"installedAt"`
 	// Incomplete marks a failed install whose rollback did not finish: the
 	// archive and Profiles are what is left behind. Uninstall cleans it up.
@@ -86,6 +88,10 @@ type Plan struct {
 	SignedBy int
 	Problems []pkg.Problem
 	Profiles []string // concrete target profiles
+	// Replaces is the installed version this package updates, nil for a
+	// new install. Installing it swaps the versions in every profile the
+	// installed one is in.
+	Replaces *Installed
 }
 
 // OK reports whether the plan can be installed.
@@ -166,11 +172,15 @@ func (h *Host) Prepare(ctx context.Context, tgz string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan.Problems = append(plan.Problems, stateProblems(p, installed)...)
+	if cur, ok := installed[p.Name]; ok && !cur.Incomplete && cur.Version != p.Version {
+		plan.Replaces = &cur
+		plan.Problems = append(plan.Problems, dependentProblems(p, installed)...)
+	}
+	plan.Problems = append(plan.Problems, stateProblems(p, installed, plan.Replaces)...)
 	if p.Alcove != nil {
 		plan.Profiles = h.targets(p.Alcove.Profiles)
 	}
-	plan.Problems = append(plan.Problems, h.profileConflicts(p.Name, plan.Profiles)...)
+	plan.Problems = append(plan.Problems, h.profileConflicts(p.Name, plan.Profiles, plan.Replaces)...)
 	ok = true
 	return plan, nil
 }
@@ -201,11 +211,12 @@ func (h *Host) Discard(plan *Plan) {
 	}
 }
 
-// stateProblems checks p against the installed records: not installed yet,
-// and every required plugin present in a satisfying version.
-func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem {
+// stateProblems checks p against the installed records: not installed yet
+// (or still at the version it replaces), and every required plugin present
+// in a satisfying version.
+func stateProblems(p *pkg.Package, installed map[string]Installed, replaces *Installed) []pkg.Problem {
 	var out []pkg.Problem
-	if cur, ok := installed[p.Name]; ok {
+	if cur, ok := installed[p.Name]; ok && (replaces == nil || cur.Incomplete || cur.SHA256 != replaces.SHA256) {
 		msg := fmt.Sprintf("%s %s is installed; uninstall it first", cur.Name, cur.Version)
 		if cur.Incomplete {
 			msg = fmt.Sprintf("%s %s is left over from a failed install; uninstall it first", cur.Name, cur.Version)
@@ -230,12 +241,48 @@ func stateProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem
 	return out
 }
 
+// dependentProblems reports installed plugins whose alcove.requires the new
+// version of p no longer satisfies.
+func dependentProblems(p *pkg.Package, installed map[string]Installed) []pkg.Problem {
+	var out []pkg.Problem
+	for _, rec := range installed {
+		if rec.Name == p.Name || rec.Incomplete {
+			continue
+		}
+		dep, err := pkg.Inspect(rec.Stored)
+		if err != nil {
+			continue
+		}
+		reqs, _ := dep.Requirements()
+		for _, r := range reqs {
+			if r.Name != p.Name {
+				continue
+			}
+			if ok, err := pkg.Satisfies(p.Version, r.Range); err != nil || !ok {
+				out = append(out, pkg.Problem{Code: "requires", Message: fmt.Sprintf("%s needs %s@%s; update or uninstall it first", rec.Name, r.Name, r.Range)})
+			}
+		}
+	}
+	return out
+}
+
 // profileConflicts reports profiles (the store profile and the targets) that
 // already reference name outside Alcove, e.g. added with dsh plugin add by
-// hand. Alcove does not take them over: rollback would remove them.
-func (h *Host) profileConflicts(name string, targets []string) []pkg.Problem {
+// hand. Alcove does not take them over: rollback would remove them. The
+// profiles holding the version an update replaces are Alcove's own.
+func (h *Host) profileConflicts(name string, targets []string, replaces *Installed) []pkg.Problem {
 	var out []pkg.Problem
+	ours := map[string]bool{}
+	if replaces != nil {
+		ours[StoreProfile] = true
+		for _, prof := range replaces.Profiles {
+			ours[prof] = true
+		}
+	}
 	for _, prof := range append([]string{StoreProfile}, targets...) {
+		if ours[prof] {
+			continue
+		}
 		m, err := h.DSH.ReadProfile(prof)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -280,9 +327,21 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 	if p.Alcove != nil {
 		plan.Profiles = h.targets(p.Alcove.Profiles)
 	}
-	probs := append(stateProblems(p, installed), h.profileConflicts(p.Name, plan.Profiles)...)
+	probs := append(stateProblems(p, installed, plan.Replaces), h.profileConflicts(p.Name, plan.Profiles, plan.Replaces)...)
+	if r := plan.Replaces; r != nil {
+		if cur, ok := installed[p.Name]; !ok || cur.Incomplete || cur.SHA256 != r.SHA256 {
+			probs = append(probs, pkg.Problem{Code: "already-installed", Message: fmt.Sprintf("%s %s is no longer the installed version", r.Name, r.Version)})
+		}
+		// A plugin installed since Prepare may need the version replaced.
+		probs = append(probs, dependentProblems(p, installed)...)
+	}
 	if len(probs) > 0 {
 		return nil, &StepError{Step: "check", Err: fmt.Errorf("installed plugins changed after the check: %s", probs[0])}
+	}
+	if plan.Replaces != nil {
+		// Profiles may have been added since Prepare (new workspaces).
+		cur := installed[p.Name]
+		plan.Replaces = &cur
 	}
 
 	stored := filepath.Join(h.Dir, "packages", storeName(p.Name, p.Version, plan.SHA256))
@@ -296,76 +355,158 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 		return nil, &StepError{Step: "inspect", Err: errors.New("package file changed after it was checked")}
 	}
 
-	var done []string // profiles the package was added to, store profile first
-	fail := func(step, profile string, err error) (*Installed, error) {
-		se := &StepError{Step: step, Profile: profile, Err: err}
-		var de *dsh.Error
-		if errors.As(err, &de) {
-			se.Diagnostics = de.Diagnostics()
-			if len(se.Diagnostics) == 0 {
-				se.Diagnostics = de.StderrTail(5)
-			}
-		}
-		se.RolledBack = h.undo(context.WithoutCancel(ctx), p.Name, done) == nil
-		if se.RolledBack {
-			os.Remove(stored)
-			return nil, se
-		}
-		// Keep a record of what is left so List shows it and Uninstall can
-		// retry the cleanup.
-		var targets []string
-		for _, prof := range done {
-			if prof != StoreProfile {
-				targets = append(targets, prof)
-			}
-		}
-		if all, err := h.load(); err == nil {
-			all[p.Name] = Installed{
-				Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
-				Profiles: targets, SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(), Incomplete: true,
-			}
-			h.save(all)
-		}
-		return nil, se
+	if plan.Replaces != nil {
+		return h.replace(ctx, plan, stored)
 	}
+	done, step, prof, err := h.addEverywhere(ctx, p.Name, stored, plan.Profiles)
+	if err != nil {
+		return nil, h.rollbackAdd(ctx, plan, stored, done, stepError(step, prof, err))
+	}
+	rec, err := h.record(plan, stored, plan.Profiles)
+	if err != nil {
+		// Without its record the package could not be uninstalled: take it
+		// out of the profiles again.
+		return nil, h.rollbackAdd(ctx, plan, stored, done, err.(*StepError))
+	}
+	return rec, nil
+}
 
-	for _, prof := range append([]string{StoreProfile}, plan.Profiles...) {
-		// Track the profile before adding: a cancelled or failed add can
-		// leave it half-changed, and undo skips profiles that are clean.
+// rollbackAdd undoes a fresh install that failed at se, done being the
+// profiles it touched.
+func (h *Host) rollbackAdd(ctx context.Context, plan *Plan, stored string, done []string, se *StepError) *StepError {
+	p := plan.Package
+	se.RolledBack = h.undo(context.WithoutCancel(ctx), p.Name, done) == nil
+	if se.RolledBack {
+		os.Remove(stored)
+		return se
+	}
+	// Keep a record of what is left so List shows it and Uninstall can
+	// retry the cleanup.
+	if all, err := h.load(); err == nil {
+		all[p.Name] = Installed{
+			Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
+			Profiles: withoutStore(done), SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(), Incomplete: true,
+		}
+		h.save(all)
+	}
+	return se
+}
+
+// addEverywhere adds the stored package to the store profile and then to
+// each target, creating missing targets and checking each with
+// --dump-config. done lists the profiles touched, the failed one included:
+// a failed add can leave it half-changed, and undo skips clean profiles.
+func (h *Host) addEverywhere(ctx context.Context, name, stored string, profiles []string) (done []string, step, profile string, err error) {
+	for _, prof := range append([]string{StoreProfile}, profiles...) {
 		if prof != StoreProfile && h.PrepareProfile != nil {
 			if _, err := os.Stat(h.DSH.ProfileDir(prof)); errors.Is(err, os.ErrNotExist) {
 				if err := h.PrepareProfile(ctx, prof); err != nil {
-					return fail("profile", prof, err)
+					return done, "profile", prof, err
 				}
 			}
 		}
 		done = append(done, prof)
 		if _, err := h.DSH.PluginAdd(ctx, prof, stored); err != nil {
-			return fail("add", prof, err)
+			return done, "add", prof, err
 		}
 		m, err := h.DSH.ReadProfile(prof)
 		if err != nil {
-			return fail("verify", prof, err)
+			return done, "verify", prof, err
 		}
-		if !m.HasBundle(p.Name) {
-			return fail("verify", prof, fmt.Errorf("%s was installed but not selected as a bundle", p.Name))
+		if !m.HasBundle(name) {
+			return done, "verify", prof, fmt.Errorf("%s was installed but not selected as a bundle", name)
 		}
 		if prof == StoreProfile {
 			continue // never booted
 		}
 		if _, err := h.DSH.DumpConfig(ctx, prof); err != nil {
-			return fail("dump-config", prof, err)
+			return done, "dump-config", prof, err
 		}
 	}
+	return done, "", "", nil
+}
 
+// replace swaps the installed version for the plan's. The old version
+// leaves every profile it is in; the new one goes into the store profile,
+// the targets, and the profiles the old one was added to later (a
+// workspace.attach). If anything fails, the new version is undone and the
+// old one put back where it is missing.
+func (h *Host) replace(ctx context.Context, plan *Plan, stored string) (*Installed, error) {
+	p, old := plan.Package, *plan.Replaces
+	profiles := append([]string(nil), plan.Profiles...)
+	for _, prof := range old.Profiles {
+		if _, err := os.Stat(h.DSH.ProfileDir(prof)); err == nil && !contains(profiles, prof) {
+			profiles = append(profiles, prof)
+		}
+	}
+	oldAt := append([]string{StoreProfile}, old.Profiles...)
+	bg := context.WithoutCancel(ctx)
+	rollback := func(se *StepError, done []string) (*Installed, error) {
+		undone := h.undo(bg, p.Name, done) == nil
+		if undone {
+			os.Remove(stored)
+		}
+		se.RolledBack = undone && h.restore(bg, old, oldAt) == nil
+		if !se.RolledBack {
+			// What is installed where is unclear: keep a record Uninstall
+			// can clean up from.
+			if all, err := h.load(); err == nil {
+				rec := old
+				rec.Profiles, rec.Incomplete = withoutStore(append(oldAt, profiles...)), true
+				all[p.Name] = rec
+				h.save(all)
+			}
+		}
+		return nil, se
+	}
+	if err := h.undo(ctx, p.Name, oldAt); err != nil {
+		return rollback(&StepError{Step: "remove", Err: err}, nil)
+	}
+	done, step, prof, err := h.addEverywhere(ctx, p.Name, stored, profiles)
+	if err != nil {
+		return rollback(stepError(step, prof, err), done)
+	}
+	rec, err := h.record(plan, stored, profiles)
+	if err != nil {
+		// The old record still stands: put back the version it describes.
+		return rollback(err.(*StepError), done)
+	}
+	if old.Stored != stored {
+		os.Remove(old.Stored)
+	}
+	return rec, nil
+}
+
+// restore adds the old version back to the profiles in at that lack it.
+// Workspace profiles removed meanwhile stay gone.
+func (h *Host) restore(ctx context.Context, old Installed, at []string) error {
+	for _, prof := range at {
+		m, err := h.DSH.ReadProfile(prof)
+		if err == nil && m.HasBundle(old.Name) {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) && prof != StoreProfile {
+			continue
+		}
+		if _, err := h.DSH.PluginAdd(ctx, prof, old.Stored); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// record saves the install record of a package added to profiles.
+func (h *Host) record(plan *Plan, stored string, profiles []string) (*Installed, error) {
+	p := plan.Package
 	rec := Installed{
 		Name: p.Name, Version: p.Version, SHA256: plan.SHA256, Stored: stored,
-		Profiles: plan.Profiles, SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(),
+		Profiles: profiles, SignedBy: plan.SignedBy, InstalledAt: time.Now().UTC(),
 	}
 	if p.Alcove != nil {
 		rec.Capabilities = p.Alcove.Capabilities
 		rec.Sidecar = p.Alcove.Sidecar[h.GOOS]
 		rec.Targets = p.Alcove.Profiles
+		rec.Title, rec.Avatar = p.Alcove.Title, p.Alcove.Avatar
 	}
 	all, err := h.load()
 	if err == nil {
@@ -373,9 +514,41 @@ func (h *Host) Install(ctx context.Context, plan *Plan) (*Installed, error) {
 		err = h.save(all)
 	}
 	if err != nil {
-		return fail("store", "", err)
+		return nil, &StepError{Step: "store", Err: err}
 	}
 	return &rec, nil
+}
+
+// stepError wraps a failed step, with dsh's diagnostics when dsh failed.
+func stepError(step, profile string, err error) *StepError {
+	se := &StepError{Step: step, Profile: profile, Err: err}
+	var de *dsh.Error
+	if errors.As(err, &de) {
+		se.Diagnostics = de.Diagnostics()
+		if len(se.Diagnostics) == 0 {
+			se.Diagnostics = de.StderrTail(5)
+		}
+	}
+	return se
+}
+
+func withoutStore(profiles []string) []string {
+	var out []string
+	for _, prof := range profiles {
+		if prof != StoreProfile && !contains(out, prof) {
+			out = append(out, prof)
+		}
+	}
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Uninstall removes the package from every target profile, then from the
@@ -558,6 +731,14 @@ func (h *Host) SidecarPath(rec Installed) string {
 		return ""
 	}
 	return filepath.Join(h.DSH.PackageDir(StoreProfile, rec.Name), filepath.FromSlash(rec.Sidecar))
+}
+
+// AvatarPath is where an installed plugin's avatar is, or "" without one.
+func (h *Host) AvatarPath(rec Installed) string {
+	if rec.Avatar == "" {
+		return ""
+	}
+	return filepath.Join(h.DSH.PackageDir(StoreProfile, rec.Name), filepath.FromSlash(rec.Avatar))
 }
 
 // undo removes name from profiles in reverse order, skipping profiles where

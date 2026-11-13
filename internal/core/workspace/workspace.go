@@ -79,6 +79,55 @@ func (s *Store) Create(name, dir string) (*Workspace, error) {
 	return &w, nil
 }
 
+// Move points workspace id at another folder, checked as Create checks it.
+func (s *Store) Move(id, dir string) error {
+	dir, err := s.checkDir(dir)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.load()
+	if err != nil {
+		return err
+	}
+	at := -1
+	for i, w := range all {
+		switch {
+		case w.ID == id:
+			at = i
+		case samePath(w.Dir, dir):
+			return fmt.Errorf("%w: %s", ErrTaken, w.Name)
+		}
+	}
+	if at < 0 {
+		return ErrNotFound
+	}
+	all[at].Dir = dir
+	return fsutil.WriteJSON(s.Path, all, 0o600)
+}
+
+// ByDir returns the workspace of folder dir, or nil.
+func (s *Store) ByDir(dir string) (*Workspace, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	all, err := s.All()
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range all {
+		if samePath(w.Dir, abs) {
+			return &w, nil
+		}
+	}
+	return nil, nil
+}
+
 // Rename changes a workspace's display name.
 func (s *Store) Rename(id, name string) error {
 	if strings.TrimSpace(name) == "" {

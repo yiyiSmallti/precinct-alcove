@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,29 +82,49 @@ func until(t *testing.T, tt *ui.Tester, s *Shell, cond func() bool) {
 }
 
 func TestSettingsAddCredential(t *testing.T) {
+	// The service's model listing, local.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"deepseek-v4-pro"},{"id":"deepseek-v4-flash"}]}`))
+	}))
+	defer srv.Close()
 	s, tt := newShell(t)
 	tt.Frame()
 	tt.Click("模型")
 	tt.Frame()
-	if !tt.HasText("还没有凭据。添加一个模型 API key 后才能执行任务；key 只存在系统凭据库里。") {
+	if !tt.HasText("还没有连接模型服务。在下面选一个服务并填入 API key 后才能执行任务；key 只存在系统凭据库里。") {
 		t.Fatalf("no empty state; texts: %v", tt.Texts())
 	}
+	if err := tt.Click("DeepSeek"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("连接 DeepSeek") {
+		t.Fatalf("no form; texts: %v", tt.Texts())
+	}
 	s.mu.Lock()
-	s.form.label, s.form.key = "DeepSeek 个人", "sk-test"
+	s.form.label, s.form.key, s.form.baseURL = "DeepSeek 个人", "sk-test", srv.URL
 	s.mu.Unlock()
 	tt.Frame()
-	if err := tt.Click("添加"); err != nil {
+	if err := tt.Click("保存"); err != nil {
 		t.Fatal(err)
 	}
 	until(t, tt, s, func() bool { return len(s.creds) == 1 && s.settings.DefaultCredential != "" })
-	if !tt.HasText("DeepSeek 个人（deepseek-official） · 默认") {
-		t.Errorf("credential not listed as default: %v", tt.Texts())
+	if !tt.HasText("DeepSeek 个人") || !tt.HasText("使用中") {
+		t.Errorf("credential not listed as in use: %v", tt.Texts())
 	}
 	s.mu.Lock()
 	cleared := s.form.key == ""
 	s.mu.Unlock()
 	if !cleared {
 		t.Error("key left in the form")
+	}
+	// Saving opens the picker on the service's own list.
+	until(t, tt, s, func() bool {
+		m := s.picks[s.creds[0].ID]
+		return m != nil && !m.fetching
+	})
+	if !tt.HasText("服务提供 2 个模型，已选 2 个。勾选的模型会出现在对话框的模型菜单里。") {
+		t.Errorf("picker not filled from the listing: %v", tt.Texts())
 	}
 }
 
@@ -116,7 +138,7 @@ func openWorkspace(s *Shell, rt string) *wsView {
 	v := s.view("w1")
 	v.runtimeID = rt
 	s.byRuntime[rt] = "w1"
-	s.page, s.curWS = pageWS+"w1", "w1"
+	s.focus("w1")
 	return v
 }
 
@@ -306,7 +328,7 @@ func TestExportDiagnostics(t *testing.T) {
 	s, tt := newShell(t)
 	out := filepath.Join(t.TempDir(), "diag.zip")
 	s.SaveFile = func(string) (string, error) { return out, nil }
-	if _, err := s.App.Creds.Add("k", "deepseek-official", "", "sk-shell-diag-123456"); err != nil {
+	if _, err := s.App.Creds.Add("k", "deepseek-official", "", "sk-shell-diag-123456", ""); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -320,5 +342,104 @@ func TestExportDiagnostics(t *testing.T) {
 	b, err := os.ReadFile(out)
 	if err != nil || len(b) == 0 || bytes.Contains(b, []byte("sk-shell-diag-123456")) {
 		t.Errorf("bundle %d bytes, err %v", len(b), err)
+	}
+}
+
+// Enter in the composer sends the draft; Shift+Enter breaks the line.
+func TestComposerEnterSends(t *testing.T) {
+	s, tt := newShell(t)
+	v := openWorkspace(s, "rt1")
+	tt.Frame()
+	if err := tt.Click("消息"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Type("第一行")
+	tt.Key(ui.Shift, ui.KeyEnter)
+	tt.Type("第二行")
+	tt.Frame()
+	s.mu.Lock()
+	draft, sent := v.draft, len(v.tasks)
+	s.mu.Unlock()
+	if draft != "第一行\n第二行" || sent != 0 {
+		t.Fatalf("after Shift+Enter: draft %q, %d tasks", draft, sent)
+	}
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	s.mu.Lock()
+	draft, sent = v.draft, len(v.tasks)
+	s.mu.Unlock()
+	if draft != "" || sent != 1 {
+		t.Fatalf("after Enter: draft %q, %d tasks", draft, sent)
+	}
+}
+
+// The run panel over the composer slides the thinking effort among the
+// model's stops with the keys, saving each one reached.
+func TestRunPanelEffort(t *testing.T) {
+	s, tt := newShell(t)
+	// Stored, as each save reloads the credentials.
+	cr, err := s.App.Creds.Add("DeepSeek", "deepseek-official", "", "sk-test", "deepseek-v4-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.creds = []credentials.Credential{*cr}
+	s.mu.Unlock()
+	openWorkspace(s, "rt1")
+	tt.Frame()
+	if err := tt.Click("模型与思考强度"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("调整思考强度"); err != nil {
+		t.Fatal(err)
+	}
+	// A click on the track's middle picks its middle stop, 低; the arrows
+	// then go on to 高 and 极限.
+	tt.Frame()
+	for i, want := range []string{"low", "high", "max"} {
+		if i > 0 {
+			tt.Key(0, ui.KeyRight)
+		}
+		tt.Frame()
+		s.mu.Lock()
+		got := s.settings.ReasoningEffort
+		s.mu.Unlock()
+		if got != want {
+			t.Fatalf("effort %q, want %q ", got, want)
+		}
+	}
+}
+
+// The run panel's context size is a menu of the sizes the model takes; one
+// chosen is stored on the credential.
+func TestRunPanelContextSize(t *testing.T) {
+	s, tt := newShell(t)
+	cr, err := s.App.Creds.Add("DeepSeek", "deepseek-official", "", "sk-test", "deepseek-v4-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.creds = []credentials.Credential{*cr}
+	s.mu.Unlock()
+	openWorkspace(s, "rt1")
+	tt.Frame()
+	for _, step := range []string{"模型与思考强度", "上下文大小", "128K"} {
+		if err := tt.Click(step); err != nil {
+			t.Fatalf("click %s: %v", step, err)
+		}
+		tt.Frame()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := s.App.Creds.Get(cr.ID)
+		if err == nil && got.Context["deepseek-v4-pro"] == 128000 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("context %v, err %v", got.Context, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

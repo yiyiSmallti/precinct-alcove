@@ -129,78 +129,91 @@ func (s *Shell) saveUpdateSource() {
 }
 
 // updatesView is the 更新 section of the settings page.
-func (s *Shell) updatesView(c *ui.Context) {
+func (s *Shell) updatesView(c *ui.Context, pal *palette) {
 	t := c.Theme()
 	u := &s.updates
-	ui.Text(c, "更新").FontSize(18).Bold()
 	version := s.Version
 	if version == "" {
 		version = "开发版"
 	}
-	if s.Updater == nil || !s.Updater.Enabled() {
-		ui.Text(c, "当前版本 "+version+"。这个版本不能自动更新：开发版，或装在当前用户不能写的位置。").TextColor(t.TextMuted)
-		return
-	}
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		line := "当前版本 " + version
-		switch {
-		case u.release != nil:
-			line += "，有新版本 " + u.release.Version
-		case !u.checked.IsZero():
-			line += "，已是最新（" + u.checked.Format("01-02 15:04") + " 检查）"
+	settingsGroup(c, pal, "更新", func() {
+		if s.Updater == nil || !s.Updater.Enabled() {
+			prefRow(c, pal, "当前版本", "", func() {
+				ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
+					ui.Text(c, version).FontSize(13).FontWeight(500)
+					ui.Text(c, "这个版本不能自动更新：开发版，或装在当前用户不能写的位置。").FontSize(12).TextColor(t.TextMuted)
+				})
+			})
+			return
 		}
-		ui.Text(c, line).Grow(1)
-		if u.checking {
-			ui.Spinner(c)
-		}
-		busy := u.checking || u.installing
-		if ui.Button(c, "检查更新").Disabled(busy).Clicked() && !busy {
-			go s.checkUpdates(context.Background())
-		}
-	})
-	if r := u.release; r != nil {
-		ui.Column(c).Gap(8).Padding(12).Radius(8).Border(1, t.Border).Children(func() {
-			title := "Alcove " + r.Version
-			if !r.Date.IsZero() {
-				title += " · " + r.Date.Format("2006-01-02")
-			}
-			ui.Text(c, title).Bold()
-			if strings.TrimSpace(r.Notes) != "" {
-				markdown.View(c, r.Notes, nil)
-			}
-			switch {
-			case u.installed == r.Version:
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "已下载并装好，重启后生效。").Grow(1)
-					if ui.PrimaryButton(c, "立即重启").Clicked() {
-						s.Updater.Relaunch()
+		prefRow(c, pal, "当前版本", "", func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
+				ui.Column(c).Gap(3).Grow(1).MinWidth(0).Children(func() {
+					ui.Text(c, version).FontSize(13).FontWeight(500)
+					switch {
+					case u.release != nil:
+						ui.Text(c, "有新版本 "+u.release.Version).FontSize(12).TextColor(t.Accent)
+					case !u.checked.IsZero():
+						ui.Text(c, "已是最新（"+u.checked.Format("01-02 15:04")+" 检查）").FontSize(12).TextColor(t.TextMuted)
 					}
 				})
-			case u.installing:
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				if u.checking {
 					ui.Spinner(c)
-					ui.Text(c, fmt.Sprintf("正在下载 %d%%", int(u.progress*100)))
-				})
-			default:
-				if ui.PrimaryButton(c, "下载并安装").Clicked() {
-					s.installUpdate()
 				}
-			}
+				busy := u.checking || u.installing
+				if ui.Button(c, "检查更新").Disabled(busy).Clicked() && !busy {
+					go s.checkUpdates(context.Background())
+				}
+			})
 		})
-	}
-	if u.err != "" {
-		ui.Text(c, u.err).TextColor(t.Danger).Selectable()
-	}
-	ui.Field(c, "更新源（留空用官方源；企业镜像填放更新文件的 https 目录）", func() {
-		ui.Row(c).Gap(8).Children(func() {
-			in := ui.TextInput(c, &u.source).Placeholder("https://…").Grow(1)
-			changed := strings.TrimSpace(u.source) != s.settings.UpdateSource
-			if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
-				s.saveUpdateSource()
-			}
+		if r := u.release; r != nil {
+			ui.Column(c).Gap(8).Padding(14, 16).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
+				title := "Alcove " + r.Version
+				if !r.Date.IsZero() {
+					title += " · " + r.Date.Format("2006-01-02")
+				}
+				ui.Text(c, title).FontWeight(600)
+				if strings.TrimSpace(r.Notes) != "" {
+					markdown.View(c, r.Notes, nil)
+				}
+				switch {
+				case u.installed == r.Version:
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "已下载并装好，重启后生效。").Grow(1)
+						if ui.PrimaryButton(c, "立即重启").Clicked() {
+							s.Updater.Relaunch()
+						}
+					})
+				case u.installing:
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Spinner(c)
+						ui.Text(c, fmt.Sprintf("正在下载 %d%%", int(u.progress*100)))
+					})
+				default:
+					ui.Row(c).Children(func() {
+						if ui.PrimaryButton(c, "下载并安装").Clicked() {
+							s.installUpdate()
+						}
+					})
+				}
+			})
+		}
+		if u.err != "" {
+			ui.Text(c, u.err).FontSize(12.5).TextColor(t.Danger).Selectable().Padding(10, 16)
+		}
+		prefRow(c, pal, "更新源", "留空用官方源；企业镜像填放更新文件的 https 目录。", func() {
+			ui.Column(c).Gap(6).Grow(1).MinWidth(0).Children(func() {
+				ui.Row(c).Gap(8).Children(func() {
+					in := ui.TextInput(c, &u.source).Placeholder("https://…").Grow(1)
+					changed := strings.TrimSpace(u.source) != s.settings.UpdateSource
+					if (ui.Button(c, "保存").Disabled(!changed).Clicked() || in.Submitted()) && changed {
+						s.saveUpdateSource()
+					}
+				})
+				if u.sourceErr != "" {
+					ui.Text(c, u.sourceErr).FontSize(12).TextColor(t.Danger)
+				}
+			})
 		})
 	})
-	if u.sourceErr != "" {
-		ui.Text(c, u.sourceErr).TextColor(t.Danger)
-	}
 }

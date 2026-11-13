@@ -43,7 +43,22 @@ func (r *recorder) Register(plugin string, c sidecar.Contribution) error {
 	return nil
 }
 
-func (r *recorder) Update(plugin, id string, data json.RawMessage) error { return nil }
+func (r *recorder) Update(plugin, id string, data json.RawMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.ui[plugin+"#"+id]; ok {
+		c.Raw = data
+		r.ui[plugin+"#"+id] = c
+	}
+	return nil
+}
+
+// raw is a registered contribution's current JSON.
+func (r *recorder) raw(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return string(r.ui[key].Raw)
+}
 
 func (r *recorder) Unregister(plugin, id string) {
 	r.mu.Lock()

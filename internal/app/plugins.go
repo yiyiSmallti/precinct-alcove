@@ -37,6 +37,18 @@ func (a *App) RestartPlugin(ctx context.Context, name string) error {
 	return fmt.Errorf("%s has no sidecar to start", name)
 }
 
+// rebuildingStore is dsh.CLI.Rebuilding: sidecars run from the store
+// profile's node_modules, which a rebuild removes (and Windows will not
+// remove while they run), so the running ones stop first and start again
+// after. It runs inside the plugin host's install and uninstall, under its
+// lock, so it goes by the sidecars' own specs, not the host's records.
+func (a *App) rebuildingStore(ctx context.Context, profile string) func() {
+	if profile != host.StoreProfile {
+		return nil
+	}
+	return a.Sidecars.StopActive(ctx)
+}
+
 // Plugin secrets are what a plugin's settings page collects in secretRef
 // fields. The value goes to the system credential store; the plugin only
 // ever gets the reference (keychain.ref), never the value.

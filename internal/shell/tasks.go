@@ -26,12 +26,18 @@ func taskSession(id string) bool {
 }
 
 // sourceOf is who started a session: "" for the user, else the plugin that
-// owns the workspace.
-func sourceOf(w workspace.Workspace, id string) string {
-	if strings.HasPrefix(id, "task-") {
-		return w.OwnerName()
+// owns the workspace or that the user let run the task there.
+func (s *Shell) sourceOf(w workspace.Workspace, id string) string {
+	return s.App.SessionSource(w.ID, w.OwnerName(), id)
+}
+
+// sourceLabel names who started a task: the cloud bot for a workspace a
+// plugin owns, else the plugin the user let run it.
+func (s *Shell) sourceLabel(w workspace.Workspace, source string) string {
+	if source == w.OwnerName() {
+		return "云端 bot"
 	}
-	return ""
+	return s.pluginTitle(source)
 }
 
 // addIndexed adds the tasks read from the index that v does not show yet.
@@ -237,14 +243,23 @@ func (v *wsView) waitingCount() int {
 func (s *Shell) newTask(id string) {
 	if v := s.view(id); v != nil {
 		v.current = ""
-		s.page, s.curWS = pageWS+id, id
+		s.focus(id)
+	}
+}
+
+// focus shows workspace id's page and makes it where new tasks go; a
+// project becomes the one the sidebar's switcher shows.
+func (s *Shell) focus(id string) {
+	s.page, s.curWS = pageWS+id, id
+	if id != s.scratchID {
+		s.curProj = id
 	}
 }
 
 // openTask shows one task.
 func (s *Shell) openTask(v *wsView, id string) {
 	v.current = id
-	s.page, s.curWS = pageWS+v.ws.ID, v.ws.ID
+	s.focus(v.ws.ID)
 }
 
 // send starts the workspace's runtime if needed and queues the message on

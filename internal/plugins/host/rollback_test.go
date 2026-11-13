@@ -63,14 +63,14 @@ func TestIncompleteRollbackKeepsRecord(t *testing.T) {
 		t.Fatalf("archive gone: %v", err)
 	}
 	all, _ := h.load()
-	if probs := stateProblems(plan.Package, all); len(probs) != 1 || probs[0].Code != "already-installed" {
+	if probs := stateProblems(plan.Package, all, nil); len(probs) != 1 || probs[0].Code != "already-installed" {
 		t.Fatalf("Prepare would not see the leftover: %v", probs)
 	}
 
 	// A dependent package must not count the leftover as installed.
 	dep := &pkg.Package{Name: "@x/q", Version: "1.0.0"}
 	dep.Alcove = &pkg.Alcove{Requires: []string{"@x/p@^1.0.0"}}
-	if probs := stateProblems(dep, all); len(probs) != 1 || probs[0].Code != "requires" {
+	if probs := stateProblems(dep, all, nil); len(probs) != 1 || probs[0].Code != "requires" {
 		t.Fatalf("leftover accepted as a requirement: %v", probs)
 	}
 

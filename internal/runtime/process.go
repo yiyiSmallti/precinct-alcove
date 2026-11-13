@@ -50,6 +50,13 @@ type LaunchSpec struct {
 	// empty for the personal credential). Launch ignores it; callers
 	// compare it to catch a runtime started before an ownership change.
 	Owner string
+	// Credential records the credential the route came from; Launch ignores
+	// it, callers compare it: two custom endpoints can share route and model.
+	Credential string
+	// Tuning records the settings the launch was made with besides the
+	// route (reasoning effort, compaction); Launch ignores it, callers
+	// compare it to restart a runtime the user retuned.
+	Tuning string
 	// Bridge, when set, lets the alcove-bridge bundle in this process connect
 	// back for approvals and questions.
 	Bridge       *Bridge
@@ -68,6 +75,8 @@ type Process struct {
 	Spec LaunchSpec
 	// ID names this launch (bridge token target, audit records).
 	ID string
+	// Started is when the runtime became ready.
+	Started time.Time
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -80,6 +89,7 @@ type Process struct {
 	pinned   bool
 	busy     map[string]bool // sessions currently running
 	idle     *time.Timer
+	idleExit time.Time // when the idle timer fires
 	stopping bool
 	exited   chan struct{}
 	exitErr  error
@@ -162,6 +172,7 @@ func Launch(ctx context.Context, cli *dsh.CLI, spec LaunchSpec) (*Process, error
 		<-p.exited
 		return nil, fmt.Errorf("%w: %v; stderr: %s", ErrNotReady, err, p.stderr.Tail(10))
 	}
+	p.Started = time.Now()
 	p.touch()
 	return p, nil
 }
@@ -177,6 +188,28 @@ func (p *Process) ExitErr() error { return p.exitErr }
 
 // Stderr returns the last lines the runtime wrote to stderr.
 func (p *Process) Stderr(lines int) string { return p.stderr.Tail(lines) }
+
+// Busy reports whether a session of the process is running.
+func (p *Process) Busy() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.busy) > 0
+}
+
+// IdleExit is when the process exits unless something happens first;
+// zero while it is pinned, busy or never exits idle.
+func (p *Process) IdleExit() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idleExit
+}
+
+// Pinned reports whether Pin keeps the process alive.
+func (p *Process) Pinned() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pinned
+}
 
 // Pin keeps the process alive regardless of idle time.
 func (p *Process) Pin(on bool) {
@@ -271,9 +304,11 @@ func (p *Process) touch() {
 		p.idle.Stop()
 		p.idle = nil
 	}
+	p.idleExit = time.Time{}
 	if p.pinned || p.stopping || len(p.busy) > 0 || p.Spec.IdleTimeout < 0 {
 		return
 	}
+	p.idleExit = time.Now().Add(p.Spec.IdleTimeout)
 	p.idle = time.AfterFunc(p.Spec.IdleTimeout, func() { p.Stop(0) })
 }
 

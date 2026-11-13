@@ -444,6 +444,34 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
+// StopActive stops every sidecar that is running or on its way there and
+// returns a function that starts them again with the specs they had; one
+// that crashed out stays down.
+func (m *Manager) StopActive(ctx context.Context) (resume func()) {
+	m.mu.Lock()
+	var ps []*plugin
+	for _, p := range m.plugins {
+		ps = append(ps, p)
+	}
+	m.mu.Unlock()
+	var specs []Spec
+	for _, p := range ps {
+		p.mu.Lock()
+		if (p.state == Running || p.state == Starting || p.state == Backoff) && !p.stopping {
+			specs = append(specs, p.spec)
+		}
+		p.mu.Unlock()
+	}
+	for _, s := range specs {
+		m.Stop(ctx, s.Name)
+	}
+	return func() {
+		for _, s := range specs {
+			m.Start(context.WithoutCancel(ctx), s)
+		}
+	}
+}
+
 // StopAll stops every sidecar, in parallel.
 func (m *Manager) StopAll(ctx context.Context) {
 	m.mu.Lock()

@@ -198,12 +198,24 @@ func TestPluginsPagePlan(t *testing.T) {
 	s.plan = &host.Plan{Package: p, SignedBy: 0, Problems: []pkg.Problem{{Code: "host-range", Message: "需要 Alcove 0.2 以上"}}}
 	s.mu.Unlock()
 	tt.Frame()
-	for _, want := range []string{"安装 @precinct/dovetail 0.1.0？", "签名有效", "· 在后台运行，并按需启动自己的运行时", "需要 Alcove 0.2 以上",
-		"崩溃次数过多，已停止", "exit status 2", "panic: boom", "重新启动"} {
+	for _, want := range []string{"安装 dovetail 0.1.0？", "签名有效", "在后台运行，并按需启动自己的运行时", "需要 Alcove 0.2 以上",
+		"崩溃次数过多，已停止", "exit status 2", "重新启动"} {
 		if !tt.HasText(want) {
 			t.Errorf("missing %q: %v", want, tt.Texts())
 		}
 	}
+	// The plugin's own page shows the crash output too.
+	s.mu.Lock()
+	s.page = pagePlugin + "@precinct/daily"
+	s.mu.Unlock()
+	tt.Frame()
+	if !tt.HasText("panic: boom") {
+		t.Errorf("plugin page lacks stderr: %v", tt.Texts())
+	}
+	s.mu.Lock()
+	s.page = PagePlugins
+	s.mu.Unlock()
+	tt.Frame()
 	// A plan with problems cannot be installed.
 	tt.Click("安装")
 	tt.Frame()

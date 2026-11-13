@@ -64,12 +64,21 @@ func main() {
 		ToolDirs:      []string{env("ALCOVE_TOOLDIR", filepath.Join(rt, "bin")), rt},
 		BridgeTgz:     env("ALCOVE_BRIDGE_TGZ", filepath.Join(rt, "alcove-bridge.tgz")),
 	}
+	// Tasks outside a project (最近会话) live in ~/Alcove, where Finder shows what its tasks made;
+	// workspaces may not be inside the data directory.
+	if home, err := os.UserHomeDir(); err == nil {
+		cfg.ScratchDir = filepath.Join(home, "Alcove")
+	}
 	if cfg.TrustedKeys, cfg.AllowUnsigned, err = trust(Version, os.Getenv); err != nil {
 		log.Fatal(err)
 	}
 	s := shell.New(nil)
 	s.Version, s.Updater = Version, &update.MyGo{}
-	cfg.Answerer, cfg.SidecarUI, cfg.Inbox = s, s, s.Inbox
+	cfg.Answerer, cfg.SidecarUI, cfg.Inbox, cfg.Browser = s, s, s.Inbox, s
+	cfg.ConfirmInstall, cfg.PluginsChanged = s.ConfirmInstall, s.PluginsChanged
+	cfg.ConfirmTask = s.ConfirmTask
+	// The plugin market ships with Alcove (installer/stage-market.sh).
+	cfg.Preinstall, _ = filepath.Glob(filepath.Join(rt, "plugins", "*.tgz"))
 	a, err := app.New(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -100,6 +109,13 @@ func main() {
 		}
 		win := mygo.NewWindow(opts)
 		s.Post = win.Update
+		// The browser's pages keep their sign-ins and site data apart from
+		// the user's browsers and from Alcove's own.
+		browsing := mygo.NewSession("browser")
+		s.NewWebView = func() (*mygo.WebView, error) {
+			return win.NewWebView(mygo.WebViewOptions{URL: "about:blank", BackgroundColor: "#ffffff",
+				Page: mygo.PageOptions{Session: browsing, SwipeNavigation: true, PinchZoom: true}})
+		}
 		s.OpenPath = mygo.Shell.OpenPath
 		s.Reveal = mygo.Shell.ShowItemInFolder
 		s.PickFolder = func() (string, error) {
@@ -112,6 +128,22 @@ func main() {
 		bg := newBackground(win)
 		s.OnBackground = bg.set
 		mygo.App.OnSecondInstance(func([]string, string) { bg.show() })
+		// New conversation items: a notification (needs a built app) and
+		// the unread total on the Dock icon. A click opens the conversation.
+		if mygo.NotificationsSupported() {
+			s.Notify = func(plugin, title, subtitle, body string) {
+				n := mygo.NewNotification(mygo.NotificationOptions{Title: title, Subtitle: subtitle, Body: body, Group: plugin})
+				n.OnClick(func() {
+					bg.show()
+					s.OpenInbox(plugin)
+				})
+				if err := n.Show(); err != nil && err != mygo.ErrNotificationsDenied {
+					log.Printf("notification: %v", err)
+				}
+			}
+		}
+		s.SetBadge = mygo.App.Dock.SetBadge
+		s.Active = mygo.App.IsActive
 		s.SaveFile = func(name string) (string, error) {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出诊断包", DefaultPath: name,
 				Filters: []mygo.FileFilter{{Name: "Zip", Extensions: []string{"zip"}}}})
@@ -150,12 +182,9 @@ func bundledRuntime() (nodeDir, rt string) {
 	if rt := filepath.Join(res, "runtime"); exists(rt) {
 		return rt, rt
 	}
-	// go run: resources/ as stage-runtime.sh left it, platform directories
-	// unmerged; for macOS node is per CPU and the rest in darwin/.
+	// go run: resources/ as stage-runtime.sh left it, one directory per
+	// platform.
 	plat := filepath.Join(res, runtime.GOOS+"-"+runtime.GOARCH, "runtime")
-	if runtime.GOOS == "darwin" {
-		return plat, filepath.Join(res, "darwin", "runtime")
-	}
 	return plat, plat
 }
 

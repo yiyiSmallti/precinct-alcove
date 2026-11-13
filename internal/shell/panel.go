@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/runtime/events"
 )
 
@@ -40,7 +41,7 @@ type dirListing struct {
 func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	col := ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 0, 0, 1).BorderColor(pal.hairline)
 	sideGround(c, pal, col).Children(func() {
-		r := ui.Row(c).Height(52).Shrink(0).Padding(0, 14).Gap(16).AlignItems(ui.Stretch).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline)
+		r := ui.Row(c).Height(52).Shrink(0).Padding(0, 12).Gap(2).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline)
 		if c.TitleBar().Height > 0 {
 			r.DragWindow()
 		}
@@ -66,22 +67,21 @@ func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	})
 }
 
-// tabButton is a text tab, underlined when chosen.
+// tabButton is a pill tab, filled when chosen.
 func tabButton(c *ui.Context, pal *palette, label string, sel bool) bool {
 	t := c.Theme()
-	r := ui.Column(c).Justify(ui.Center).Cursor(ui.CursorPointer).Focusable().Label(label).BorderWidth(0, 0, 2, 0)
-	if sel {
-		r.BorderColor(t.Text)
-	} else {
-		r.BorderColor(ui.Transparent)
+	r := ui.Row(c).Height(28).Padding(0, 12).AlignItems(ui.Center).Radius(14).Cursor(ui.CursorPointer).Focusable().Label(label).Transition(fade)
+	switch {
+	case sel:
+		r.Background(pal.selected)
+	case r.Hovered():
+		r.Background(pal.hover)
 	}
 	r.Children(func() {
 		txt := ui.Text(c, label).FontSize(13)
-		switch {
-		case sel:
-			txt.Bold()
-		case r.Hovered():
-		default:
+		if sel {
+			txt.FontWeight(600)
+		} else {
 			txt.TextColor(t.TextMuted)
 		}
 	})
@@ -142,7 +142,7 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 		if e.Kind == events.Tool {
 			calls++
 			switch {
-			case !e.Done:
+			case e.Busy():
 				running++
 			case e.IsError:
 				failed++
@@ -158,6 +158,8 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 				status(c, pal.waiting, "等你确认")
 			case tk.session.Running() || tk.starting:
 				status(c, pal.running, "运行中")
+			case tk.session.AgentsRunning() > 0:
+				status(c, pal.running, "子代理运行中")
 			case len(tk.session.Entries) > 0:
 				status(c, pal.done, "已完成")
 			default:
@@ -344,11 +346,11 @@ func (s *Shell) workspaceTab(c *ui.Context, pal *palette, v *wsView) {
 	})
 	if owner == "personal" {
 		panelLabel(c, "模型")
-		model := s.settings.Model
-		if model == "" {
-			model = "默认（deepseek-v4-flash）"
+		if cr := s.defaultCred(); cr != nil {
+			panelHint(c, providerName(cr.Provider)+" · "+credentials.ModelOf(*cr)+"。在“设置”里换模型或凭据。")
+		} else {
+			panelHint(c, "还没有模型凭据，在“设置”里添加。")
 		}
-		panelHint(c, model+"。在“设置”里换模型或凭据。")
 		return
 	}
 	pages := s.contributions(owner, "settings_page")
@@ -357,7 +359,7 @@ func (s *Shell) workspaceTab(c *ui.Context, pal *palette, v *wsView) {
 		return
 	}
 	for _, ct := range pages {
-		s.settingsPageView(c, owner, ct)
+		s.settingsPageView(c, pal, owner, ct, true, true)
 	}
 }
 

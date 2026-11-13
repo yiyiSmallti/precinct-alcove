@@ -55,6 +55,9 @@ func TestRecordedTurn(t *testing.T) {
 	if s.Entries[3].Text != "done after 2 tool calls" || s.Entries[3].Streaming {
 		t.Errorf("reply %+v", s.Entries[3])
 	}
+	if s.Context != 15 { // the last reply's input and output tokens
+		t.Errorf("context %d", s.Context)
+	}
 	if s.Title != "do it" || s.Status != "idle" || s.Running() {
 		t.Errorf("title %q status %q", s.Title, s.Status)
 	}

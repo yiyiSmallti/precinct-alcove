@@ -10,3 +10,53 @@
       name: '@deepseek-ai/dsh-tool-ask-user'
     - id: alcove-bridge
       name: '@precinct/alcove-bridge'
+# The providers Alcove's settings offer besides DeepSeek, each reading its key
+# from the variable Alcove sets at launch (credentials.Provider.KeyEnv). The
+# custom route exists only in a runtime started for a custom endpoint, whose
+# address, protocol and model arrive in ALCOVE_CUSTOM_* variables.
+# ALCOVE_ROUTE_PATCH ({route: fields}) sets fields of a route for this
+# runtime: models, to declare one pi-ai's catalog does not list (the route
+# then serves only it), or modelOverrides, to widen a model's window.
+- id: llm-pi-ai
+  config:
+    providers: !!js |-
+      ((routes) => {
+        const patch = JSON.parse(process.env.ALCOVE_ROUTE_PATCH || '{}');
+        for (const [route, fields] of Object.entries(patch)) {
+          if (routes[route]) routes[route] = { ...routes[route], ...fields };
+        }
+        return routes;
+      })({
+        openai: { apiKeyEnv: 'OPENAI_API_KEY' },
+        anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },
+        google: { apiKeyEnv: 'GEMINI_API_KEY' },
+        xai: { apiKeyEnv: 'XAI_API_KEY' },
+        openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+        'moonshotai-cn': { apiKeyEnv: 'MOONSHOT_API_KEY' },
+        'zai-coding-cn': { apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
+        'qwen-token-plan-cn': { apiKeyEnv: 'QWEN_TOKEN_PLAN_CN_API_KEY' },
+        'minimax-cn': { apiKeyEnv: 'MINIMAX_CN_API_KEY' },
+        xiaomi: { apiKeyEnv: 'XIAOMI_API_KEY' },
+        mistral: { apiKeyEnv: 'MISTRAL_API_KEY' },
+        groq: { apiKeyEnv: 'GROQ_API_KEY' },
+        ...(process.env.ALCOVE_CUSTOM_BASE_URL && {
+          custom: {
+            displayName: '自定义',
+            apiKeyEnv: 'ALCOVE_CUSTOM_API_KEY',
+            api: process.env.ALCOVE_CUSTOM_API,
+            baseURL: process.env.ALCOVE_CUSTOM_BASE_URL,
+            models: [{ id: process.env.ALCOVE_CUSTOM_MODEL }],
+          },
+        }),
+      })
+# When a conversation is compacted: Alcove's settings, per runtime, as
+# compaction-basic's own keys (auto, thresholdRatio, retainRatio).
+- id: compaction-basic
+  config: !!js JSON.parse(process.env.ALCOVE_COMPACTION || '{}')
+# Agents a runtime makes on its own (a plugin's engine such as the daily
+# bot's, subagents) take dsh's default model, dsh-base's DeepSeek route,
+# for which Alcove holds no key unless the user chose DeepSeek: set it to
+# the route Alcove launched the runtime on (ALCOVE_DEFAULT_MODEL).
+- id: agent-default-model
+  config: !!js |-
+    JSON.parse(process.env.ALCOVE_DEFAULT_MODEL || '{"provider":"deepseek-official","model":"deepseek-flash"}')

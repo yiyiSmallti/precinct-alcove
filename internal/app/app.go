@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/catalog"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/identity"
@@ -40,29 +41,69 @@ type Config struct {
 	Secrets       credentials.SecretStore // nil: the system credential store
 	Answerer      alrt.Answerer           // approval cards and question forms
 	SidecarUI     sidecar.UISink
-	Inbox         func(plugin string, item json.RawMessage) error
+	// Browser is the window's browser (browser capability); nil: none.
+	Browser sidecar.Browser
+	Inbox   func(plugin string, item json.RawMessage) error
+	// ScratchDir is the default folder of tasks outside a project, whose
+	// workspace Alcove adds when it is missing (the window lists its tasks
+	// as 最近会话); "" adds none.
+	ScratchDir string
+	// ConfirmInstall shows a package a plugin market (plugin_install cap)
+	// asks to install or update and reports whether the user agreed; nil
+	// declines every such request.
+	ConfirmInstall func(ctx context.Context, plugin string, plan *host.Plan) bool
+	// ConfirmTask asks the user whether a plugin may run a task in one of
+	// their own workspaces (task.start) and returns the workspace they
+	// picked; false when they declined or ctx ended. nil declines all.
+	ConfirmTask func(ctx context.Context, plugin string, req sidecar.TaskRequest) (string, bool)
+	// PluginsChanged is called after plugins were installed or updated
+	// without the plugin page's own buttons (a market, a preinstall).
+	PluginsChanged func()
+	// Preinstall are signed packages shipped with Alcove (the market): each
+	// is installed on the first start that finds it, and updated when the
+	// shipped version is newer. One the user uninstalled stays uninstalled.
+	Preinstall []string
 }
 
 // Settings are Alcove's own preferences (settings.json).
 type Settings struct {
 	DefaultCredential string `json:"defaultCredential,omitempty"`
-	Model             string `json:"model,omitempty"`
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"`
+	// ReasoningEffort is the effort tasks run at (catalog.Efforts); ""
+	// and one the model does not take leave the provider's default.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// Compaction is when a conversation nearing its window is compacted.
+	Compaction Compaction `json:"compaction"`
 	// UpdateSource is a mirror of the release files (an https directory);
 	// "" is the feed built into the app.
 	UpdateSource string `json:"updateSource,omitempty"`
+	// ScratchDir is the folder of tasks outside a project (最近会话); ""
+	// is Config.ScratchDir.
+	ScratchDir string `json:"scratchDir,omitempty"`
 	// Appearance is how the window looks; zero is Alcove's default look.
 	Appearance Appearance `json:"appearance"`
 }
+
+// Compaction tunes dsh's compaction-basic for every task.
+type Compaction struct {
+	// Off stops automatic compaction; a full window then fails the turn.
+	Off bool `json:"off,omitempty"`
+	// Threshold is how full the context gets before it is compacted, in
+	// percent of the window (or of the model's cap); 0 is DefaultThreshold.
+	Threshold int `json:"threshold,omitempty"`
+}
+
+// DefaultThreshold is compaction-basic's own thresholdRatio, in percent.
+const DefaultThreshold = 80
 
 // Appearance is the look the user chose in settings.
 type Appearance struct {
 	// Mode is "light" or "dark"; "" follows the system.
 	Mode string `json:"mode,omitempty"`
-	// Tone tints the neutrals: "warm" (""), "neutral" or "cool".
+	// Tone tints the neutrals: "zinc" (""), "slate", "linen", "warm",
+	// "neutral" or "cool".
 	Tone string `json:"tone,omitempty"`
 	// Accent colors primary buttons, the chosen row and running tasks: a
-	// preset name ("" is graphite) or a #rrggbb color.
+	// preset name ("" is the tone's own) or a #rrggbb color.
 	Accent string `json:"accent,omitempty"`
 	// Font and CodeFont are font families; "" is the system's and its
 	// monospace.
@@ -85,6 +126,8 @@ type App struct {
 	Bridge     *alrt.Bridge
 	Runtimes   *alrt.Manager
 	Sidecars   *sidecar.Manager
+	// Catalog is what the bundled runtime knows of each model.
+	Catalog *catalog.Catalog
 
 	// OnRuntimeExit is called after a runtime exits (the UI's hook); set it
 	// before Start.
@@ -105,10 +148,12 @@ type App struct {
 	cancel context.CancelFunc
 	// sessions are plugin sessions (session.prompt), by workspace and id.
 	sessions pluginSessions
+	// grants are the workspace tasks the user agreed to (task.start),
+	// loaded on first use.
+	grantsMu sync.Mutex
+	grants   []TaskGrant
+	inbox    inboxFiles
 }
-
-// DefaultModel is used until the user picks one.
-const DefaultModel = "deepseek-v4-flash"
 
 // New loads Alcove's state from cfg.DataDir, creating it on first start.
 func New(cfg Config) (*App, error) {
@@ -126,8 +171,12 @@ func New(cfg Config) (*App, error) {
 		cfg.Secrets = credentials.MygoSecrets{}
 	}
 	cli := &dsh.CLI{Node: cfg.Node, Bin: cfg.DSHBin, Home: l.DSHHome(), ToolDirs: cfg.ToolDirs}
-	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg}
+	a := &App{Layout: l, Identity: id, CLI: cli, cfg: cfg, Catalog: catalog.FromDSHBin(cfg.DSHBin)}
+	cli.Rebuilding = a.rebuildingStore
 	a.Creds = &credentials.Store{Path: l.Credentials(), Secrets: cfg.Secrets}
+	if err := a.migrateModel(); err != nil {
+		a.pluginLog("host", "warn", fmt.Sprintf("moving the saved model onto its credential: %v", err))
+	}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
 	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
 	a.Plugins = &host.Host{
@@ -157,8 +206,11 @@ func New(cfg Config) (*App, error) {
 			Detach:        a.detachWorkspace,
 			PromptSession: a.promptForPlugin,
 			CancelSession: a.cancelForPlugin,
+			StartTask:     a.startTask,
 			KeychainRef:   a.keychainRef,
 			Log:           a.pluginLog,
+			Market:        market{a},
+			Browser:       cfg.Browser,
 		},
 	}
 	return a, nil
@@ -185,6 +237,9 @@ func (a *App) Start(ctx context.Context) error {
 		if !r.Incomplete && r.Sidecar != "" {
 			a.Sidecars.Start(ctx, a.sidecarSpec(r))
 		}
+	}
+	if len(a.cfg.Preinstall) > 0 {
+		go a.preinstall(ctx)
 	}
 	return nil
 }
@@ -230,6 +285,93 @@ func (a *App) CreateWorkspace(ctx context.Context, name, dir string) (*workspace
 	}
 	a.Sidecars.WorkspaceEvent(ctx, "created", sidecarView(w))
 	return w, nil
+}
+
+// Scratch is the name of the workspace in ScratchDir, which holds every
+// task outside a project; the window lists its tasks as 最近会话 rather
+// than as a workspace.
+const Scratch = "最近会话"
+
+// EnsureWorkspace adds the workspace of ScratchDir when there is none,
+// and returns it; with one there already, or no ScratchDir, it returns nil.
+func (a *App) EnsureWorkspace(ctx context.Context) (*workspace.Workspace, error) {
+	dir := a.ScratchDir()
+	if dir == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if w, err := a.Workspaces.ByDir(dir); err != nil || w != nil {
+		return nil, err
+	}
+	return a.CreateWorkspace(ctx, Scratch, dir)
+}
+
+// ScratchWorkspace is the workspace of ScratchDir, or nil.
+func (a *App) ScratchWorkspace() (*workspace.Workspace, error) {
+	if dir := a.ScratchDir(); dir != "" {
+		return a.Workspaces.ByDir(dir)
+	}
+	return nil, nil
+}
+
+// ScratchDir is the folder of tasks outside a project: the one chosen in
+// settings, else Config.ScratchDir.
+func (a *App) ScratchDir() string {
+	if st, err := a.Settings(); err == nil && st.ScratchDir != "" {
+		return st.ScratchDir
+	}
+	return a.cfg.ScratchDir
+}
+
+// DefaultScratchDir is Config.ScratchDir, the folder of tasks outside a
+// project when settings choose none.
+func (a *App) DefaultScratchDir() string { return a.cfg.ScratchDir }
+
+// SetScratchDir makes dir ("" for the default) the folder of tasks outside
+// a project. Their workspace moves there, its runtime stopped (and with it
+// any task running in it); with none, one is added there. A folder that is
+// a project's workspace is refused.
+func (a *App) SetScratchDir(ctx context.Context, dir string) error {
+	st, err := a.Settings()
+	if err != nil {
+		return err
+	}
+	next := dir
+	if next == "" {
+		next = a.cfg.ScratchDir
+	}
+	cur, err := a.ScratchWorkspace()
+	if err != nil {
+		return err
+	}
+	there, err := a.Workspaces.ByDir(next)
+	switch {
+	case err != nil:
+		return err
+	case there != nil && (cur == nil || there.ID != cur.ID):
+		return fmt.Errorf("%w: %s", workspace.ErrTaken, there.Name)
+	}
+	if err := os.MkdirAll(next, 0o755); err != nil {
+		return err
+	}
+	switch {
+	case there != nil:
+	case cur == nil:
+		if _, err := a.CreateWorkspace(ctx, Scratch, next); err != nil {
+			return err
+		}
+	default:
+		k := alrt.Key{Profile: cur.Profile, Cwd: cur.Dir}
+		a.Runtimes.Stop(k)
+		a.closeWorkspace(k)
+		if err := a.Workspaces.Move(cur.ID, next); err != nil {
+			return err
+		}
+	}
+	st.ScratchDir = dir
+	return a.SaveSettings(st)
 }
 
 func sidecarView(w *workspace.Workspace) sidecar.Workspace {
@@ -288,10 +430,11 @@ func (a *App) RemoveWorkspace(ctx context.Context, id string) error {
 // default credential and the plugins' launch hooks. An attached workspace
 // runs only on its owner's route.
 func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, error) {
-	// attach/detach can change the owner while a launch is in flight (they
-	// stop the runtime, but the launch may not have reached the runtime
-	// manager yet). Check the runtime against the owner afterwards and
-	// start again if they differ.
+	// attach/detach can change the owner, and moving the tasks folder the
+	// directory, while a launch is in flight (they stop the runtime, but
+	// the launch may not have reached the runtime manager yet). Check the
+	// runtime against the workspace afterwards and start again if they
+	// differ.
 	for try := 0; ; try++ {
 		w, err := a.Workspaces.Find(id)
 		if err != nil {
@@ -307,13 +450,13 @@ func (a *App) OpenWorkspace(ctx context.Context, id string) (*alrt.Process, erro
 			a.Runtimes.Stop(k)
 			return nil, err
 		}
-		if p.Spec.Owner == ownerKey(now) {
+		if p.Spec.Owner == ownerKey(now) && now.Dir == w.Dir {
 			a.opened(p, k, sidecarView(now))
 			return p, nil
 		}
 		a.Runtimes.Stop(k)
 		if try == 2 {
-			return nil, fmt.Errorf("workspace %s changed owner while opening; try again", w.Name)
+			return nil, fmt.Errorf("workspace %s changed while opening; try again", w.Name)
 		}
 	}
 }
@@ -448,9 +591,11 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		return nil, err
 	}
 	if route != nil {
-		return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: s.ReasoningEffort,
-			Owner: owner, Env: append([]string(nil), extra...),
+		effort, tuning := a.tuning(s, route.Route, route.Model, 0)
+		return a.ensure(ctx, alrt.LaunchSpec{
+			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: effort,
+			Tuning: effort + "\n" + strings.Join(tuning, "\n"), Owner: owner,
+			Env: append(append([]string(nil), extra...), tuning...),
 		})
 	}
 	credID := s.DefaultCredential
@@ -464,19 +609,91 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 		}
 		credID = list[0].ID
 	}
-	provider, env, err := a.Creds.LaunchEnv(credID)
+	cr, err := a.Creds.Get(credID)
 	if err != nil {
 		return nil, err
 	}
-	model := s.Model
-	if model == "" {
-		model = DefaultModel
+	provider, model, env, err := a.Creds.LaunchEnv(credID)
+	if err != nil {
+		return nil, err
 	}
-	return a.Runtimes.Ensure(ctx, alrt.LaunchSpec{
-		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: s.ReasoningEffort,
+	effort, tuning := a.tuning(s, provider, model, cr.Context[model])
+	return a.ensure(ctx, alrt.LaunchSpec{
+		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort,
+		Tuning: effort + "\n" + strings.Join(tuning, "\n"), Credential: credID,
 		// Plugin variables first: the credential always wins.
-		Env: append(append([]string(nil), extra...), env...),
+		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})
+}
+
+// ensure starts (or returns) the runtime spec describes. The user switched
+// model or credential, or retuned it, since a runtime of the same owner
+// started: an idle one restarts on the new spec (sessions resume from
+// disk); a busy one keeps it until its sessions are done.
+func (a *App) ensure(ctx context.Context, spec alrt.LaunchSpec) (*alrt.Process, error) {
+	if p := a.Runtimes.Get(alrt.Key{Profile: spec.Profile, Cwd: spec.Cwd}); p != nil && p.Spec.Owner == spec.Owner &&
+		(p.Spec.Credential != spec.Credential || p.Spec.Provider != spec.Provider || p.Spec.Model != spec.Model || p.Spec.Tuning != spec.Tuning) && !p.Busy() {
+		p.Stop(0)
+	}
+	return a.Runtimes.Ensure(ctx, spec)
+}
+
+// tuning is how the settings reach a runtime of model on route: the
+// reasoning effort it takes (none when the model takes no such effort),
+// and the variables bridge/cordis.patch.yml reads (the compaction settings,
+// a route patch, the default model). limit is the context
+// chosen for the model in tokens (0: the runtime's window).
+func (a *App) tuning(s Settings, route, model string, limit int) (effort string, env []string) {
+	m, listed := a.Catalog.Lookup(route, model)
+	if m.Supports(s.ReasoningEffort) {
+		effort = s.ReasoningEffort
+	}
+	// A cap past the runtime's window, up to the widest a catalog states,
+	// widens it; one below scales the compaction ratios, so a conversation
+	// is compacted before it outgrows the cap.
+	window, scale := m.Context, 1.0
+	switch {
+	case limit > window && limit <= m.Max:
+		window = limit
+	case limit > 0 && window > 0 && limit < window:
+		scale = float64(limit) / float64(window)
+	}
+	// pi-ai serves only the models its catalog lists; another one the
+	// service offers is declared for this runtime's route, and a widened
+	// window is set on the route's entry for the model.
+	var patch map[string]any
+	switch {
+	case !listed && a.Catalog.Routes(route):
+		entry := map[string]any{"id": model}
+		if window != m.Context {
+			entry["contextWindow"] = window
+		}
+		patch = map[string]any{"models": []any{entry}}
+	case window != m.Context:
+		patch = map[string]any{"modelOverrides": map[string]any{model: map[string]any{"contextWindow": window}}}
+	}
+	if patch != nil {
+		b, _ := json.Marshal(map[string]any{route: patch})
+		env = append(env, "ALCOVE_ROUTE_PATCH="+string(b))
+	}
+	pct := s.Compaction.Threshold
+	if pct <= 0 || pct >= 100 {
+		pct = DefaultThreshold
+	}
+	cfg, _ := json.Marshal(map[string]any{
+		"auto":           !s.Compaction.Off,
+		"thresholdRatio": float64(pct) / 100 * scale,
+		// compaction-basic's default verbatim tail, kept under the cap.
+		"retainRatio": 0.16 * scale,
+	})
+	// Agents the runtime makes on its own (a plugin's engine, subagents)
+	// take dsh's default model; the bridge sets it to this route.
+	def := map[string]string{"provider": route, "model": model}
+	if effort != "" {
+		def["reasoningEffort"] = effort
+	}
+	b, _ := json.Marshal(def)
+	return effort, append(env, "ALCOVE_COMPACTION="+string(cfg), "ALCOVE_DEFAULT_MODEL="+string(b))
 }
 
 // ensureForPlugin is runtime.ensure for sidecars with the background
@@ -503,6 +720,13 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 	}
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() || !filepath.IsAbs(cwd) {
 		return "", fmt.Errorf("runtime.ensure: %q is not an existing absolute directory", cwd)
+	}
+	// As for a workspace (RefreshBridge): a profile made by an older Alcove
+	// gets the shipped bridge before its runtime starts.
+	if a.Runtimes.Get(alrt.Key{Profile: prof, Cwd: cwd}) == nil {
+		if _, err := a.Profiles.RefreshBridge(ctx, prof); err != nil {
+			a.pluginLog("host", "warn", fmt.Sprintf("profile %s: updating the bridge: %v", prof, err))
+		}
 	}
 	p, err := a.launch(ctx, prof, cwd, env, nil, "")
 	if err != nil {
@@ -585,6 +809,23 @@ func (a *App) detachWorkspace(ctx context.Context, plugin, id string) error {
 
 // InstallPlugin installs a checked plan and starts its sidecar.
 func (a *App) InstallPlugin(ctx context.Context, plan *host.Plan) (*host.Installed, error) {
+	if plan.Replaces != nil {
+		// An update: the old sidecar and the runtimes of the plugin's own
+		// profiles stop while the versions are swapped.
+		name := plan.Replaces.Name
+		a.Sidecars.Stop(ctx, name)
+		a.stopOwnRuntimes(name)
+		rec, err := a.Plugins.Install(ctx, plan)
+		// Whatever is installed now, new or put back, runs again.
+		if recs, lerr := a.Plugins.List(); lerr == nil {
+			for _, r := range recs {
+				if r.Name == name && !r.Incomplete && r.Sidecar != "" {
+					a.Sidecars.Start(context.WithoutCancel(ctx), a.sidecarSpec(r))
+				}
+			}
+		}
+		return rec, err
+	}
 	rec, err := a.Plugins.Install(ctx, plan)
 	if err != nil {
 		return nil, err
@@ -598,7 +839,18 @@ func (a *App) InstallPlugin(ctx context.Context, plan *host.Plan) (*host.Install
 // UninstallPlugin stops its sidecar, then removes the package everywhere.
 func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 	a.Sidecars.Stop(ctx, name)
-	// Stop the runtimes it ran in its own profiles (e.g. daily).
+	a.stopOwnRuntimes(name)
+	// Secrets go first: if the credential store refuses, the plugin stays
+	// installed and uninstalling again retries the cleanup.
+	if err := a.forgetPluginSecrets(name); err != nil {
+		return fmt.Errorf("remove %s's secrets: %w", name, err)
+	}
+	return a.Plugins.Uninstall(ctx, name)
+}
+
+// stopOwnRuntimes stops the runtimes plugin name ran in its own profiles
+// (e.g. daily), not workspace ones.
+func (a *App) stopOwnRuntimes(name string) {
 	recs, _ := a.Plugins.List()
 	own := map[string]bool{}
 	for _, r := range recs {
@@ -616,12 +868,6 @@ func (a *App) UninstallPlugin(ctx context.Context, name string) error {
 			a.Runtimes.Stop(k)
 		}
 	}
-	// Secrets go first: if the credential store refuses, the plugin stays
-	// installed and uninstalling again retries the cleanup.
-	if err := a.forgetPluginSecrets(name); err != nil {
-		return fmt.Errorf("remove %s's secrets: %w", name, err)
-	}
-	return a.Plugins.Uninstall(ctx, name)
 }
 
 // Settings reads settings.json.
@@ -629,6 +875,40 @@ func (a *App) Settings() (Settings, error) {
 	var s Settings
 	err := fsutil.ReadJSON(a.Layout.Settings(), &s)
 	return s, err
+}
+
+// migrateModel moves the model versions before 0.1 kept in settings.json
+// onto the credential they ran it with (the default one, else the first):
+// credentials now carry their own model.
+func (a *App) migrateModel() error {
+	var legacy struct {
+		Model string `json:"model"`
+	}
+	if err := fsutil.ReadJSON(a.Layout.Settings(), &legacy); err != nil || legacy.Model == "" {
+		return err
+	}
+	s, err := a.Settings()
+	if err != nil {
+		return err
+	}
+	id := s.DefaultCredential
+	if id == "" {
+		list, err := a.Creds.List()
+		if err != nil || len(list) == 0 {
+			return err // no credential yet: keep the model for when one exists
+		}
+		id = list[0].ID
+	}
+	cr, err := a.Creds.Get(id)
+	if err != nil {
+		return err
+	}
+	if cr.Model == "" {
+		if err := a.Creds.SetModel(id, legacy.Model); err != nil {
+			return err
+		}
+	}
+	return a.SaveSettings(s) // Settings has no model field: this drops it
 }
 
 // SaveSettings writes settings.json.

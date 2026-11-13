@@ -19,6 +19,10 @@ func TestBridgeRefresh(t *testing.T) {
 	ctx := context.Background()
 	work := shortTemp(t)
 	cli := testCLI(t, work)
+	var shipped struct{ Version string }
+	if raw, err := os.ReadFile(filepath.Join("..", "bridge", "package.json")); err != nil || json.Unmarshal(raw, &shipped) != nil {
+		t.Fatalf("read the shipped bridge version: %v", err)
+	}
 	old := filepath.Join(work, "old-bridge")
 	os.MkdirAll(filepath.Join(old, "lib"), 0o755)
 	for _, f := range []string{"cordis.patch.yml", "lib/index.js", "package.json"} {
@@ -27,7 +31,7 @@ func TestBridgeRefresh(t *testing.T) {
 			t.Fatal(err)
 		}
 		if f == "package.json" {
-			raw = []byte(strings.Replace(string(raw), `"version": "0.1.1"`, `"version": "0.1.0"`, 1))
+			raw = []byte(strings.Replace(string(raw), `"version": "`+shipped.Version+`"`, `"version": "0.1.0"`, 1))
 		}
 		os.WriteFile(filepath.Join(old, f), raw, 0o644)
 	}
@@ -57,7 +61,7 @@ func TestBridgeRefresh(t *testing.T) {
 	}
 	a := &profile.Assembler{DSH: cli, Bridge: newTgz}
 	changed, err := a.RefreshBridge(ctx, "ws-old")
-	if err != nil || !changed || version() != "0.1.1" {
+	if err != nil || !changed || version() != shipped.Version {
 		t.Fatalf("refresh: changed %v err %v version %q", changed, err, version())
 	}
 	if changed, err := a.RefreshBridge(ctx, "ws-old"); err != nil || changed {

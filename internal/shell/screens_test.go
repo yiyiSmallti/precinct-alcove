@@ -13,8 +13,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/catalog"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
+	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/pkg"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 )
@@ -39,7 +43,9 @@ func TestScreens(t *testing.T) {
 			suffix = "dark"
 		}
 		shot := func(name string) {
+			// Let transitions (row highlights) finish.
 			tt.Frame()
+			tt.Advance(time.Second)
 			tt.Frame()
 			f, err := os.Create(filepath.Join(dir, name+"-"+suffix+".png"))
 			if err != nil {
@@ -95,7 +101,7 @@ func TestScreens(t *testing.T) {
 		s.settings.Appearance = app.Appearance{Accent: "amber"}
 		s.mu.Unlock()
 		shot("task-amber")
-		for _, tn := range []string{"warm", "neutral", "cool"} {
+		for _, tn := range []string{"zinc", "slate", "linen", "warm", "neutral", "cool"} {
 			s.mu.Lock()
 			s.settings.Appearance = app.Appearance{Tone: tn}
 			s.mu.Unlock()
@@ -106,6 +112,206 @@ func TestScreens(t *testing.T) {
 		s.prefs.custom = ui.Hex("#7c3aed")
 		s.mu.Unlock()
 		shot("picker")
+		s.mu.Lock()
+		s.settings.Appearance = app.Appearance{}
+		s.prefs.picking = false
+		s.mu.Unlock()
+		shot("settings-look")
+		s.mu.Lock()
+		s.prefs.tab = tabOther
+		s.mu.Unlock()
+		shot("settings-other")
+		s.mu.Lock()
+		s.prefs.tab = tabRuntimes
+		s.mu.Unlock()
+		shot("settings-runtimes")
+		s.mu.Lock()
+		s.prefs.tab = tabModel
+		s.creds = []credentials.Credential{{ID: "c1", Label: "DeepSeek 个人", Provider: "deepseek-official"}, {ID: "c2", Label: "OpenAI 工作", Provider: "openai", Model: "gpt-6.1-sol", Context: map[string]int{"gpt-6.1-sol": 1050000}}}
+		s.settings.DefaultCredential = "c2"
+		s.settings.ReasoningEffort = "high"
+		// Model facts from the runtime's catalog, when one is given.
+		s.App.Catalog = catalog.FromDSHBin(os.Getenv("ALCOVE_E2E_DSH"))
+
+		s.form = credForm{open: true, provider: "Kimi（月之暗面）", protocol: credentials.Protocols[0].Name}
+		s.mu.Unlock()
+		shot("settings-model")
+		s.mu.Lock()
+		s.form = credForm{}
+		for i := range s.creds {
+			if s.creds[i].ID == "c2" {
+				s.creds[i].Models = []string{"gpt-6.1-sol", "gpt-5.5", "o4-mini"}
+			}
+		}
+		s.picks = map[string]*modelPick{"c1": {remote: []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-pro-thinking", "deepseek-v3.2", "deepseek-coder-v4"}, picked: []string{"deepseek-v4-flash", "deepseek-v4-pro"}}}
+		s.mu.Unlock()
+		shot("settings-model-pick")
+		s.mu.Lock()
+		s.picks = nil
+		s.page = pageWS + s.scratchID
+		if sv := s.view(s.scratchID); sv != nil {
+			sv.current = ""
+		}
+		s.mu.Unlock()
+		shot("new-model")
+		s.mu.Lock()
+		s.runMenu = true
+		s.mu.Unlock()
+		shot("new-run")
+		// A task on the personal credentials that took some context.
+		s.mu.Lock()
+		s.runMenu = false
+		s.page = pageWS + v.ws.ID
+		owner := v.ws.Owner
+		v.ws.Owner = workspace.Personal
+		v.tasks["chat-report"].session.Context = 712400
+		s.mu.Unlock()
+		shot("task-run")
+		s.mu.Lock()
+		s.runMenu = true
+		s.mu.Unlock()
+		shot("task-run-panel")
+		s.mu.Lock()
+		s.runMenu = false
+		v.ws.Owner = owner
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.page = PageSettings
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.creds = append(s.creds, credentials.Credential{ID: "c3", Label: "公司网关", Provider: credentials.Custom, BaseURL: "https://llm.example.com/v1", API: "openai-completions", Model: "qwen3-coder"})
+		s.form = credForm{open: true, provider: "自定义（兼容接口）", protocol: credentials.Protocols[0].Name}
+		s.mu.Unlock()
+		shot("settings-model-custom")
+		s.mu.Lock()
+		s.creds = nil
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.page = PagePlugins
+		s.mu.Unlock()
+		shot("plugins")
+		market := `{"id":"market","type":"settings_page","title":"插件市场","submit":false,"sections":[
+			{"fields":[
+				{"id":"index","type":"text","label":"索引地址","help":"3 个插件 · 11月3日 07:15 读取","placeholder":"https://…/index.json 或本机文件夹","value":"https://plugins.example.com/"},
+				{"id":"refresh","type":"button","label":"刷新"}]},
+			{"title":"dovetail","caption":"@precinct/dovetail\n最新 0.1.1 · 已安装 0.1.0","description":"插件市场：从签名索引浏览、安装和更新 Alcove 插件，也能从本机镜像文件夹离线导入","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/dovetail","type":"button","label":"更新","style":"primary"}]},
+			{"title":"cloister","caption":"@precinct/cloister\n最新 0.1.0-alpha.0","description":"组织功能：加入组织、策略、事件流、组织 bot 回合、组织工作区、同步与租约、云端任务","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/cloister","type":"button","label":"安装","style":"primary"}]},
+			{"title":"daily","caption":"@precinct/daily\n最新 0.1.0-alpha.0","description":"个人日常助手：对话视图、定时提醒和 daily 运行时","display":"card","icon":"puzzle","fields":[{"id":"install:@precinct/daily","type":"button","label":"安装","style":"primary"}]}]}`
+		s.Register("@precinct/dovetail", sidecar.Contribution{ID: "market", Type: "settings_page", Raw: json.RawMessage(market)})
+		s.Register("@precinct/dovetail", sidecar.Contribution{ID: "market-nav", Type: "sidebar_item", Raw: json.RawMessage(`{"id":"market-nav","type":"sidebar_item","title":"插件市场 · 1 个更新","icon":"puzzle","viewId":"market"}`)})
+		s.mu.Lock()
+		s.plugins = []host.Installed{
+			{Name: "@precinct/dovetail", Version: "0.1.0", Sidecar: "bin/dovetail", Capabilities: []string{"settings_page", "sidebar_item", "plugin_install"}},
+			{Name: "@precinct/cloister", Version: "0.1.0-alpha.0", Sidecar: "bin/cloister", Capabilities: []string{"settings_page", "provider_endpoint", "workspace_hook"}},
+			{Name: "@precinct/daily", Version: "0.1.0-alpha.0", Sidecar: "bin/daily", Capabilities: []string{"inbox", "background"}},
+		}
+		s.sidecars = map[string]sidecar.Status{
+			"@precinct/dovetail": {State: sidecar.Running},
+			"@precinct/cloister": {State: sidecar.Running},
+			"@precinct/daily":    {State: sidecar.Crashed, Crashes: 3, LastError: "exit status 2", Stderr: "panic: open bot/state.db: permission denied"},
+		}
+		s.mu.Unlock()
+		shot("plugins-list")
+		s.mu.Lock()
+		s.page = pagePlugin + "@precinct/dovetail"
+		s.mu.Unlock()
+		shot("plugin-detail")
+		s.mu.Lock()
+		s.page = pageView + "@precinct/dovetail#market"
+		s.mu.Unlock()
+		shot("plugin-market")
+		s.mu.Lock()
+		s.plan = &host.Plan{Package: &pkg.Package{Name: "@precinct/dovetail", Version: "0.1.1", Description: "插件市场：从签名索引浏览、安装和更新 Alcove 插件",
+			Alcove: &pkg.Alcove{Capabilities: []string{"settings_page", "sidebar_item", "plugin_install"}}},
+			Profiles: []string{"alcove-plugins"}, Replaces: &host.Installed{Name: "@precinct/dovetail", Version: "0.1.0"}}
+		s.planFrom = "@precinct/dovetail"
+		s.mu.Unlock()
+		shot("plugin-plan")
+		s.mu.Lock()
+		s.plan, s.planFrom = nil, ""
+		s.page = pagePlugin + "@precinct/daily"
+		s.mu.Unlock()
+		shot("plugin-crashed")
+		// The daily assistant: its introduction, a workspace task request
+		// and its reminders page.
+		logo, _ := os.ReadFile("logo.png")
+		face, _ := ui.DecodeBitmap(logo)
+		intro := `{"id":"intro","type":"inbox_intro","title":"你好，我是日常助手","body":"我帮你记事、定提醒，每天早上给你一份简报。需要改文件或跑命令的事，我会先问你在哪个工作区里做，你同意了才开始。\n\n已经定好的提醒和我记住的事，随时可以在上方的「提醒与日程」「记忆」里查看和删除。","suggestions":[
+			{"label":"定个提醒","text":"明天早上 9 点提醒我交周报"},{"label":"每天重复","text":"每个工作日下午 6 点提醒我写日报"},
+			{"label":"记住一件事","text":"记住：我每周三下午固定开组会"},{"label":"今天有什么","text":"今天我有哪些提醒和要跟进的事？"},
+			{"label":"在项目里做事","text":"帮我把项目 README 里的待办事项整理成清单"}]}`
+		reminders := `{"id":"reminders","type":"settings_page","title":"提醒与日程","submit":false,"sections":[
+			{"title":"每日简报","description":"到点后我把今天的提醒、还在进行的事和要跟进的事整理好发到对话里。","fields":[
+				{"id":"on","type":"toggle","label":"每天给我简报","value":true},
+				{"id":"time","type":"select","label":"时间","value":"08:30","options":[{"value":"08:00","label":"每天 08:00"},{"value":"08:30","label":"每天 08:30"}]},
+				{"id":"briefing","type":"button","label":"保存","style":"primary"}]},
+			{"title":"交周报","description":"下次 明天 09:00 · 提醒","fields":[{"id":"cancel:s1","type":"button","label":"取消","style":"danger"}]},
+			{"title":"写日报","description":"下次 今天 18:00 · 提醒 · 每个工作日","fields":[{"id":"cancel:s2","type":"button","label":"取消","style":"danger"}]}]}`
+		memory := `{"id":"memory","type":"settings_page","title":"记忆","submit":false,"sections":[]}`
+		todos := `{"id":"todos","type":"settings_page","title":"待办","submit":false,"sections":[
+			{"title":"添加待办","fields":[{"id":"text","type":"text","label":"待办","placeholder":"比如：周五前交报销单"},{"id":"add","type":"button","label":"添加","style":"primary"}]},
+			{"title":"周五前交报销单","description":"⚠️ 已逾期 · 截止 昨天 18:00","fields":[{"id":"done:t1","type":"button","label":"完成","style":"primary"},{"id":"remove:t1","type":"button","label":"删除","style":"danger"}]},
+			{"title":"✓ 买牛奶","description":"已完成 · 今天 09:12","fields":[{"id":"reopen:t2","type":"button","label":"重新打开"},{"id":"remove:t2","type":"button","label":"删除","style":"danger"}]}]}`
+		s.Register("@precinct/daily", sidecar.Contribution{ID: "intro", Type: "inbox_intro", Raw: json.RawMessage(intro)})
+		s.Register("@precinct/daily", sidecar.Contribution{ID: "todos", Type: "settings_page", Raw: json.RawMessage(todos)})
+		s.Register("@precinct/daily", sidecar.Contribution{ID: "reminders", Type: "settings_page", Raw: json.RawMessage(reminders)})
+		s.Register("@precinct/daily", sidecar.Contribution{ID: "memory", Type: "settings_page", Raw: json.RawMessage(memory)})
+		persona := `{"id":"persona","type":"settings_page","title":"人设与风格","sections":[
+			{"title":"它是谁","fields":[{"id":"name","type":"text","label":"它的名字","value":"小月"},{"id":"call","type":"text","label":"怎么称呼你","value":"老王"}]},
+			{"title":"人设全文（SOUL.md）","description":"想写得更细就写在这里：性格、口头禅、背景……最多 8000 个字。也可以直接编辑 ~/Library/Application Support/Alcove/bot/SOUL.md。",
+			 "fields":[{"id":"soul","type":"textarea","label":"人设全文","value":"你是一个耐心、有点话痨的助手，说话像老朋友。\n遇到我拖延时会温和地催一下，但不说教。\n口头禅：「妥妥的」。"}]}]}`
+		s.Register("@precinct/daily", sidecar.Contribution{ID: "persona", Type: "settings_page", Raw: json.RawMessage(persona)})
+		for _, pg := range [][2]string{{"skills", "技能"}, {"channels", "消息通道"}} {
+			s.Register("@precinct/daily", sidecar.Contribution{ID: pg[0], Type: "settings_page", Raw: json.RawMessage(`{"id":"` + pg[0] + `","type":"settings_page","title":"` + pg[1] + `","sections":[]}`)})
+		}
+		s.mu.Lock()
+		s.plugins[2] = host.Installed{Name: "@precinct/daily", Version: "0.1.0-alpha.2", Title: "日常助手", Sidecar: "bin/daily", Capabilities: []string{"settings_page", "inbox", "background", "workspace_session", "workspace_task"}}
+		s.sidecars["@precinct/daily"] = sidecar.Status{State: sidecar.Running}
+		s.avatars = map[string]*ui.Bitmap{"@precinct/daily": face}
+		s.page = pageInbox + "@precinct/daily"
+		s.mu.Unlock()
+		shot("daily-intro")
+		s.mu.Lock()
+		ch := s.chat("@precinct/daily")
+		ch.entries = append(ch.entries, &chatEntry{out: &outgoing{id: "o1", text: "帮我把项目 README 里的待办事项整理成清单", ts: time.Now(), state: outDelivered}},
+			&chatEntry{item: &inboxItem{ID: "m1", Kind: "message", Text: "好的，我去整理 README 待办。"}})
+		s.taskAsks = []*taskAsk{{plugin: "@precinct/daily", answer: make(chan string, 1), req: sidecar.TaskRequest{ID: "a1", Title: "整理 README 待办", Detail: "起因：帮我把项目 README 里的待办事项整理成清单"}}}
+		s.mu.Unlock()
+		shot("daily-ask")
+		s.mu.Lock()
+		s.taskAsks = nil
+		ch.entries = append(ch.entries, &chatEntry{item: &inboxItem{ID: "r1", Kind: "card", Card: &card{Title: "⏰ 提醒", Body: "交周报",
+			Actions: []cardAction{{ID: "done", Label: "完成", Style: "primary"}, {ID: "snooze:10m", Label: "10 分钟后"}, {ID: "snooze:1h", Label: "1 小时后"}, {ID: "snooze:tomorrow", Label: "明天早上"}}}}})
+		s.mu.Unlock()
+		shot("daily-reminder-card")
+		s.mu.Lock()
+		s.taskAsks = []*taskAsk{{plugin: "@precinct/daily", answer: make(chan string, 1), req: sidecar.TaskRequest{ID: "a1", Title: "整理 README 待办", Detail: "起因：帮我把项目 README 里的待办事项整理成清单"}}}
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.page = PageWaiting
+		s.mu.Unlock()
+		shot("waiting-ask")
+		s.mu.Lock()
+		s.taskAsks = nil
+		s.page = pageView + "@precinct/daily#reminders"
+		ch.unread = 3
+		s.mu.Unlock()
+		shot("daily-reminders")
+		s.mu.Lock()
+		s.page = pageView + "@precinct/daily#todos"
+		s.mu.Unlock()
+		shot("daily-todos")
+		s.mu.Lock()
+		s.page = pageView + "@precinct/daily#persona"
+		s.mu.Unlock()
+		shot("daily-persona")
+		s.mu.Lock()
+		s.page = pagePlugin + "@precinct/daily"
+		s.mu.Unlock()
+		shot("daily-detail")
+		s.mu.Lock()
+		s.plugins, s.sidecars, s.avatars = nil, nil, nil
+		s.mu.Unlock()
 	}
 }
 
@@ -156,11 +362,20 @@ func demo(t *testing.T, s *Shell) *wsView {
 	s.Register("@precinct/cloister", sidecar.Contribution{ID: "org", Type: "settings_page", Raw: json.RawMessage(page)})
 	s.mu.Lock()
 	w := workspace.Workspace{ID: "w1", Name: "季度报表", Dir: dir, Profile: "ws-w1", Owner: "@precinct/cloister"}
-	s.workspaces = []workspace.Workspace{w, {ID: "w2", Name: "precinct-alcove", Dir: "/Users/liuliu/IdeaProjects/precinct-alcove", Profile: "ws-w2", Owner: "personal"}}
+	s.workspaces = []workspace.Workspace{w, {ID: "w2", Name: "precinct-alcove", Dir: t.TempDir(), Profile: "ws-w2", Owner: "personal"},
+		{ID: "w0", Name: app.Scratch, Dir: "/Users/liuliu/Alcove", Profile: "ws-w0", Owner: "personal"}}
+	s.scratchID = "w0"
+	sv := s.view("w0")
+	for _, m := range []tasks.Task{
+		{ID: "chat-r1", Title: "翻译这段合同条款", UpdatedAt: time.Now().UTC().Add(-3 * time.Hour)},
+		{ID: "chat-r2", Title: "把截图里的表格转成 Excel", UpdatedAt: time.Now().UTC().Add(-26 * time.Hour)},
+	} {
+		s.addTask(sv, m)
+	}
 	v := s.view("w1")
 	v.runtimeID = "rt1"
 	s.byRuntime["rt1"] = "w1"
-	s.page, s.curWS = pageWS+"w1", "w1"
+	s.focus("w1")
 	now := time.Now().UTC()
 	for i, m := range []tasks.Task{
 		{ID: "chat-old1", Title: "整理 9 月的发票", UpdatedAt: now.Add(-50 * time.Hour)},
@@ -183,6 +398,19 @@ func demo(t *testing.T, s *Shell) *wsView {
 	r.say(s, 1, 2, "汇总好了：第三季度收入 **41.2 万**，比上季度多 8%。报告写在 `report/Q3.md`。\n\n接下来把它转成 docx。")
 	r.tool(s, "c5", "edit", `{"file_path":"summarize.py","old_string":"a","new_string":"b"}`, "ok", true)
 	r.tool(s, "c4", "bash", `{"command":"pandoc report/Q3.md -o ~/Desktop/Q3.docx"}`, "", false)
+	// Two subagents: one finished with its answer, one still at work.
+	agent := func(child, method, extra string) {
+		s.OnEvent("rt1", alrt.Event{Method: method, Params: json.RawMessage(`{"parentSessionId":"chat-report","childSessionId":"` + child + `"` + extra + `}`)})
+	}
+	agent("sub-2", "subagent.started", "")
+	r.tool(s, "c7", "subagent", `{"description":"核对 7 月的退款","prompt":"找出 data/2026-07.csv 里的退款"}`, "started subagent sub-2", true)
+	(&ev{sid: "sub-2"}).tool(s, "t1", "grep", `{"pattern":"退款","path":"data/2026-07.csv"}`, "3 matches", true)
+	agent("sub-2", "subagent.finished", `,"status":"ok","lastAssistantMessage":[{"type":"text","text":"7 月有 3 笔退款，共 4,820 元，已从收入里扣除。"}]`)
+	agent("sub-1", "subagent.started", "")
+	r.tool(s, "c6", "subagent", `{"description":"核对三个月的支出","prompt":"逐月核对 data/ 下的支出"}`, "started subagent sub-1", true)
+	sub := &ev{sid: "sub-1"}
+	sub.tool(s, "s1", "read", `{"file_path":"data/2026-08.csv"}`, "月份,收入,支出", true)
+	sub.tool(s, "s2", "bash", `{"command":"python3 summarize.py --check"}`, "", false)
 
 	b := &ev{sid: "task-c"}
 	b.status(s, "running")

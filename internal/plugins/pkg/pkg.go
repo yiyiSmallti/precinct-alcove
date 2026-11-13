@@ -50,6 +50,11 @@ type Alcove struct {
 	Profiles     []string          `json:"profiles"`
 	Sidecar      map[string]string `json:"sidecar"`
 	UI           []json.RawMessage `json:"ui"`
+	// Title and Avatar (a PNG inside the package) name the plugin in the
+	// window; a plugin holding inbox with an avatar is listed as an
+	// assistant of its own in the sidebar.
+	Title  string `json:"title"`
+	Avatar string `json:"avatar"`
 }
 
 // Capabilities a package may declare (internal/plugins/caps).
@@ -60,10 +65,13 @@ var KnownCapabilities = map[string]bool{
 	"runtime_launch_hook": true,
 	"provider_endpoint":   true,
 	"workspace_session":   true,
+	"workspace_task":      true,
 	"background":          true,
 	"inbox":               true,
 	"deep_link":           true,
 	"policy_write":        true,
+	"plugin_install":      true,
+	"browser":             true,
 }
 
 // installScripts are lifecycle scripts pnpm would run; first-party packages
@@ -171,6 +179,9 @@ func (p *Package) Check(env Env) []Problem {
 		} else if !safeRel(rel) {
 			add("sidecar", "sidecar path %q must be relative and stay inside the package", rel)
 		}
+	}
+	if a.Avatar != "" && (!safeRel(a.Avatar) || !strings.HasSuffix(strings.ToLower(a.Avatar), ".png")) {
+		add("avatar", "avatar %q must be a .png inside the package", a.Avatar)
 	}
 	for _, prof := range a.Profiles {
 		if prof == "" || strings.ContainsAny(prof, `/\ `) {

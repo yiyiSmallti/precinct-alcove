@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
 )
@@ -35,12 +36,38 @@ type Manager struct {
 	mu       sync.Mutex
 	procs    map[Key]*Process
 	starting map[Key]chan struct{}
+	pinned   map[Key]bool
 }
 
 // Info describes a running runtime for the runtime panel.
 type Info struct {
 	Key
-	ID string
+	ID      string
+	Started time.Time
+	Pinned  bool
+	// Busy is set while a session (or a subagent's) is running.
+	Busy bool
+	// IdleExit is when the runtime exits if left idle; zero while it is
+	// pinned or busy.
+	IdleExit time.Time
+}
+
+// Pin keeps the runtime for k up however long it is idle, now and each
+// time it is started again, until unpinned (PRD 3.5).
+func (m *Manager) Pin(k Key, on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pinned == nil {
+		m.pinned = map[Key]bool{}
+	}
+	if on {
+		m.pinned[k] = true
+	} else {
+		delete(m.pinned, k)
+	}
+	if p := m.procs[k]; p != nil {
+		p.Pin(on)
+	}
 }
 
 // Ensure returns the runtime for spec's profile and cwd, starting it if
@@ -78,6 +105,9 @@ func (m *Manager) Ensure(ctx context.Context, spec LaunchSpec) (*Process, error)
 			delete(m.starting, k)
 			if err == nil {
 				m.procs[k] = p
+				if m.pinned[k] {
+					p.Pin(true)
+				}
 			}
 			m.mu.Unlock()
 			close(done)
@@ -126,7 +156,7 @@ func (m *Manager) List() []Info {
 	defer m.mu.Unlock()
 	out := make([]Info, 0, len(m.procs))
 	for k, p := range m.procs {
-		out = append(out, Info{Key: k, ID: p.ID})
+		out = append(out, Info{Key: k, ID: p.ID, Started: p.Started, Pinned: p.Pinned(), Busy: p.Busy(), IdleExit: p.IdleExit()})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Profile != out[j].Profile {

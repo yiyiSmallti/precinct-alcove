@@ -7,21 +7,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/host"
 	"github.com/yiyiSmallti/precinct-alcove/internal/plugins/sidecar"
 )
 
 // Plugin pages (PRD 3.4, SPEC 3.2): the plugin list with install and
-// uninstall, one page per plugin with its declarative settings pages, and the
-// conversation view of each plugin that holds inbox.
+// uninstall, one page per plugin with its declarative settings pages, a
+// settings page of its own when a sidebar item opens it ("view:<plugin>#<id>"),
+// and the conversation view of each plugin that holds inbox.
 const (
 	PagePlugins = "plugins"
 	pagePlugin  = "plugin:"
 	pageInbox   = "inbox:"
+	pageView    = "view:"
 )
 
 // sidecarCalls is what the shell asks of running sidecars: App.Sidecars, or
@@ -43,17 +48,24 @@ func (s *Shell) calls() sidecarCalls {
 
 // pluginsState is the plugin part of the shell's state.
 type pluginsState struct {
-	plugins    []host.Installed
-	sidecars   map[string]sidecar.Status
-	plan       *host.Plan // checked package waiting for the user's yes
-	planBusy   bool       // checking or installing
-	planErr    string
+	plugins  []host.Installed
+	sidecars map[string]sidecar.Status
+	plan     *host.Plan // checked package waiting for the user's yes
+	planBusy bool       // checking or installing
+	planErr  string
+	// planFrom is the market that asked for plan (plugin_install), "" for
+	// a file the user picked; planAnswer takes the user's answer to it.
+	planFrom   string
+	planAnswer chan bool
 	background bool            // an installed plugin holds background
 	confirm    string          // plugin whose uninstall waits for a second click
 	busy       map[string]bool // plugin → uninstall or restart running
 	forms      map[string]*settingsForm
 	chats      map[string]*chat
+	chatGen    int                     // the newest chat's gen
 	cards      map[string]*contribCard // card contributions, by plugin#id
+	avatars    map[string]*ui.Bitmap   // alcove.avatar of installed plugins, by name
+	taskAsks   []*taskAsk              // workspace task requests waiting for the user
 }
 
 // contribCard is a card contribution (ui.register type card) with its
@@ -69,7 +81,19 @@ type chat struct {
 	input   string
 	entries []*chatEntry
 	byID    map[string]*chatEntry // plugin items by id
+	// waiting is when the plugin last took an input of the user's with no
+	// item from it since: the view shows it is working on a reply, for at
+	// most replyWait (it may decide an input needs none).
+	waiting time.Time
+	saved   int // versions handed to the app to store
+	gen     int // which chat this is: an uninstall drops saves of earlier ones
+	// unread counts the items that came while the view was not shown.
+	unread int
 }
+
+// replyWait is how long the conversation view shows a plugin working on
+// a reply after taking an input.
+const replyWait = 3 * time.Minute
 
 type chatEntry struct {
 	item *inboxItem // from the plugin
@@ -120,10 +144,83 @@ const (
 func (s *Shell) chat(plugin string) *chat {
 	c := s.chats[plugin]
 	if c == nil {
-		c = &chat{byID: map[string]*chatEntry{}}
+		s.chatGen++
+		c = &chat{byID: map[string]*chatEntry{}, gen: s.chatGen}
 		s.chats[plugin] = c
+		if s.App != nil {
+			c.restore(s.App.LoadInbox(plugin))
+		}
 	}
 	return c
+}
+
+// maxSavedEntries is how much of a conversation view is kept across
+// restarts.
+const maxSavedEntries = 300
+
+type savedEntry struct {
+	Item *inboxItem `json:"item,omitempty"`
+	Out  *savedOut  `json:"out,omitempty"`
+}
+
+type savedOut struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text"`
+	TS        time.Time `json:"ts"`
+	Delivered bool      `json:"delivered,omitempty"`
+}
+
+// restore reads a saved view. Cards come back without their buttons: the
+// plugin that still waits on one posts it again. Inputs never
+// acknowledged are sent again once the plugin runs.
+func (c *chat) restore(data []byte) {
+	var saved []savedEntry
+	if len(data) == 0 || json.Unmarshal(data, &saved) != nil {
+		return
+	}
+	for _, e := range saved {
+		switch {
+		case e.Item != nil:
+			if e.Item.Card != nil {
+				e.Item.Card.Actions = nil
+			}
+			ce := &chatEntry{item: e.Item}
+			c.byID[e.Item.ID] = ce
+			c.entries = append(c.entries, ce)
+		case e.Out != nil:
+			o := &outgoing{id: e.Out.ID, text: e.Out.Text, ts: e.Out.TS, state: outFailed}
+			if e.Out.Delivered {
+				o.state = outDelivered
+			}
+			c.entries = append(c.entries, &chatEntry{out: o})
+		}
+	}
+}
+
+// save hands the view to the app to store (under mu).
+func (s *Shell) saveChat(plugin string, c *chat) {
+	if s.App == nil {
+		return
+	}
+	entries := c.entries
+	if len(entries) > maxSavedEntries {
+		entries = entries[len(entries)-maxSavedEntries:]
+	}
+	saved := make([]savedEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.item != nil {
+			saved = append(saved, savedEntry{Item: e.item})
+		} else {
+			saved = append(saved, savedEntry{Out: &savedOut{ID: e.out.id, Text: e.out.text, TS: e.out.ts, Delivered: e.out.state == outDelivered}})
+		}
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return
+	}
+	c.saved++
+	seq := c.saved
+	go s.App.SaveInbox(plugin, c.gen, seq, data)
 }
 
 // Inbox is the sidecars' inbox.post: it shows item in the plugin's
@@ -144,6 +241,7 @@ func (s *Shell) Inbox(plugin string, raw json.RawMessage) error {
 	}
 	s.post(func() {
 		c := s.chat(plugin)
+		defer s.saveChat(plugin, c)
 		if e := c.byID[it.ID]; e != nil {
 			e.item = &it
 			return
@@ -151,8 +249,78 @@ func (s *Shell) Inbox(plugin string, raw json.RawMessage) error {
 		e := &chatEntry{item: &it}
 		c.byID[it.ID] = e
 		c.entries = append(c.entries, e)
+		c.waiting = time.Time{}
+		s.noteNew(plugin, c, &it)
 	})
 	return nil
+}
+
+// noteNew counts a new item as unread unless its view is shown, and
+// notifies unless the user is looking at it.
+func (s *Shell) noteNew(plugin string, c *chat, it *inboxItem) {
+	shown := s.page == pageInbox+plugin
+	if !shown {
+		c.unread++
+		s.badge()
+	}
+	if s.Notify == nil || (shown && (s.Active == nil || s.Active())) {
+		return
+	}
+	subtitle, body := "", it.Text
+	if it.Card != nil {
+		subtitle, body = it.Card.Title, it.Card.Body
+	}
+	go s.Notify(plugin, s.pluginTitle(plugin), plainText(subtitle, 60), plainText(body, 200))
+}
+
+// markRead clears plugin's unread count; its view is shown.
+func (s *Shell) markRead(plugin string) {
+	if c := s.chats[plugin]; c != nil && c.unread > 0 {
+		c.unread = 0
+		s.badge()
+	}
+}
+
+func (s *Shell) unread(plugin string) int {
+	if c := s.chats[plugin]; c != nil {
+		return c.unread
+	}
+	return 0
+}
+
+// badge shows the unread total on the app icon.
+func (s *Shell) badge() {
+	if s.SetBadge == nil {
+		return
+	}
+	n := 0
+	for _, c := range s.chats {
+		n += c.unread
+	}
+	text := ""
+	if n > 0 {
+		text = fmt.Sprint(min(n, 99))
+	}
+	go s.SetBadge(text)
+}
+
+// OpenInbox shows plugin's conversation view (a notification was clicked).
+func (s *Shell) OpenInbox(plugin string) {
+	s.post(func() {
+		if _, ok := s.installed(plugin); ok {
+			s.page = pageInbox + plugin
+		}
+	})
+}
+
+// plainText is markdown as one line of text, at most n runes.
+func plainText(md string, n int) string {
+	r := strings.NewReplacer("**", "", "__", "", "`", "", "#", "")
+	out := strings.Join(strings.Fields(r.Replace(md)), " ")
+	if rs := []rune(out); len(rs) > n {
+		out = string(rs[:n]) + "…"
+	}
+	return out
 }
 
 // OnSidecarState is the sidecar manager's state hook. A sidecar coming back
@@ -161,9 +329,16 @@ func (s *Shell) OnSidecarState(name string, st sidecar.Status) {
 	s.post(func() {
 		s.sidecars[name] = st
 		if st.State != sidecar.Running {
+			if c := s.chats[name]; c != nil {
+				c.waiting = time.Time{} // a stopped plugin replies to nothing
+			}
 			return
 		}
-		if c := s.chats[name]; c != nil {
+		c := s.chats[name]
+		if c == nil && s.App != nil && len(s.App.LoadInbox(name)) > 0 {
+			c = s.chat(name) // inputs saved before a restart go out too
+		}
+		if c != nil {
 			for _, e := range c.entries {
 				if e.out != nil && e.out.state == outFailed {
 					s.deliver(name, e.out)
@@ -183,6 +358,7 @@ func newID() string {
 func (s *Shell) sendInbox(plugin string, c *chat, text string) {
 	o := &outgoing{id: newID(), text: text, ts: time.Now()}
 	c.entries = append(c.entries, &chatEntry{out: o})
+	s.saveChat(plugin, c)
 	s.deliver(plugin, o)
 }
 
@@ -190,6 +366,7 @@ func (s *Shell) sendInbox(plugin string, c *chat, text string) {
 // repeated id as handled, so sending again is always safe.
 func (s *Shell) deliver(plugin string, o *outgoing) {
 	o.state = outSending
+	ch := s.chat(plugin)
 	calls := s.calls()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
@@ -201,6 +378,10 @@ func (s *Shell) deliver(plugin string, o *outgoing) {
 				return
 			}
 			o.state = outDelivered
+			s.saveChat(plugin, ch)
+			ch.waiting = time.Now()
+			// Redraw when the wait runs out, to drop the indicator.
+			time.AfterFunc(replyWait, func() { s.post(func() {}) })
 		})
 	}()
 }
@@ -226,6 +407,16 @@ func (s *Shell) cardAction(plugin string, it *inboxItem, action string) {
 func (s *Shell) reloadPlugins() {
 	recs, err := s.App.Plugins.List()
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Name < recs[j].Name })
+	avatars := map[string]*ui.Bitmap{}
+	for _, r := range recs {
+		if p := s.App.Plugins.AvatarPath(r); p != "" && !r.Incomplete {
+			if data, err := os.ReadFile(p); err == nil {
+				if b, err := ui.DecodeBitmap(data); err == nil {
+					avatars[r.Name] = b
+				}
+			}
+		}
+	}
 	st := map[string]sidecar.Status{}
 	for _, r := range recs {
 		if v, ok := s.App.Sidecars.Status(r.Name); ok {
@@ -237,7 +428,7 @@ func (s *Shell) reloadPlugins() {
 			s.notice = "无法读取插件列表：" + describe(err)
 			return
 		}
-		s.plugins = recs
+		s.plugins, s.avatars = recs, avatars
 		for k, v := range st {
 			s.sidecars[k] = v
 		}
@@ -268,9 +459,7 @@ func (s *Shell) pickPlugin() {
 		plan, err := s.App.PreparePlugin(context.Background(), path)
 		s.post(func() {
 			s.planBusy = false
-			if s.plan != nil {
-				s.App.DiscardPlugin(s.plan)
-			}
+			s.dropPlan()
 			s.plan = plan
 			if err != nil {
 				s.planErr = describeInstall(err)
@@ -280,17 +469,60 @@ func (s *Shell) pickPlugin() {
 }
 
 func (s *Shell) cancelPlan() {
-	if s.plan != nil {
+	s.dropPlan()
+	s.planErr = ""
+}
+
+// dropPlan clears the install card: a market's request is declined (the
+// app discards its plan), a picked file's plan is discarded.
+func (s *Shell) dropPlan() {
+	switch {
+	case s.planAnswer != nil:
+		s.planAnswer <- false
+	case s.plan != nil:
 		s.App.DiscardPlugin(s.plan)
 	}
-	s.plan, s.planErr = nil, ""
+	s.plan, s.planFrom, s.planAnswer = nil, "", nil
 }
+
+// ConfirmInstall shows a package a plugin market asks to install or update
+// in the install card and waits for the user's answer
+// (app.Config.ConfirmInstall). A newer request or a picked file replaces
+// it, declining it.
+func (s *Shell) ConfirmInstall(ctx context.Context, plugin string, plan *host.Plan) bool {
+	answer := make(chan bool, 1)
+	s.post(func() {
+		s.dropPlan()
+		s.plan, s.planFrom, s.planAnswer, s.planErr = plan, plugin, answer, ""
+	})
+	select {
+	case ok := <-answer:
+		return ok
+	case <-ctx.Done():
+		s.post(func() {
+			if s.planAnswer == answer {
+				s.plan, s.planFrom, s.planAnswer = nil, "", nil
+			}
+		})
+		return false
+	}
+}
+
+// PluginsChanged reloads the plugin list after a market or a preinstall
+// changed it (app.Config.PluginsChanged).
+func (s *Shell) PluginsChanged() { s.reloadPlugins() }
 
 // installPlan installs the checked package (Install discards the plan
 // whatever the outcome).
 func (s *Shell) installPlan() {
 	plan := s.plan
 	if plan == nil || !plan.OK() {
+		return
+	}
+	if s.planAnswer != nil {
+		// The market's request: the app installs it and the market reports.
+		s.planAnswer <- true
+		s.plan, s.planFrom, s.planAnswer, s.planErr = nil, "", nil, ""
 		return
 	}
 	s.planBusy, s.planErr = true, ""
@@ -329,6 +561,7 @@ func (s *Shell) uninstall(name string) {
 			}
 			delete(s.sidecars, name)
 			delete(s.chats, name)
+			go s.App.DropInbox(name, s.chatGen)
 			for k := range s.forms {
 				if strings.HasPrefix(k, name+"#") {
 					delete(s.forms, k)
@@ -339,7 +572,7 @@ func (s *Shell) uninstall(name string) {
 					delete(s.cards, k)
 				}
 			}
-			if s.page == pagePlugin+name || s.page == pageInbox+name {
+			if s.page == pagePlugin+name || s.page == pageInbox+name || strings.HasPrefix(s.page, pageView+name+"#") {
 				s.page = PagePlugins
 			}
 		})
@@ -386,6 +619,15 @@ func describeInstall(err error) string {
 	return msg
 }
 
+// pluginTitle is the name a plugin goes by in the window: its alcove.title,
+// or its package name without the scope.
+func (s *Shell) pluginTitle(name string) string {
+	if r, ok := s.installed(name); ok && r.Title != "" {
+		return r.Title
+	}
+	return displayName(name)
+}
+
 // displayName is a package name without its scope.
 func displayName(pkg string) string {
 	if i := strings.LastIndex(pkg, "/"); i >= 0 {
@@ -404,8 +646,11 @@ var capNames = map[string]string{
 	"workspace_hook":      "知道工作区的创建、打开与移除",
 	"provider_endpoint":   "提供模型服务地址",
 	"workspace_session":   "在自己管理的工作区里运行任务",
+	"workspace_task":      "请你选一个工作区来运行它的任务（每次都由你确认）",
 	"deep_link":           "处理 alcove:// 链接",
 	"policy_write":        "修改策略设置（例如关闭本地执行）",
+	"plugin_install":      "从插件市场安装和更新插件（每次都由你确认）",
+	"browser":             "在 Alcove 的浏览器里打开、阅读和操作网页（你能看到并随时接手）",
 }
 
 func capName(c string) string {
@@ -441,12 +686,30 @@ func (s *Shell) contributions(plugin, typ string) []sidecar.Contribution {
 			out = append(out, c)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	// In the order the plugin registered them (its ready lists them so).
+	seq := func(c sidecar.Contribution) int { return s.contribSeq[plugin+"#"+c.ID] }
+	sort.Slice(out, func(i, j int) bool {
+		if a, b := seq(out[i]), seq(out[j]); a != b {
+			return a < b
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
 // navItem is one plugin entry in the sidebar.
-type navItem struct{ page, title string }
+type navItem struct {
+	page, title string
+	icon        *ui.SVG
+	avatar      *ui.Bitmap // an assistant's picture, instead of icon
+}
+
+// navIcons are the sidebar_item icon names the sidebar knows; others get
+// the conversation icon.
+var navIcons = map[string]*ui.SVG{
+	"puzzle": icPuzzle, "chat": icChat, "inbox": icInbox, "cloud": icCloud,
+	"folder": icFolder, "file": icFile, "terminal": icTerminal, "gear": icGear,
+}
 
 // pluginNav lists the sidebar entries plugins add: their sidebar_item
 // contributions, and a conversation view for each plugin holding inbox that
@@ -459,6 +722,7 @@ func (s *Shell) pluginNav() []navItem {
 		for _, c := range s.contributions(r.Name, "sidebar_item") {
 			var it struct {
 				Title  string `json:"title"`
+				Icon   string `json:"icon"`
 				ViewID string `json:"viewId"`
 			}
 			json.Unmarshal(c.Raw, &it)
@@ -466,19 +730,46 @@ func (s *Shell) pluginNav() []navItem {
 				it.Title = displayName(r.Name)
 			}
 			page := pagePlugin + r.Name
-			if it.ViewID == "inbox" && hasCap(r, "inbox") {
+			switch {
+			case it.ViewID == "inbox" && hasCap(r, "inbox"):
 				page, toInbox = pageInbox+r.Name, true
+			case it.ViewID != "" && s.settingsPage(r.Name, it.ViewID) != nil:
+				page = pageView + r.Name + "#" + it.ViewID
 			}
 			if !seen[page] {
 				seen[page] = true
-				out = append(out, navItem{page, it.Title})
+				ic := navIcons[it.Icon]
+				if ic == nil {
+					ic = icChat
+				}
+				out = append(out, navItem{page: page, title: it.Title, icon: ic})
 			}
 		}
-		if hasCap(r, "inbox") && !toInbox {
-			out = append(out, navItem{pageInbox + r.Name, displayName(r.Name)})
+		if hasCap(r, "inbox") && !toInbox && s.avatars[r.Name] == nil {
+			out = append(out, navItem{page: pageInbox + r.Name, title: displayName(r.Name), icon: icChat})
 		}
 	}
 	return out
+}
+
+// assistants lists the plugins holding inbox that have an avatar: the
+// sidebar shows them apart, by picture and title, each opening its
+// conversation view.
+func (s *Shell) assistants() []navItem {
+	var out []navItem
+	for _, r := range s.plugins {
+		if b := s.avatars[r.Name]; b != nil && !r.Incomplete && hasCap(r, "inbox") {
+			out = append(out, navItem{page: pageInbox + r.Name, title: s.pluginTitle(r.Name), avatar: b})
+		}
+	}
+	return out
+}
+
+// avatar is a plugin's picture cropped to a circle size across.
+func avatar(c *ui.Context, b *ui.Bitmap, size float32) {
+	ui.Box(c).Size(size, size).Radius(size / 2).Clip().Shrink(0).Children(func() {
+		ui.Image(c, b).Fit(ui.Cover).Size(size, size)
+	})
 }
 
 // contribCard returns the click state of a card contribution, rebuilt when

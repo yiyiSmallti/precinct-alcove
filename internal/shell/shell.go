@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/egoist/mygo"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
@@ -60,28 +62,51 @@ type Shell struct {
 	Version string
 	// Updater checks for and installs new versions; nil hides updates.
 	Updater update.Updater
+	// NewWebView makes a page for the browser; nil: no browser.
+	NewWebView func() (*mygo.WebView, error)
+	// Notify shows a system notification for a new item in plugin's
+	// conversation view; SetBadge shows the unread total on the app icon
+	// ("" clears it); Active reports whether the window is in front. Nil:
+	// none of these.
+	Notify   func(plugin, title, subtitle, body string)
+	SetBadge func(text string)
+	Active   func() bool
 
-	mu         sync.Mutex
-	page       string
-	curWS      string                  // the workspace the sidebar shows
-	wsMenu     bool                    // the workspace switcher is open
-	index      map[string][]tasks.Task // tasks by workspace, as last read
-	workspaces []workspace.Workspace
-	views      map[string]*wsView // by workspace id
-	byRuntime  map[string]string  // runtime id → workspace id
-	creds      []credentials.Credential
-	settings   app.Settings
-	form       credForm
-	model      string // the model field being edited
-	notice     string // one line shown at the top, e.g. an error
-	startErr   string // why Alcove could not start; tasks are refused
-	diagBusy   bool
-	diagStatus string
-	contribs   map[string]sidecar.Contribution
-	updates    updatesState
+	mu          sync.Mutex
+	page        string
+	curWS       string                  // the workspace a new task goes to
+	curProj     string                  // the project the sidebar's switcher shows
+	scratchID   string                  // the workspace of tasks outside a project (最近会话)
+	wsMenu      bool                    // the workspace switcher is open
+	runMenu     bool                    // the run panel (model, effort, context) is open
+	ctxMenu     bool                    // the context panel (what the task's context holds) is open
+	effortPos   float64                 // the effort slider's position
+	effortAnim  float32                 // where its fill is drawn, gliding to the position
+	effortAt    time.Time               // when the fill was last drawn
+	index       map[string][]tasks.Task // tasks by workspace, as last read
+	workspaces  []workspace.Workspace
+	views       map[string]*wsView // by workspace id
+	byRuntime   map[string]string  // runtime id → workspace id
+	creds       []credentials.Credential
+	settings    app.Settings
+	form        credForm
+	picks       map[string]*modelPick // credential id → its open model picker
+	notice      string                // one line shown at the top, e.g. an error
+	startErr    string                // why Alcove could not start; tasks are refused
+	preparing   bool                  // 最近会话's workspace is being added on first start
+	newTaskH    float32               // the new task page's height in the last frame
+	scratchBusy bool                  // 最近会话 is moving to another folder
+	diagBusy    bool
+	diagStatus  string
+	contribs    map[string]sidecar.Contribution
+	contribSeq  map[string]int // when each was registered: the plugin's order
+	contribN    int
+	browsers    map[string]*browserTab // by workspace id
+	updates     updatesState
 
 	pluginsState
 	panels       panelState
+	runtimes     runtimesState
 	saves        transcriptSaves
 	prefs        prefsState
 	sidecarCalls sidecarCalls // nil: App.Sidecars
@@ -99,6 +124,7 @@ type wsView struct {
 	approvals     []*approval
 	questions     []*question
 	confirmRemove bool
+	browsing      bool // the browser pane shows
 }
 
 // taskView is one task: a dsh session of the workspace.
@@ -128,14 +154,17 @@ type question struct {
 }
 
 type credForm struct {
-	label, provider, baseURL, key string
-	err                           string
+	open                       bool // the form shows, under provider's row
+	label, baseURL, key, model string
+	provider                   string // the provider's Name
+	protocol                   string // a custom endpoint's protocol, by Name
+	err                        string
 }
 
 // New returns a shell for a; call Load once a is started.
 func New(a *app.App) *Shell {
 	return &Shell{App: a, Lang: "zh", views: map[string]*wsView{}, byRuntime: map[string]string{}, index: map[string][]tasks.Task{},
-		contribs: map[string]sidecar.Contribution{},
+		contribs: map[string]sidecar.Contribution{}, browsers: map[string]*browserTab{},
 		pluginsState: pluginsState{sidecars: map[string]sidecar.Status{}, busy: map[string]bool{},
 			forms: map[string]*settingsForm{}, chats: map[string]*chat{}, cards: map[string]*contribCard{}}}
 }
@@ -150,21 +179,70 @@ func (s *Shell) post(fn func()) {
 	fn()
 }
 
-// Load reads workspaces, credentials and settings, and opens the first
-// workspace (or the settings page when there is none, or no credential).
+// now runs fn under mu at once, on the caller's goroutine, and has the window
+// redraw. Unlike post, its effects are visible when it returns: the window's
+// Post only queues fn for the UI thread.
+func (s *Shell) now(fn func()) {
+	s.mu.Lock()
+	fn()
+	s.mu.Unlock()
+	if s.Post != nil {
+		s.Post(func() {})
+	}
+}
+
+// Load reads workspaces, credentials and settings and opens 最近会话, the
+// workspace of tasks outside a project. Without it, it adds it (slow: its
+// profile installs the bridge plugin), showing that it is being prepared
+// meanwhile, and falls back to the first workspace or the settings page if
+// that fails. Without a credential the new task page says where to add one.
 func (s *Shell) Load() {
 	s.reload()
 	s.post(func() {
-		switch {
-		case len(s.creds) == 0 || len(s.workspaces) == 0:
-			s.page, s.prefs.tab = PageSettings, tabModel
-		default:
-			s.page = pageWS + s.workspaces[0].ID
-		}
-		if len(s.workspaces) > 0 {
-			s.curWS = s.workspaces[0].ID
-		}
+		s.preparing = s.scratchID == ""
+		s.openFirst()
 	})
+	w, err := s.App.EnsureWorkspace(context.Background())
+	if w != nil {
+		s.reload()
+	}
+	s.post(func() {
+		s.preparing = false
+		if err != nil {
+			s.notice = "无法准备最近会话的文件夹：" + describe(err)
+		}
+		s.openFirst()
+	})
+}
+
+// openFirst shows 最近会话 (else the first workspace), or the model
+// settings when there is none and none is being prepared. It keeps a page
+// the user has gone to.
+func (s *Shell) openFirst() {
+	if s.page != "" && s.page != pageWS {
+		return
+	}
+	switch {
+	case s.scratchID != "":
+		s.page, s.curWS = pageWS+s.scratchID, s.scratchID
+	case len(s.workspaces) > 0:
+		s.page, s.curWS = pageWS+s.workspaces[0].ID, s.workspaces[0].ID
+	case s.preparing:
+		s.page = pageWS
+	default:
+		s.page, s.prefs.tab = PageSettings, tabModel
+	}
+}
+
+// projects are the workspaces but 最近会话's.
+func (s *Shell) projects() []workspace.Workspace {
+	var ps []workspace.Workspace
+	for _, w := range s.workspaces {
+		if w.ID != s.scratchID {
+			ps = append(ps, w)
+		}
+	}
+	return ps
 }
 
 // StartFailed records that the app failed to start: the window still opens
@@ -181,6 +259,7 @@ func (s *Shell) reload() {
 	wss, err1 := s.App.Workspaces.All()
 	creds, err2 := s.App.Creds.List()
 	st, err3 := s.App.Settings()
+	scratch, err4 := s.App.ScratchWorkspace()
 	idx := map[string][]tasks.Task{}
 	if err1 == nil {
 		s.App.MigrateTasks(wss)
@@ -189,9 +268,6 @@ func (s *Shell) reload() {
 		}
 	}
 	s.post(func() {
-		if s.model == s.settings.Model {
-			s.model = st.Model // not being edited: follow the saved value
-		}
 		s.workspaces, s.creds, s.settings = wss, creds, st
 		if err1 == nil {
 			s.index = idx
@@ -202,13 +278,23 @@ func (s *Shell) reload() {
 				s.addIndexed(v)
 			}
 		}
+		s.scratchID = ""
+		if scratch != nil {
+			s.scratchID = scratch.ID
+		}
 		if s.find(s.curWS) == nil {
-			s.curWS = ""
-			if len(wss) > 0 {
+			s.curWS = s.scratchID
+			if s.curWS == "" && len(wss) > 0 {
 				s.curWS = wss[0].ID
 			}
 		}
-		if err := errors.Join(err1, err2, err3); err != nil {
+		if s.find(s.curProj) == nil || s.curProj == s.scratchID {
+			s.curProj = ""
+			if ps := s.projects(); len(ps) > 0 {
+				s.curProj = ps[0].ID
+			}
+		}
+		if err := errors.Join(err1, err2, err3, err4); err != nil {
 			s.notice = err.Error()
 		}
 	})
@@ -227,11 +313,23 @@ func (s *Shell) OnEvent(runtimeID string, e alrt.Event) {
 		}
 		sid := events.SessionOf(e.Params)
 		t := v.tasks[sid]
+		if t == nil && !taskSession(sid) {
+			// A subagent's progress goes to the task that started it.
+			for _, tk := range v.tasks {
+				if tk.session.Apply(e.Method, e.Params) {
+					if e.Method == "subagent.finished" {
+						s.saveTranscript(v, tk)
+					}
+					return
+				}
+			}
+			return
+		}
 		if t == nil {
 			if !taskSession(sid) {
 				return // subagents and sessions Alcove did not start
 			}
-			t = s.addTask(v, tasks.Task{ID: sid, Source: sourceOf(v.ws, sid)})
+			t = s.addTask(v, tasks.Task{ID: sid, Source: s.sourceOf(v.ws, sid)})
 		}
 		s.apply(v, t, e)
 	})
@@ -249,11 +347,15 @@ func (s *Shell) OnExit(k alrt.Key, runtimeID string, err error) {
 		}
 		v.runtimeID = ""
 		for _, t := range v.tasks {
+			stopped := t.session.Exited()
 			if t.session.Running() {
 				t.session.Status = "idle"
 				if err != nil {
 					t.err = "运行时退出：" + err.Error()
 				}
+				stopped = true
+			}
+			if stopped {
 				s.saveTranscript(v, t)
 			}
 			t.stopping = false
@@ -325,7 +427,7 @@ func (s *Shell) Approve(ctx context.Context, runtimeID string, req alrt.Approval
 	a := &approval{req: req, answer: make(chan string, 1)}
 	ok := false
 	ws := s.runtimeWorkspace(runtimeID)
-	s.post(func() {
+	s.now(func() {
 		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.approvals = append(v.approvals, a)
 			ok = true
@@ -368,7 +470,7 @@ func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.
 	}
 	ok := false
 	ws := s.runtimeWorkspace(runtimeID)
-	s.post(func() {
+	s.now(func() {
 		if v := s.runtimeView(runtimeID, ws); v != nil {
 			v.questions = append(v.questions, q)
 			ok = true
@@ -400,7 +502,17 @@ func (s *Shell) AnswerQuestions(ctx context.Context, runtimeID string, req alrt.
 // Register, Update and Unregister are the sidecars' UI sink. Contributions
 // are kept for the plugin views.
 func (s *Shell) Register(plugin string, c sidecar.Contribution) error {
-	s.post(func() { s.contribs[plugin+"#"+c.ID] = c })
+	s.post(func() {
+		key := plugin + "#" + c.ID
+		if _, ok := s.contribSeq[key]; !ok {
+			if s.contribSeq == nil {
+				s.contribSeq = map[string]int{}
+			}
+			s.contribN++
+			s.contribSeq[key] = s.contribN
+		}
+		s.contribs[key] = c
+	})
 	return nil
 }
 
@@ -415,7 +527,11 @@ func (s *Shell) Update(plugin, id string, data json.RawMessage) error {
 }
 
 func (s *Shell) Unregister(plugin, id string) {
-	s.post(func() { delete(s.contribs, plugin+"#"+id) })
+	s.post(func() {
+		delete(s.contribs, plugin+"#"+id)
+		// A new version registers its pages afresh, in its own order.
+		delete(s.contribSeq, plugin+"#"+id)
+	})
 }
 
 // createWorkspace asks for a folder and adds it.
@@ -436,7 +552,36 @@ func (s *Shell) createWorkspace() {
 				return
 			}
 			s.notice = ""
-			s.page, s.curWS = pageWS+w.ID, w.ID
+			s.page, s.curWS, s.curProj = pageWS+w.ID, w.ID, w.ID
+		})
+	}()
+}
+
+// pickScratchDir asks for 最近会话's folder and moves it there.
+func (s *Shell) pickScratchDir() {
+	if s.PickFolder == nil {
+		return
+	}
+	go func() {
+		dir, err := s.PickFolder()
+		if err != nil || dir == "" {
+			return
+		}
+		s.post(func() { s.setScratchDir(dir) })
+	}()
+}
+
+// setScratchDir moves 最近会话 to dir ("" for the default folder).
+func (s *Shell) setScratchDir(dir string) {
+	s.scratchBusy = true
+	go func() {
+		err := s.App.SetScratchDir(context.Background(), dir)
+		s.reload()
+		s.post(func() {
+			s.scratchBusy = false
+			if err != nil {
+				s.notice = "无法更换默认文件夹：" + describe(err)
+			}
 		})
 	}()
 }
@@ -445,16 +590,19 @@ func (s *Shell) removeWorkspace(id string) {
 	go func() {
 		err := s.App.RemoveWorkspace(context.Background(), id)
 		s.reload()
+		if err == nil {
+			// After reload: a plugin can no longer make a new page for it.
+			s.closeBrowser(id)
+		}
 		s.post(func() {
 			if err != nil {
 				s.notice = "无法移除工作区：" + describe(err)
 				return
 			}
 			delete(s.views, id)
-			s.page = PageSettings
-			if len(s.workspaces) > 0 {
-				s.page = pageWS + s.workspaces[0].ID
-				s.curWS = s.workspaces[0].ID
+			if s.page == pageWS+id {
+				s.page = ""
+				s.openFirst()
 			}
 		})
 	}()
@@ -463,7 +611,13 @@ func (s *Shell) removeWorkspace(id string) {
 func (s *Shell) addCredential() {
 	f := s.form
 	go func() {
-		c, err := s.App.Creds.Add(f.label, f.provider, f.baseURL, f.key)
+		var c *credentials.Credential
+		var err error
+		if p, _ := providerNamed(f.provider); p.ID == credentials.Custom {
+			c, err = s.App.Creds.AddCustom(f.label, strings.TrimSpace(f.baseURL), protocolNamed(f.protocol), f.key, f.model)
+		} else {
+			c, err = s.App.Creds.Add(f.label, p.ID, f.baseURL, f.key, f.model)
+		}
 		if err == nil {
 			st, _ := s.App.Settings()
 			if st.DefaultCredential == "" {
@@ -478,6 +632,8 @@ func (s *Shell) addCredential() {
 				return
 			}
 			s.form = credForm{}
+			// Its models come next, from the service's own list.
+			s.openPick(*c)
 		})
 	}()
 }
@@ -507,14 +663,156 @@ func (s *Shell) saveSettings(st app.Settings) {
 	}()
 }
 
-// providerIDs lists the credential providers in a stable order.
-func providerIDs() []string {
-	var ids []string
-	for id := range credentials.Providers {
-		ids = append(ids, id)
+// modelPick is a credential's model picker on the settings page: the
+// service's models, fetched when it opens, and the ones ticked.
+type modelPick struct {
+	fetching bool
+	remote   []string
+	err      string
+	picked   []string // in the order ticked
+	filter   string
+	saving   bool
+}
+
+func (m *modelPick) has(model string) bool {
+	for _, p := range m.picked {
+		if p == model {
+			return true
+		}
 	}
-	sort.Strings(ids)
-	return ids
+	return false
+}
+
+func (m *modelPick) toggle(model string) {
+	for i, p := range m.picked {
+		if p == model {
+			m.picked = append(m.picked[:i], m.picked[i+1:]...)
+			return
+		}
+	}
+	m.picked = append(m.picked, model)
+}
+
+// openPick opens credential cr's model picker with its enabled models
+// ticked, and asks the service for the rest.
+func (s *Shell) openPick(cr credentials.Credential) {
+	if s.picks == nil {
+		s.picks = map[string]*modelPick{}
+	}
+	m := &modelPick{picked: append([]string(nil), credentials.EnabledModels(cr)...)}
+	s.picks[cr.ID] = m
+	if !credentials.CanList(cr) {
+		return
+	}
+	m.fetching = true
+	go func() {
+		list, err := s.App.Creds.RemoteModels(context.Background(), cr.ID)
+		s.post(func() {
+			m.fetching = false
+			if err != nil {
+				m.err = describe(err)
+				return
+			}
+			m.remote = list
+		})
+	}()
+}
+
+// savePick stores the ticked models of credential cr; when the model it
+// runs is no longer among them, it runs the first ticked one.
+func (s *Shell) savePick(cr credentials.Credential, m *modelPick) {
+	picked := append([]string(nil), m.picked...)
+	m.saving, m.err = true, ""
+	go func() {
+		err := s.App.Creds.SetModels(cr.ID, picked)
+		if err == nil && len(picked) > 0 {
+			cur, keep := credentials.ModelOf(cr), false
+			for _, p := range picked {
+				keep = keep || p == cur
+			}
+			if !keep {
+				err = s.App.Creds.SetModel(cr.ID, picked[0])
+			}
+		}
+		s.reload()
+		s.post(func() {
+			m.saving = false
+			if err != nil {
+				m.err = describe(err)
+				return
+			}
+			delete(s.picks, cr.ID)
+		})
+	}()
+}
+
+// switchModel makes model of credential id the one tasks run with.
+func (s *Shell) switchModel(id, model string) {
+	go func() {
+		st, err := s.App.Settings()
+		if err == nil && st.DefaultCredential != id {
+			st.DefaultCredential = id
+			err = s.App.SaveSettings(st)
+		}
+		if err == nil {
+			err = s.App.Creds.SetModel(id, model)
+		}
+		s.reload()
+		if err != nil {
+			s.post(func() { s.notice = "无法切换模型：" + describe(err) })
+		}
+	}()
+}
+
+// defaultCred is the credential tasks run with: the default one, else the
+// first; nil when there is none.
+func (s *Shell) defaultCred() *credentials.Credential {
+	for i := range s.creds {
+		if s.creds[i].ID == s.settings.DefaultCredential {
+			return &s.creds[i]
+		}
+	}
+	if len(s.creds) > 0 {
+		return &s.creds[0]
+	}
+	return nil
+}
+
+func providerNamed(name string) (credentials.Provider, bool) {
+	for _, p := range credentials.Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return credentials.Provider{}, false
+}
+
+// protocolNames lists the protocols a custom endpoint may speak as the
+// settings page names them.
+func protocolNames() []string {
+	names := make([]string, len(credentials.Protocols))
+	for i, p := range credentials.Protocols {
+		names[i] = p.Name
+	}
+	return names
+}
+
+// protocolNamed is the id of the protocol the settings page calls name.
+func protocolNamed(name string) string {
+	for _, p := range credentials.Protocols {
+		if p.Name == name {
+			return p.ID
+		}
+	}
+	return ""
+}
+
+// providerName is how the settings page names route id.
+func providerName(id string) string {
+	if p, ok := credentials.ProviderOf(id); ok {
+		return p.Name
+	}
+	return id
 }
 
 // describe turns an error into the line the user sees.

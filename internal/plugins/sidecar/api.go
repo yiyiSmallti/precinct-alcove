@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -40,10 +41,97 @@ type Services struct {
 	// running turn (workspace_session cap).
 	PromptSession func(ctx context.Context, plugin, workspaceID, sessionID, text string) (string, error)
 	CancelSession func(ctx context.Context, plugin, workspaceID, sessionID string) (bool, error)
+	// StartTask asks the user to run a task of the plugin's in one of
+	// their own workspaces and, once they agree, prompts it there as the
+	// plugin's session task-<id>, which PromptSession and CancelSession
+	// then accept (workspace_task cap). It returns when the user answered.
+	StartTask func(ctx context.Context, plugin string, req TaskRequest) (TaskStart, error)
 	// KeychainRef returns an opaque reference to a stored credential.
 	KeychainRef func(plugin, name string) (string, error)
 	// Log writes a line to the plugin's log.
 	Log func(plugin, level, msg string)
+	// Market serves the plugin_install capability.
+	Market Market
+	// Browser is Alcove's browser (browser cap).
+	Browser Browser
+}
+
+// Browser is Alcove's browser: one page per workspace, shown in a pane
+// beside the workspace's tasks, where the user watches what a plugin does
+// with it and can take over. Op is one of navigate (URL), back, forward,
+// reload, eval (Code: JavaScript, its value comes back), capture (a PNG of
+// the page), state and close; every op but state and close opens the page
+// and shows the pane. Results are BrowserState, except for eval and
+// capture.
+type Browser interface {
+	Browse(ctx context.Context, plugin, workspaceID string, op BrowserOp) (any, error)
+}
+
+// BrowserOp is one call on a workspace's page.
+type BrowserOp struct {
+	Op   string `json:"op"`
+	URL  string `json:"url,omitempty"`
+	Code string `json:"code,omitempty"`
+}
+
+// BrowserState is where a workspace's page is.
+type BrowserState struct {
+	Open         bool   `json:"open"`
+	URL          string `json:"url"`
+	Title        string `json:"title"`
+	Loading      bool   `json:"loading"`
+	CanGoBack    bool   `json:"canGoBack"`
+	CanGoForward bool   `json:"canGoForward"`
+	// Error is why the last load failed, if it did.
+	Error string `json:"error,omitempty"`
+}
+
+// Market is what a plugin market (plugin_install cap) asks the host for.
+// The host decides: it checks every package's signature against its own
+// trusted keys, and the user confirms each install or update.
+type Market interface {
+	// Plugins lists the installed plugins.
+	Plugins() ([]InstalledPlugin, error)
+	// TrustedKeys are the host's signing keys, base64, for checking an
+	// index before downloading from it.
+	TrustedKeys() []string
+	// Install checks the package at path (with path+".sig" beside it),
+	// asks the user, and installs it or updates the installed version.
+	Install(ctx context.Context, plugin, path string) (InstallResult, error)
+}
+
+// InstalledPlugin is what a market sees of an installed plugin.
+type InstalledPlugin struct {
+	Name       string `json:"name"`
+	Version    string `json:"version"`
+	Incomplete bool   `json:"incomplete,omitempty"`
+}
+
+// InstallResult is how plugins.install ended: Installed is false when the
+// user declined.
+type InstallResult struct {
+	Installed bool   `json:"installed"`
+	Name      string `json:"name,omitempty"`
+	Version   string `json:"version,omitempty"`
+}
+
+// TaskRequest is a plugin's task.start: Prompt is the session's first
+// message, Title what the user is asked about and the task is called.
+type TaskRequest struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Prompt string `json:"prompt"`
+	// Detail is what the user reads before deciding (markdown).
+	Detail string `json:"detail,omitempty"`
+}
+
+// TaskStart is how task.start ended. A task the user agreed to before (a
+// sidecar asking again after a restart) is accepted without asking.
+type TaskStart struct {
+	Accepted    bool   `json:"accepted"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	SessionID   string `json:"sessionId,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // Workspace is what sidecars see of a workspace.
@@ -72,7 +160,7 @@ type UISink interface {
 // Contribution is one declarative UI element. Raw is the whole object.
 type Contribution struct {
 	ID   string `json:"id"`
-	Type string `json:"type"` // settings_page | sidebar_item | card
+	Type string `json:"type"` // settings_page | sidebar_item | card | inbox_intro
 	Raw  json.RawMessage
 }
 
@@ -81,6 +169,7 @@ var contributionCaps = map[string]string{
 	"settings_page": "settings_page",
 	"sidebar_item":  "sidebar_item",
 	"card":          "inbox",
+	"inbox_intro":   "inbox",
 }
 
 // methodCaps gates host methods; methods not listed need no capability.
@@ -92,6 +181,18 @@ var methodCaps = map[string]string{
 	"workspace.detach":           "provider_endpoint",
 	"session.prompt":             "workspace_session",
 	"session.cancel":             "workspace_session",
+	"task.start":                 "workspace_task",
+	"plugins.list":               "plugin_install",
+	"plugins.trustedKeys":        "plugin_install",
+	"plugins.install":            "plugin_install",
+	"browser.navigate":           "browser",
+	"browser.back":               "browser",
+	"browser.forward":            "browser",
+	"browser.reload":             "browser",
+	"browser.eval":               "browser",
+	"browser.capture":            "browser",
+	"browser.state":              "browser",
+	"browser.close":              "browser",
 }
 
 type api struct {
@@ -190,6 +291,34 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 			ok, err = svc.CancelSession(ctx, p.name, q.WorkspaceID, q.SessionID)
 			res = map[string]any{"cancelled": ok}
 		}
+		if errors.Is(err, ErrNotPermitted) {
+			return nil, notGranted("%v", err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	case "task.start":
+		var q TaskRequest
+		if err := json.Unmarshal(raw, &q); err != nil || q.ID == "" || q.Title == "" || q.Prompt == "" {
+			return nil, invalid(errors.New("task.start needs id, title and prompt"))
+		}
+		if svc.StartTask == nil {
+			return nil, unavailable(method)
+		}
+		// The request waits for the user; it must not outlive the sidecar
+		// that made it (exited, restarted or uninstalled), or a stale
+		// confirmation could still start the task.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-a.pr.conn.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		res, err := svc.StartTask(ctx, p.name, q)
 		if errors.Is(err, ErrNotPermitted) {
 			return nil, notGranted("%v", err)
 		}
@@ -325,6 +454,44 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 		}
 		p.log(q.Level, q.Msg)
 		return map[string]any{}, nil
+	case "browser.navigate", "browser.back", "browser.forward", "browser.reload",
+		"browser.eval", "browser.capture", "browser.state", "browser.close":
+		var q struct {
+			WorkspaceID string `json:"workspaceId"`
+			BrowserOp
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || q.WorkspaceID == "" {
+			return nil, invalid(fmt.Errorf("%s needs workspaceId", method))
+		}
+		q.Op = strings.TrimPrefix(method, "browser.")
+		if (q.Op == "navigate" && q.URL == "") || (q.Op == "eval" && q.Code == "") {
+			return nil, invalid(fmt.Errorf("%s needs %s", method, map[bool]string{true: "url", false: "code"}[q.Op == "navigate"]))
+		}
+		if svc.Browser == nil {
+			return nil, unavailable(method)
+		}
+		return svc.Browser.Browse(ctx, p.name, q.WorkspaceID, q.BrowserOp)
+	case "plugins.list", "plugins.trustedKeys", "plugins.install":
+		if svc.Market == nil {
+			return nil, unavailable(method)
+		}
+		switch method {
+		case "plugins.list":
+			ps, err := svc.Market.Plugins()
+			if ps == nil {
+				ps = []InstalledPlugin{}
+			}
+			return ps, err
+		case "plugins.trustedKeys":
+			return map[string]any{"keys": svc.Market.TrustedKeys()}, nil
+		}
+		var q struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(raw, &q); err != nil || !filepath.IsAbs(q.Path) {
+			return nil, invalid(errors.New("plugins.install needs an absolute path"))
+		}
+		return svc.Market.Install(ctx, p.name, q.Path)
 	}
 	return nil, &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "unknown method " + method}
 }
