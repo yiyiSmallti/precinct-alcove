@@ -202,26 +202,56 @@ func TestOrgChain(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"values": v})
 		return b
 	}
+	// The page's status line each time it changes: when a step here fails,
+	// the order things happened in is what tells why.
+	var seenMu sync.Mutex
+	var seen []string
+	started := time.Now()
+	status := func() string {
+		text := pageText(page())
+		line := ""
+		for _, mark := range []string{"等待扫码登录", "等待管理员批准", "已批准", "未加入组织"} {
+			if l := lineWith(text, mark); l != "" {
+				line = fmt.Sprintf("%.60s", l)
+			}
+		}
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		if line != "" && (len(seen) == 0 || !strings.HasSuffix(seen[len(seen)-1], line)) {
+			seen = append(seen, fmt.Sprintf("+%s %s", time.Since(started).Round(100*time.Millisecond), line))
+		}
+		return text
+	}
 	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "join", values(map[string]any{"server_url": access, "device_name": "e2e 设备"}))
 	var signIn string
 	if err == nil {
-		err = waitFor(func() bool {
-			signIn = regexp.MustCompile(`https?://[^\s"\\]+/v1/access/wecom/authorize[^\s"\\]*`).FindString(pageText(page()))
+		if waitFor(func() bool {
+			signIn = regexp.MustCompile(`https?://[^\s"\\]+/v1/access/wecom/authorize[^\s"\\]*`).FindString(status())
 			return signIn != ""
-		}, 15*time.Second)
+		}, 30*time.Second) != nil {
+			err = errors.New("the settings page never showed the sign-in address")
+		}
 	}
 	if err == nil {
 		var resp *http.Response
 		if resp, err = http.Get(signIn); err == nil {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				err = fmt.Errorf("the sign-in round trip ended in %d at %s: %.300s", resp.StatusCode, resp.Request.URL.Host, body)
+			}
 		}
 	}
-	if err == nil {
-		err = waitFor(func() bool { return strings.Contains(pageText(page()), "等待管理员批准") }, 20*time.Second)
+	if err == nil && waitFor(func() bool { return strings.Contains(status(), "等待管理员批准") }, 30*time.Second) != nil {
+		err = errors.New("after signing in, the device never showed as waiting for approval")
 	}
 	r.step("扫码加入：设置页发起，企微登录后设备登记为待批准", err, "")
 	if err != nil {
-		t.Logf("settings page: %s", pageText(page()))
+		st, _ := a.Sidecars.Status(cloisterPlugin)
+		seenMu.Lock()
+		t.Logf("status line over time: %s\ncloister sidecar: %s, %d crashes, last error %q, stderr:\n%s\nsettings page:\n%s",
+			strings.Join(seen, " | "), st.State, st.Crashes, st.LastError, st.Stderr, pageText(page()))
+		seenMu.Unlock()
 		return
 	}
 
