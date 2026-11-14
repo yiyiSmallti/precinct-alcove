@@ -212,20 +212,25 @@ func TestPersonal(t *testing.T) {
 	}
 
 	// Both runtimes go away by themselves, before the reminder is due: gone
-	// from the runtime manager's list, and gone as processes.
+	// from the runtime manager's list, and gone as processes. A process list
+	// that could not be read is a failed step, not an empty list.
 	var alive []string
+	var psErr error
 	err = waitFor(func() bool {
-		alive, _ = runtimeProcesses(base.Node)
-		return strings.Contains(sidecarLog(), "exited after idle") && len(a.Runtimes.List()) == 0 && len(alive) == 0
+		alive, psErr = runtimeProcesses(base.Node)
+		return strings.Contains(sidecarLog(), "exited after idle") && len(a.Runtimes.List()) == 0 && (psErr != nil || len(alive) == 0)
 	}, 60*time.Second)
 	if err != nil && len(alive) > 0 {
 		err = fmt.Errorf("still running: %s", strings.Join(alive, "; "))
 	}
+	if err == nil {
+		err = processCheckFailed(psErr)
+	}
 	if err == nil && view.has("该喝水了") {
 		err = fmt.Errorf("the reminder arrived %s after it was asked for, before the runtimes were gone", time.Since(asked).Round(time.Second))
 	}
-	r.step(fmt.Sprintf("空闲后运行时退出：daily 回合进程与工作区运行时都不在了，进程也没有了（验收里空闲时长设为 %s，默认 10 分钟）", idle), err,
-		fmt.Sprintf("设提醒后 %s", time.Since(asked).Round(time.Second)))
+	r.step(fmt.Sprintf("空闲后运行时退出：daily 回合进程与工作区运行时都不在了（验收里空闲时长设为 %s，默认 10 分钟）", idle), err,
+		fmt.Sprintf("设提醒后 %s；%s", time.Since(asked).Round(time.Second), processDetail(psErr)))
 	if err != nil {
 		return
 	}
@@ -233,7 +238,7 @@ func TestPersonal(t *testing.T) {
 	launches := strings.Count(sidecarLog(), "turn process attached")
 	err = waitFor(func() bool { return view.has("该喝水了") }, 3*time.Minute)
 	took := time.Since(asked)
-	alive, _ = runtimeProcesses(base.Node)
+	alive, psErr = runtimeProcesses(base.Node)
 	switch {
 	case err != nil:
 	case took < 110*time.Second || took > 150*time.Second:
@@ -242,21 +247,47 @@ func TestPersonal(t *testing.T) {
 		err = errors.New("the turn process was started again for the reminder")
 	case len(a.Runtimes.List()) != 0 || len(alive) != 0:
 		err = fmt.Errorf("a runtime was running when the reminder showed up: %s", strings.Join(alive, "; "))
+	default:
+		err = processCheckFailed(psErr)
 	}
-	r.step("提醒到点弹出：由边车自己显示，没有拉起任何运行时", err, fmt.Sprintf("设提醒后 %s", took.Round(time.Second)))
+	r.step("提醒到点弹出：由边车自己显示，没有拉起任何运行时", err, fmt.Sprintf("设提醒后 %s；%s", took.Round(time.Second), processDetail(psErr)))
+}
+
+// errNoProcessList is runtimeProcesses on a system without ps.
+var errNoProcessList = errors.New("this system has no ps")
+
+// processCheckFailed is the error of a process list that should have been
+// readable and was not; a system that has none is reported, not failed.
+func processCheckFailed(err error) error {
+	if err == nil || errors.Is(err, errNoProcessList) {
+		return nil
+	}
+	return fmt.Errorf("the process list could not be read, so nothing says the runtimes are gone: %w", err)
+}
+
+// processDetail says in the report what the process check amounts to.
+func processDetail(err error) string {
+	switch {
+	case err == nil:
+		return "进程列表里这个进程下面没有 node"
+	case errors.Is(err, errNoProcessList):
+		return "进程层面没有查（这个系统没有 ps），只看了运行时列表"
+	}
+	return "进程层面没查成"
 }
 
 // runtimeProcesses lists the Node processes under this one (a dsh runtime is
 // a Node process started from node): the operating system's view, next to
-// what the runtime manager believes. Windows has no ps; nothing is listed
-// there.
+// what the runtime manager believes. It is an error when ps cannot be run or
+// its output does not show this very process, since then an empty answer
+// would mean nothing; errNoProcessList on Windows, which has no ps.
 func runtimeProcesses(node string) ([]string, error) {
 	if runtime.GOOS == "windows" {
-		return nil, nil
+		return nil, errNoProcessList
 	}
 	out, err := exec.Command("ps", "-eo", "pid=,ppid=,command=").Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ps: %w", err)
 	}
 	kids, cmds := map[int][]int{}, map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -268,6 +299,9 @@ func runtimeProcesses(node string) ([]string, error) {
 		ppid, _ := strconv.Atoi(f[1])
 		kids[ppid] = append(kids[ppid], pid)
 		cmds[pid] = strings.Join(f[2:], " ")
+	}
+	if _, ok := cmds[os.Getpid()]; !ok {
+		return nil, fmt.Errorf("ps: its output does not list this process (%d)", os.Getpid())
 	}
 	var found []string
 	for todo := kids[os.Getpid()]; len(todo) > 0; todo = todo[1:] {

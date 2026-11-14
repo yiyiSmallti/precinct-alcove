@@ -36,6 +36,12 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# 调用者给的路径可以是相对的；下面会切目录，先按当前目录定成绝对路径。
+abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+for v in DOVETAIL_DAILY_TGZ ALCOVE_E2E_NODE ALCOVE_E2E_DSH ALCOVE_E2E_TOOLDIR; do
+  if [ -n "${!v:-}" ]; then export "$v=$(abs "${!v}")"; fi
+done
+
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) PLAT=darwin-arm64 ;;
   Darwin-x86_64) PLAT=darwin-amd64 ;;
