@@ -44,22 +44,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Cache the locked dsh runtime
+      # The runtime under test is what the installer ships (installer/
+      # stage-runtime.sh): dsh and pnpm at their locked versions. The pnpm
+      # set up above is the one precinct-dovetail builds with, and only
+      # builds the daily package; the chain runs dsh with the shipped one.
+      - name: Cache the shipped runtime (dsh 0.2.1-rc.5, pnpm 10.28.0)
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/dsh
-          key: dsh-0.2.1-rc.5-pnpm-10.28.0
-      - name: Install dsh 0.2.1-rc.5 and the capture tools
+          path: ${{ runner.temp }}/runtime
+          key: personal-runtime-dsh-0.2.1-rc.5-pnpm-10.28.0
+      - name: Install the shipped runtime and the capture tools
         run: |
-          if [ ! -f "$RUNNER_TEMP/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
-            mkdir -p "$RUNNER_TEMP/dsh" && cd "$RUNNER_TEMP/dsh"
+          if [ ! -x "$RUNNER_TEMP/runtime/node_modules/.bin/pnpm" ]; then
+            mkdir -p "$RUNNER_TEMP/runtime" && cd "$RUNNER_TEMP/runtime"
             npm init -y >/dev/null
-            npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5
+            npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5 pnpm@10.28.0
           fi
           sudo apt-get install -y --no-install-recommends tcpdump socat >/dev/null
       - name: Personal chain with a capture of everything it sends
         env:
-          ALCOVE_E2E_DSH: ${{ runner.temp }}/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js
+          ALCOVE_E2E_DSH: ${{ runner.temp }}/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
+          ALCOVE_E2E_TOOLDIR: ${{ runner.temp }}/runtime/node_modules/.bin
           DOVETAIL_DIR: ${{ github.workspace }}/.deps/precinct-dovetail
           PERSONAL_NETTRACE: 1
         run: ALCOVE_E2E_NODE=$(command -v node) e2e/personal.sh
