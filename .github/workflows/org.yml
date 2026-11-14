@@ -1,0 +1,98 @@
+name: org
+
+# The organisation edition end to end, first stretch (Charter
+# mvp-architecture 7.8): one Alcove core with the real daily and cloister
+# plugins against a real Cloister and a real Gatehouse. It checks out
+# precinct-dovetail, precinct-cloister and precinct-gatehouse with read-only
+# deploy keys (secrets DOVETAIL_DEPLOY_KEY, CLOISTER_DEPLOY_KEY,
+# GATEHOUSE_DEPLOY_KEY); pull requests that cannot read the secrets (forks,
+# Dependabot) do not run it.
+on:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'bridge/**'
+      - 'e2e/org.sh'
+      - '.github/workflows/org.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: org-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  chain:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: yiyiSmallti/precinct-dovetail
+          ssh-key: ${{ secrets.DOVETAIL_DEPLOY_KEY }}
+          path: .deps/precinct-dovetail
+      - uses: actions/checkout@v4
+        with:
+          repository: yiyiSmallti/precinct-cloister
+          ssh-key: ${{ secrets.CLOISTER_DEPLOY_KEY }}
+          path: .deps/precinct-cloister
+      - uses: actions/checkout@v4
+        with:
+          repository: yiyiSmallti/precinct-gatehouse
+          ssh-key: ${{ secrets.GATEHOUSE_DEPLOY_KEY }}
+          path: .deps/precinct-gatehouse
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .deps/precinct-dovetail/bundles/daily-tools/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Cloister's dependencies
+        working-directory: .deps/precinct-cloister
+        run: npm ci
+      # The runtime under test is what the installer ships (installer/
+      # stage-runtime.sh): dsh and pnpm at their locked versions. The pnpm
+      # set up above is the one precinct-dovetail builds with, and only
+      # builds the plugin packages.
+      - name: Cache the shipped runtime (dsh 0.2.1-rc.5, pnpm 10.28.0)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/runtime
+          key: personal-runtime-dsh-0.2.1-rc.5-pnpm-10.28.0
+      - name: Install the shipped runtime
+        run: |
+          if [ ! -x "$RUNNER_TEMP/runtime/node_modules/.bin/pnpm" ]; then
+            mkdir -p "$RUNNER_TEMP/runtime" && cd "$RUNNER_TEMP/runtime"
+            npm init -y >/dev/null
+            npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5 pnpm@10.28.0
+          fi
+      - name: Organisation chain against a real Cloister and a real Gatehouse
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+          ALCOVE_E2E_DSH: ${{ runner.temp }}/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
+          ALCOVE_E2E_TOOLDIR: ${{ runner.temp }}/runtime/node_modules/.bin
+          DOVETAIL_DIR: ${{ github.workspace }}/.deps/precinct-dovetail
+          CLOISTER_DIR: ${{ github.workspace }}/.deps/precinct-cloister
+          GATEHOUSE_DIR: ${{ github.workspace }}/.deps/precinct-gatehouse
+        run: ALCOVE_E2E_NODE=$(command -v node) e2e/org.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-report-org
+          path: e2e/report/org-chain.md
