@@ -38,6 +38,15 @@ Alcove 核心不含任何 Cloister 代码，也不含日常 bot。
 
 ## 状态
 
-设计阶段。MVP 只做 Windows，macOS 为不承诺的开发构建。第一步是为期一周的技术验证：MyGo 原生模式在低配基线机上的表现、中文输入法、VDI 下的 GPU 绘制、dsh 运行时的冷启动与内存、完整构建安装包的体积、插件子进程的常驻开销。
+首期开发中。平台为 Windows 10+ x64 与 macOS 13+（[ADR 0002](https://github.com/yiyiSmallti/precinct-charter/blob/main/docs/adr/0002-macos-joins-the-mvp.md)）。
+
+已有：对话与运行时、插件宿主与边车、市场与预装（`dovetail`、`daily`、`cloister`）、组织工作区、诊断包。验收是 `e2e/` 下的 Go 测试（`go test -tags e2e ./e2e/`，要 `ALCOVE_E2E_NODE` 与 `ALCOVE_E2E_DSH`），报告写到 `e2e/report/`，这个目录不入库。CI 在 Linux 上跑同一条命令，但日常 bot 几套要 `DOVETAIL_DAILY_TGZ`（打好的 `@precinct/daily`）、市场一套要 precinct-dovetail 的检出，CI 里没有，所以这几套在 CI 里是跳过的，只在本机跑过。0.1.0 的 macOS 与 Windows 安装包在基线机上验过，见 [安装包验证](docs/validation/2026-11-02-packages.md)。
+
+还没做：
+
+- Developer ID 公证与 Windows 代码签名（没有证书；`installer/build.sh` 的 `ALCOVE_SIGN` 可以用自己的证书签名）。
+- 自动更新：代码已在，首期安装包不配更新源（PRD 0.3）。
+- 安装包瘦身之后的 Windows 安装包还没有重新打和验。
+- Windows 上的托盘、中文输入法、讲述人、远程桌面未测。
 
 许可：MIT。
