@@ -532,32 +532,26 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("退出组织：组织工作区的文件夹从本机删掉，工作区不再归组织", err, "")
 	after := 0
-	_, grace := departureGrace()
 	left := time.Now()
 	if err == nil {
 		err = waitFor(func() bool {
 			after, _ = gw.chat(token, "ping")
 			return after == http.StatusUnauthorized
-		}, grace)
+		}, departureLimit)
 		if err != nil {
 			err = fmt.Errorf("after leaving, the gateway still answers %d to the old token", after)
 		}
 	}
-	r.step(fmt.Sprintf("退出后旧的网关令牌失效（%s 之内）", grace), err, fmt.Sprintf("退出前 %d；退出后 %s 起网关答 %d", before, time.Since(left).Round(time.Second), after))
+	r.step(fmt.Sprintf("退出后旧的网关令牌失效（%s 之内）", departureLimit), err, fmt.Sprintf("退出前 %d；退出后 %s 起网关答 %d", before, time.Since(left).Round(time.Second), after))
 }
 
-// departureGrace is how long a member's gateway token may go on working
-// after they left: the policy cache Gatehouse is run with here (how long it
-// trusts an answer from Cloister before asking again), and the limit the
-// last step holds it to.
-//
-// The cache is Gatehouse's own default, not a value shortened for the test:
-// what is checked is what a deployment that changes nothing gets, and the
-// report then says how long that window is. The limit is the cache plus
-// room for the next request to notice.
-func departureGrace() (policyCache string, limit time.Duration) {
-	return "60s", 90 * time.Second
-}
+// departureLimit is how long a member's gateway token may go on working
+// after they left. Gatehouse here runs with its default policy cache (how
+// long it trusts an answer from Cloister before asking again), not a value
+// shortened for the test: what is checked is what a deployment that changes
+// nothing gets. That default is a few seconds; the limit adds room for the
+// next request to notice.
+const departureLimit = 10 * time.Second
 
 // enrollDevice joins the organisation as one more device of the member the
 // stand-in WeCom signs in, has the admin approve it, and returns its id and
@@ -715,7 +709,6 @@ type gatehouse struct {
 // Gatehouse takes its redaction rules from its own configuration; the
 // organisation policy's redaction block does not reach it.
 func startGatehouse(dir string, cloud map[string]string, provider string) (*gatehouse, error) {
-	cache, _ := departureGrace()
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "words.txt"), []byte(orgCustomer+"\n"), 0o644)
 	plugin := func(name, kind string) string {
@@ -734,8 +727,7 @@ plugins:
   mode_by_target: { local: audit, external: mask }
   categories: { phone: mask, term: mask }
   dictionary: %q
-org: { policy_cache: %s }
-`, cloud["ALCOVE_E2E_GATEWAY_LISTEN"], dir, provider, plugin("cloister", "auth_policy"), plugin("cloister-audit", "audit_sink"), filepath.Join(dir, "words.txt"), cache)
+`, cloud["ALCOVE_E2E_GATEWAY_LISTEN"], dir, provider, plugin("cloister", "auth_policy"), plugin("cloister-audit", "audit_sink"), filepath.Join(dir, "words.txt"))
 	file := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(file, []byte(cfg), 0o600); err != nil {
 		return nil, err
