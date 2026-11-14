@@ -51,6 +51,13 @@ func (r *report) step(name string, err error, detail string) {
 	r.lines = append(r.lines, fmt.Sprintf("| %s | %s | %s |", name, status, strings.ReplaceAll(detail, "|", "/")))
 }
 
+// skip records a step that could not be checked in this run, so that the
+// report does not read as if it had passed.
+func (r *report) skip(name, why string) {
+	r.t.Logf("%s: not checked: %s", name, why)
+	r.lines = append(r.lines, fmt.Sprintf("| %s | SKIP | %s |", name, strings.ReplaceAll(why, "|", "/")))
+}
+
 func (r *report) write(env string) {
 	os.MkdirAll("report", 0o755)
 	body := "# " + r.title + "\n\n" + env + "\n\n| 步骤 | 结果 | 说明 |\n| --- | --- | --- |\n" + strings.Join(r.lines, "\n") + "\n"

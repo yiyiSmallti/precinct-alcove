@@ -52,7 +52,7 @@ e2e/                       端到端脚本与报告模板
   - 宿主不可达或握手失败时监听器交给下一个（即 dsh 默认的 `unavailable`），不放行。
   - 每个审批结果与回答追加一行到 `<数据目录>/logs/decisions.jsonl`（PRD F3）。
 - 模型端点：dsh 自带 DeepSeek 适配器讲 Anthropic Messages API。指向 OpenAI 兼容端点（含本机 Gatehouse，`http://127.0.0.1:7788/v1`）时，在 profile patch 里配 `@deepseek-ai/dsh-llm-pi-ai` 的 `openai-completions` 路由，静态请求头 `X-Gatehouse-Source: alcove`。
-- 空闲：最后一个会话事件后计时，默认 600 s；钉住则不退。
+- 空闲：最后一个会话事件后计时，默认 600 s；钉住则不退。`app.Config.RuntimeIdle` 可以改这个时长，目前只有整链验收用它（缩到 10 s），界面和策略里还没有入口。
 - 退出：先 `shutdown` RPC，5 s 后强杀；记录会话 JSONL 是否完整（文件尾校验）。
 
 ### 3.2 插件包与宿主扩展协议 v1
