@@ -57,8 +57,20 @@ func (f flow) String() string {
 // stands for is the delivery checklist's "安装与使用全程无任何对外流量（模型 API
 // 除外）"; model is the model endpoint the user configured.
 func allowedFlow(f flow, model netip.AddrPort) bool {
-	// TODO(human): decide which flows are allowed.
-	return false
+	// The one exception the rule names: connections to the model endpoint,
+	// address and port both. Another port on the same host is another
+	// service.
+	if f.Proto == "tcp" && f.Dst == model.Addr() && f.Port == model.Port() {
+		return true
+	}
+	// What the kernel says on the link when an interface comes up (router
+	// solicitations, listener reports, duplicate address detection): never
+	// routed past the link, and nothing the application sent.
+	//
+	// Everything else is refused, a DNS question included: a name that was
+	// looked up is a call that was about to be made, whether or not it went
+	// through.
+	return f.Proto == "icmpv6" && f.Dst.IsLinkLocalMulticast()
 }
 
 // readCapture lists what the interface with address mac sent, from a pcap
