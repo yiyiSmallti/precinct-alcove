@@ -8,8 +8,9 @@
 // device → a folder becomes an organisation workspace → a turn there goes
 // out through the gateway → a phone number and a customer name leave as
 // placeholders and come back as themselves → the organisation's audit holds
-// categories and counts only → leaving takes the workspace away and kills
-// the gateway token.
+// categories and counts only → another device takes the workspace over and
+// this one can no longer write to it, until it gets it back → leaving takes
+// the workspace away and kills the gateway token.
 //
 // Only the model provider and WeCom are stand-ins. The provider keeps what
 // it was sent, which is the evidence of what left for the outside.
@@ -27,7 +28,11 @@
 //     placeholders;
 //   - the audit kept values or placeholders: its record is searched for both;
 //   - a gateway token that outlives membership: it is used once before
-//     leaving (accepted) and again afterwards (refused).
+//     leaving (accepted) and again afterwards (refused);
+//   - "read-only" that is only the plugin no longer uploading: while another
+//     device holds the workspace, the model here is told to write a file and
+//     then to ask for full access, and with an answerer that would say yes
+//     to anything, no file may appear and nothing may be asked.
 //
 // Not here yet: the conversation with the bot in WeCom, cloud tasks, the
 // switch of the bot's primary environment. e2e/org.sh starts everything and
@@ -43,6 +48,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +77,9 @@ const (
 	// orgMarker is in the message next to the two values and is nothing a
 	// gateway would mask: the provider finds the user's message by it.
 	orgMarker = "回个电话"
+	// orgWrite in a message is followed by the name of a file the model is
+	// to write in the workspace.
+	orgWrite = "ORGWRITE "
 )
 
 // placeholder is what the gateway puts in place of a value: {{KIND_xxxxxxxx}}.
@@ -111,6 +120,36 @@ func TestOrgChain(t *testing.T) {
 		}
 		return ""
 	}
+	// A message that names a file to write (orgWrite) has the model write
+	// it, then create a second one from the shell, and when that is refused,
+	// ask for full access to run the very same command: the ways a runtime
+	// could still change the folder. The plain attempt comes first because
+	// that is how a model gets there, and because dsh takes a request for
+	// more access as being about a command the sandbox has just turned down.
+	provider.Tool = func(parts []string, results int) *fakeopenai.ToolCall {
+		name := ""
+		for _, p := range parts {
+			if m := regexp.MustCompile(orgWrite + `(\S+)`).FindStringSubmatch(p); m != nil {
+				name = m[1]
+			}
+		}
+		shell, touch := "bash", "touch "+name+".shell"
+		if runtime.GOOS == "windows" {
+			shell, touch = "pwsh", "New-Item -ItemType File -Force -Path '"+name+".shell' | Out-Null"
+		}
+		switch {
+		case name == "":
+			return nil
+		case results == 0:
+			return &fakeopenai.ToolCall{Name: "write", Args: map[string]any{"file_path": name, "content": "written by the model\n"}}
+		case results == 1:
+			return &fakeopenai.ToolCall{Name: shell, Args: map[string]any{"command": touch, "description": "create a file"}}
+		case results == 2:
+			return &fakeopenai.ToolCall{Name: shell, Args: map[string]any{"command": touch, "description": "create a file",
+				"sandbox_permissions": "danger-full-access", "justification": "e2e: asks for full access"}}
+		}
+		return nil
+	}
 	personal, err := fakemodel.Start(0)
 	if err != nil {
 		t.Fatal(err)
@@ -132,11 +171,14 @@ func TestOrgChain(t *testing.T) {
 	view := &inboxView{items: map[string]map[string]any{}}
 	rec := &recorder{ui: map[string]sidecar.Contribution{}}
 	dataDir := filepath.Join(work, "data")
+	// It agrees to whatever it is asked: if a write is ever put to the user
+	// while the workspace is held elsewhere, the write goes through and shows.
+	answers := &scriptedAnswerer{outcome: "allowed-once"}
 	a, err := app.New(app.Config{
 		DataDir: dataDir, AlcoveVersion: "0.1.0",
 		Node: base.Node, DSHBin: base.Bin, ToolDirs: base.ToolDirs, BridgeTgz: bridgeTgz,
 		TrustedKeys: []ed25519.PublicKey{pub}, Secrets: &memSecrets{m: map[string][]byte{}},
-		Answerer: &scriptedAnswerer{outcome: "allowed-once"}, SidecarUI: rec, Inbox: view.post,
+		Answerer: answers, SidecarUI: rec, Inbox: view.post,
 	})
 	if err == nil {
 		err = a.Start(ctx)
@@ -165,6 +207,7 @@ func TestOrgChain(t *testing.T) {
 		"PRECINCT_CLOISTER_BOT_URL=" + cloud["CLOISTER_E2E_BOT"],
 		"PRECINCT_CLOISTER_SYNC_URL=" + cloud["CLOISTER_E2E_SYNC"],
 		"PRECINCT_CLOISTER_PENDING_POLL=300ms",
+		"PRECINCT_CLOISTER_LEASE_RENEW=2s",
 	}
 	logs := func() string {
 		rec.mu.Lock()
@@ -396,6 +439,77 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("组织的审计里有这次调用，只有类别与计数", err, strings.TrimSpace(fmt.Sprintf("%.300s", raw)))
 
+	// Another of the member's devices takes the workspace over. From then on
+	// this one may read it and nothing more: the model's write does not
+	// land, and its request for full access is turned down without the user
+	// being asked.
+	exists := func(name string) bool { _, err := os.Stat(filepath.Join(dir, name)); return err == nil }
+	asked := func() int { answers.mu.Lock(); defer answers.mu.Unlock(); return len(answers.approvals) }
+	write := func(sid, name string) error {
+		p, err := a.OpenWorkspace(ctx, w.ID)
+		if err != nil {
+			return err
+		}
+		if _, err = p.PromptText(ctx, sid, "把结论记下来。"+orgWrite+name); err != nil {
+			return err
+		}
+		wctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		return p.Wait(wctx, sid)
+	}
+	syncURL := cloud["CLOISTER_E2E_SYNC"]
+	other, otherToken, err := enrollDevice(access, admin, "另一台设备")
+	var spaces []map[string]any
+	if err == nil {
+		_, err = adminCall(http.MethodGet, syncURL+"/v1/sync/workspaces", otherToken, nil, &spaces)
+	}
+	if err == nil && len(spaces) != 1 {
+		err = fmt.Errorf("%d organisation workspaces, want the one made above", len(spaces))
+	}
+	lease := ""
+	var taken struct {
+		LeaseToken string `json:"lease_token"`
+	}
+	if err == nil {
+		lease = fmt.Sprintf("%s/v1/leases/%s", syncURL, url.PathEscape(fmt.Sprintf("workspace:%v", spaces[0]["workspace_id"])))
+		_, err = adminCall(http.MethodPost, lease+"/reclaim", otherToken, map[string]any{"to": map[string]any{"kind": "device", "id": other}, "reason": "e2e：在另一台设备上接着做"}, &taken)
+	}
+	if err == nil && waitFor(func() bool { return strings.Contains(pageText(page()), "另一台设备在写，本机只读") }, 20*time.Second) != nil {
+		err = errors.New("the settings page never showed the workspace as held by another device")
+	}
+	r.step("另一台设备把组织工作区接过去：插件显示本机只读", err, "")
+	if err != nil {
+		return
+	}
+	before0 := asked()
+	err = write("org-chain-held", "held.txt")
+	switch {
+	case err != nil:
+	case exists("held.txt"):
+		err = errors.New("the model's write landed in a workspace another device holds")
+	case exists("held.txt.shell"):
+		err = errors.New("the model wrote from the shell, on its own or with full access")
+	case asked() != before0:
+		err = fmt.Errorf("the user was asked %d time(s) to let it write", asked()-before0)
+	}
+	r.step("别处持有期间本机只读：模型写文件写不进去，要求提权也不问用户、直接不给", err, "")
+
+	// It gives the workspace back; this device takes it again and can write.
+	_, err = adminCall(http.MethodPost, lease+"/release", otherToken, map[string]any{"lease_token": taken.LeaseToken}, nil)
+	if err == nil && waitFor(func() bool { return strings.Contains(pageText(page()), "本机可写") }, 30*time.Second) != nil {
+		err = errors.New("the lease was released and this device never showed the workspace as writable again")
+	}
+	if err == nil {
+		err = write("org-chain-back", "back.txt")
+	}
+	if err == nil && !exists("back.txt") {
+		err = errors.New("with the lease back, the model's write still did not land")
+	}
+	r.step("写入权回到本机后又能写", err, "")
+	if err != nil {
+		return
+	}
+
 	// Leaving. The gateway token of the workspace is used once before, so
 	// that its refusal afterwards means something.
 	tokenFile, _ := os.ReadFile(filepath.Join(dataDir, "cloister", "gateway", w.ID+".credentials.yaml"))
@@ -443,6 +557,46 @@ func TestOrgChain(t *testing.T) {
 // room for the next request to notice.
 func departureGrace() (policyCache string, limit time.Duration) {
 	return "60s", 90 * time.Second
+}
+
+// enrollDevice joins the organisation as one more device of the member the
+// stand-in WeCom signs in, has the admin approve it, and returns its id and
+// its organisation token: a device that exists only as HTTP calls.
+func enrollDevice(access, admin, name string) (id, token string, err error) {
+	const callback = "127.0.0.1:53682"
+	client := &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Host == callback {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}}
+	resp, err := client.Get(access + "/v1/access/wecom/authorize?redirect_uri=" + url.QueryEscape("http://"+callback+"/cb") + "&state=s")
+	if err != nil {
+		return "", "", err
+	}
+	resp.Body.Close()
+	loc, err := resp.Location()
+	if err != nil {
+		return "", "", fmt.Errorf("the sign-in did not come back with a code: %d", resp.StatusCode)
+	}
+	var joined struct {
+		DeviceID     string `json:"device_id"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if _, err = adminCall(http.MethodPost, access+"/v1/access/join", "", map[string]any{"code": loc.Query().Get("code"),
+		"device": map[string]any{"name": name, "platform": "macos"}}, &joined); err != nil {
+		return "", "", err
+	}
+	if _, err = adminCall(http.MethodPost, access+"/v1/admin/devices/"+joined.DeviceID+"/approve", admin, nil, nil); err != nil {
+		return "", "", err
+	}
+	var grant struct {
+		OrgToken string `json:"org_token"`
+	}
+	if _, err = adminCall(http.MethodPost, access+"/v1/access/refresh", "", map[string]any{"refresh_token": joined.RefreshToken}, &grant); err != nil {
+		return "", "", err
+	}
+	return joined.DeviceID, grant.OrgToken, nil
 }
 
 // installSigned signs the package at src with priv and installs it.
@@ -525,7 +679,9 @@ func adminCall(method, url, token string, body any, out any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
