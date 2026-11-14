@@ -54,13 +54,17 @@ GATEHOUSE=$(repo "${GATEHOUSE_DIR:-}" precinct-gatehouse GATEHOUSE_DIR)
 
 printf '\n== 打插件包、构建网关（%s）\n' "$DOVETAIL"
 (cd "$DOVETAIL" && go build -o "$W/dovetail" ./registry/cli)
-pack() { # pack <plugin folder name> -> path of the package
-  "$DOVETAIL/plugins/alcove/$1/build.sh" >/dev/null
-  "$W/dovetail" pack "$DOVETAIL/plugins/alcove/$1" -o "$W/out" >/dev/null
-  ls "$W"/out/precinct-"$1"-*.tgz
+# 赋值与 export 分开写：`export X=$(cmd)` 的退出码是 export 的，cmd 失败会被吞掉，留下一个空路径；
+# 测试见到空的变量就跳过，整条验收会一步没跑却显示成功。
+pack() { # pack <plugin folder name>：打包并把包的路径留在 PACKED 里
+  "$DOVETAIL/plugins/alcove/$1/build.sh" >/dev/null || fail "building the $1 plugin failed"
+  "$W/dovetail" pack "$DOVETAIL/plugins/alcove/$1" -o "$W/out" >/dev/null || fail "packing the $1 plugin failed"
+  PACKED=$(ls "$W"/out/precinct-"$1"-*.tgz) || fail "no $1 package came out of the pack"
 }
-export DOVETAIL_DAILY_TGZ="${DOVETAIL_DAILY_TGZ:-$(pack daily)}"
-export DOVETAIL_CLOISTER_TGZ="${DOVETAIL_CLOISTER_TGZ:-$(pack cloister)}"
+if [ -z "${DOVETAIL_DAILY_TGZ:-}" ]; then pack daily; DOVETAIL_DAILY_TGZ=$PACKED; fi
+if [ -z "${DOVETAIL_CLOISTER_TGZ:-}" ]; then pack cloister; DOVETAIL_CLOISTER_TGZ=$PACKED; fi
+for f in "$DOVETAIL_DAILY_TGZ" "$DOVETAIL_CLOISTER_TGZ"; do [ -f "$f" ] || fail "no plugin package at $f"; done
+export DOVETAIL_DAILY_TGZ DOVETAIL_CLOISTER_TGZ
 (cd "$GATEHOUSE" && go build -o "$W/gatehouse" ./cmd/gatehouse)
 # 插件自带的 build.sh 只出 Linux 与 Windows 的；这里按本机平台现编一个。
 (cd "$DOVETAIL" && go build -o "$W/gatehouse-cloister" ./plugins/gatehouse/cloister/sidecar)
@@ -84,4 +88,6 @@ done
 . "$W/cloud.env"
 
 printf '\n== 跑整链（网关 %s）\n' "$ALCOVE_E2E_GATEWAY_LISTEN"
-(cd "$ROOT/e2e" && "$W/e2e.test" -test.run '^TestOrgChain$' -test.count=1 -test.v)
+(cd "$ROOT/e2e" && "$W/e2e.test" -test.run '^TestOrgChain$' -test.count=1 -test.v) 2>&1 | tee "$W/test.log"
+# 测试自己会在缺东西时跳过，跳过的退出码也是 0：这里只认它真的跑过并通过。
+grep -q -- '^--- PASS: TestOrgChain' "$W/test.log" || fail "TestOrgChain did not run to a pass (skipped or not run)"

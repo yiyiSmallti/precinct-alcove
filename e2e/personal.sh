@@ -61,12 +61,15 @@ if [ -z "${DOVETAIL_DAILY_TGZ:-}" ]; then
   "$W/dovetail" pack "$DOVETAIL/plugins/alcove/daily" -o "$W/out" >/dev/null
   DOVETAIL_DAILY_TGZ=$(ls "$W"/out/precinct-daily-*.tgz)
 fi
+[ -f "$DOVETAIL_DAILY_TGZ" ] || fail "no plugin package at $DOVETAIL_DAILY_TGZ"
 export DOVETAIL_DAILY_TGZ
 
 # 先在命名空间外面把测试编好：进去之后 go 工具链不该再有任何理由碰网络。
 printf '\n== 编译 e2e\n'
 (cd "$ROOT" && go test -tags e2e -c -o "$W/e2e.test" ./e2e/)
 RUN=("$W/e2e.test" -test.run '^TestPersonal$' -test.count=1 -test.v)
+# 测试自己会在缺东西时跳过，跳过的退出码也是 0：只认它真的跑过并通过。
+passed() { grep -q -- '^--- PASS: TestPersonal' "$W/test.log" || fail "TestPersonal did not run to a pass (skipped or not run)"; }
 if [ "${PERSONAL_NETTRACE:-0}" = 1 ]; then
   mkdir -p "$ROOT/e2e/report"
   export NETTRACE_LOG="$ROOT/e2e/report/personal-nettrace.log" NODE_OPTIONS="--require $ROOT/e2e/nettrace.cjs"
@@ -75,7 +78,8 @@ fi
 
 if [ "${PERSONAL_CAPTURE:-1}" = 0 ] || [ "$(uname -s)" != Linux ]; then
   printf '\n== 跑整链（不抓包：%s）\n' "$([ "$(uname -s)" = Linux ] && echo 'PERSONAL_CAPTURE=0' || echo '只有 Linux 上抓')"
-  (cd "$ROOT/e2e" && "${RUN[@]}")
+  (cd "$ROOT/e2e" && "${RUN[@]}") 2>&1 | tee "$W/test.log"
+  passed
   exit
 fi
 
@@ -113,4 +117,5 @@ sudo ip netns exec "$NS" sudo -u "$ME" env \
   DOVETAIL_DAILY_TGZ="$DOVETAIL_DAILY_TGZ" \
   ALCOVE_E2E_PCAP="$W/personal.pcap" ALCOVE_E2E_PCAP_MAC="$MAC" \
   ALCOVE_E2E_MODEL_LISTEN="$NSIP:$MODEL_PORT" ALCOVE_E2E_MODEL_URL="http://$HOSTIP:$RELAY_PORT" \
-  bash -c 'cd "$1" && shift && exec "$@"' _ "$ROOT/e2e" "${RUN[@]}"
+  bash -c 'cd "$1" && shift && exec "$@"' _ "$ROOT/e2e" "${RUN[@]}" 2>&1 | tee "$W/test.log"
+passed
