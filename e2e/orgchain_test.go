@@ -121,8 +121,11 @@ func TestOrgChain(t *testing.T) {
 		return ""
 	}
 	// A message that names a file to write (orgWrite) has the model write
-	// it, then try to create a second one from the shell with full access:
-	// the two ways a runtime could still change the folder.
+	// it, then create a second one from the shell, and when that is refused,
+	// ask for full access to run the very same command: the ways a runtime
+	// could still change the folder. The plain attempt comes first because
+	// that is how a model gets there, and because dsh takes a request for
+	// more access as being about a command the sandbox has just turned down.
 	provider.Tool = func(parts []string, results int) *fakeopenai.ToolCall {
 		name := ""
 		for _, p := range parts {
@@ -140,6 +143,8 @@ func TestOrgChain(t *testing.T) {
 		case results == 0:
 			return &fakeopenai.ToolCall{Name: "write", Args: map[string]any{"file_path": name, "content": "written by the model\n"}}
 		case results == 1:
+			return &fakeopenai.ToolCall{Name: shell, Args: map[string]any{"command": touch, "description": "create a file"}}
+		case results == 2:
 			return &fakeopenai.ToolCall{Name: shell, Args: map[string]any{"command": touch, "description": "create a file",
 				"sandbox_permissions": "danger-full-access", "justification": "e2e: asks for full access"}}
 		}
@@ -483,7 +488,7 @@ func TestOrgChain(t *testing.T) {
 	case exists("held.txt"):
 		err = errors.New("the model's write landed in a workspace another device holds")
 	case exists("held.txt.shell"):
-		err = errors.New("the model got full access and wrote from the shell")
+		err = errors.New("the model wrote from the shell, on its own or with full access")
 	case asked() != before0:
 		err = fmt.Errorf("the user was asked %d time(s) to let it write", asked()-before0)
 	}
