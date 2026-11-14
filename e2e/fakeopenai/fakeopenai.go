@@ -26,11 +26,22 @@ type Server struct {
 	// messages, in order; nil repeats the last one. A runtime adds parts of
 	// its own (reminders, context) around what the user typed.
 	Pick func(parts []string) string
+	// Tool, when set, may have the provider call a tool instead of answering:
+	// it gets the text parts of the user messages and how many tool results
+	// the conversation holds so far, and returns the call to make, or nil to
+	// answer with text.
+	Tool func(parts []string, results int) *ToolCall
 
 	mu     sync.Mutex
 	bodies []string
 	auth   []string
 	srv    *http.Server
+}
+
+// ToolCall is a tool the provider asks the runtime to run.
+type ToolCall struct {
+	Name string
+	Args map[string]any
 }
 
 // Start listens on 127.0.0.1 on a free port.
@@ -86,10 +97,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var parts []string
+	results := 0
 	for _, m := range req.Messages {
-		if m.Role == "user" {
+		switch m.Role {
+		case "user":
 			parts = append(parts, texts(m.Content)...)
+		case "tool":
+			results++
 		}
+	}
+	var call *ToolCall
+	if s.Tool != nil {
+		call = s.Tool(parts, results)
 	}
 	user := ""
 	switch {
@@ -99,6 +118,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		user = parts[len(parts)-1]
 	}
 	content := s.Prefix + user
+	message := map[string]any{"role": "assistant", "content": content}
+	finish := "stop"
+	if call != nil {
+		args, _ := json.Marshal(call.Args)
+		message = map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{
+			"index": 0, "id": fmt.Sprintf("call_%d", results), "type": "function",
+			"function": map[string]any{"name": call.Name, "arguments": string(args)},
+		}}}
+		content, finish = "", "tool_calls"
+	}
 	usage := map[string]any{"prompt_tokens": len(body) / 4, "completion_tokens": len(content) / 4, "total_tokens": (len(body) + len(content)) / 4}
 	chunk := func(delta map[string]any, finish any) map[string]any {
 		return map[string]any{"id": "chatcmpl-e2e", "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": req.Model,
@@ -110,8 +139,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(v)
 			fmt.Fprintf(w, "data: %s\n\n", b)
 		}
-		send(chunk(map[string]any{"role": "assistant", "content": content}, nil))
-		send(chunk(map[string]any{}, "stop"))
+		send(chunk(message, nil))
+		send(chunk(map[string]any{}, finish))
 		send(map[string]any{"id": "chatcmpl-e2e", "object": "chat.completion.chunk", "model": req.Model, "choices": []any{}, "usage": usage})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return
@@ -119,7 +148,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"id": "chatcmpl-e2e", "object": "chat.completion", "created": time.Now().Unix(), "model": req.Model,
-		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}},
+		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
 		"usage":   usage,
 	})
 }
