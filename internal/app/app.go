@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/catalog"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
@@ -63,6 +64,9 @@ type Config struct {
 	// is installed on the first start that finds it, and updated when the
 	// shipped version is newer. One the user uninstalled stays uninstalled.
 	Preinstall []string
+	// RuntimeIdle is how long a runtime may sit idle before it exits; zero
+	// keeps the runtime's own default (alrt.DefaultIdleTimeout).
+	RuntimeIdle time.Duration
 }
 
 // Settings are Alcove's own preferences (settings.json).
@@ -634,6 +638,9 @@ func (a *App) ensure(ctx context.Context, spec alrt.LaunchSpec) (*alrt.Process, 
 	if p := a.Runtimes.Get(alrt.Key{Profile: spec.Profile, Cwd: spec.Cwd}); p != nil && p.Spec.Owner == spec.Owner &&
 		(p.Spec.Credential != spec.Credential || p.Spec.Provider != spec.Provider || p.Spec.Model != spec.Model || p.Spec.Tuning != spec.Tuning) && !p.Busy() {
 		p.Stop(0)
+	}
+	if spec.IdleTimeout == 0 {
+		spec.IdleTimeout = a.cfg.RuntimeIdle
 	}
 	return a.Runtimes.Ensure(ctx, spec)
 }

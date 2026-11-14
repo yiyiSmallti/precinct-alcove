@@ -1,0 +1,71 @@
+name: personal
+
+# The personal edition end to end (Charter mvp-architecture 7.8), with a
+# packet capture of everything the processes under test send. It needs the
+# daily plugin from precinct-dovetail, checked out with a read-only deploy
+# key (secret DOVETAIL_DEPLOY_KEY); pull requests that cannot read the secret
+# (forks, Dependabot) do not run it.
+on:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'bridge/**'
+      - 'e2e/personal.sh'
+      - '.github/workflows/personal.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: personal-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  chain:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: yiyiSmallti/precinct-dovetail
+          ssh-key: ${{ secrets.DOVETAIL_DEPLOY_KEY }}
+          path: .deps/precinct-dovetail
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .deps/precinct-dovetail/bundles/daily-tools/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Cache the locked dsh runtime
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dsh
+          key: dsh-0.2.1-rc.5-pnpm-10.28.0
+      - name: Install dsh 0.2.1-rc.5 and the capture tools
+        run: |
+          if [ ! -f "$RUNNER_TEMP/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
+            mkdir -p "$RUNNER_TEMP/dsh" && cd "$RUNNER_TEMP/dsh"
+            npm init -y >/dev/null
+            npm i --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.5
+          fi
+          sudo apt-get install -y --no-install-recommends tcpdump socat >/dev/null
+      - name: Personal chain with a capture of everything it sends
+        env:
+          ALCOVE_E2E_DSH: ${{ runner.temp }}/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js
+          DOVETAIL_DIR: ${{ github.workspace }}/.deps/precinct-dovetail
+        run: ALCOVE_E2E_NODE=$(command -v node) e2e/personal.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-report-personal
+          path: |
+            e2e/report/personal.md
+            e2e/report/personal.pcap

@@ -36,12 +36,20 @@ type Server struct {
 }
 
 // Start listens on 127.0.0.1 on a free port.
-func Start(toolCalls int) (*Server, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func Start(toolCalls int) (*Server, error) { return StartOn("127.0.0.1:0", "", toolCalls) }
+
+// StartOn listens on addr. url is what clients are told to call when they
+// reach the server some other way than its own address (a relay in front
+// of it); "" is the listening address.
+func StartOn(addr, url string, toolCalls int) (*Server, error) {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{URL: "http://" + ln.Addr().String(), ToolCalls: toolCalls}
+	if url == "" {
+		url = "http://" + ln.Addr().String()
+	}
+	s := &Server{URL: url, ToolCalls: toolCalls}
 	s.srv = &http.Server{Handler: s}
 	go s.srv.Serve(ln)
 	return s, nil

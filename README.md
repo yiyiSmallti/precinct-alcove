@@ -42,6 +42,8 @@ Alcove 核心不含任何 Cloister 代码，也不含日常 bot。
 
 已有：对话与运行时、插件宿主与边车、市场与预装（`dovetail`、`daily`、`cloister`）、组织工作区、诊断包。验收是 `e2e/` 下的 Go 测试（`go test -tags e2e ./e2e/`，要 `ALCOVE_E2E_NODE` 与 `ALCOVE_E2E_DSH`），报告写到 `e2e/report/`，这个目录不入库。CI 在 Linux 上跑同一条命令，但日常 bot 几套要 `DOVETAIL_DAILY_TGZ`（打好的 `@precinct/daily`）、市场一套要 precinct-dovetail 的检出，CI 里没有，所以这几套在 CI 里是跳过的，只在本机跑过。0.1.0 的 macOS 与 Windows 安装包在基线机上验过，见 [安装包验证](docs/validation/2026-11-02-packages.md)。
 
+个人版整链验收是 `e2e/personal.sh`（Charter 架构文档第 7 节第 8 条的个人那条）：同一个核心、同一份数据目录里，配置 API → 与日常 bot 对话并设提醒 → 打开个人工作区完成一个要审批的任务 → 两个运行时空闲退出 → 提醒到点由边车弹出。在 Linux 上它把被测进程放进单独的网络命名空间并抓下发出的全部流量，由测试判定是否只有模型端点；别的系统上只跑链路，报告里那一步记为 SKIP。它要 precinct-dovetail 的检出来打 `daily` 包，CI 里是单独的 `personal` 工作流。它不从安装包装起（那是 A5），模型是假的。
+
 还没做：
 
 - Developer ID 公证与 Windows 代码签名（没有证书；`installer/build.sh` 的 `ALCOVE_SIGN` 可以用自己的证书签名）。
