@@ -61,6 +61,7 @@ jobs:
         env:
           ALCOVE_E2E_DSH: ${{ runner.temp }}/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js
           DOVETAIL_DIR: ${{ github.workspace }}/.deps/precinct-dovetail
+          PERSONAL_NETTRACE: 1
         run: ALCOVE_E2E_NODE=$(command -v node) e2e/personal.sh
       - uses: actions/upload-artifact@v4
         if: always()
@@ -69,3 +70,4 @@ jobs:
           path: |
             e2e/report/personal.md
             e2e/report/personal.pcap
+            e2e/report/personal-nettrace.log

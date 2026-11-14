@@ -8,6 +8,8 @@
 #   ALCOVE_E2E_NODE、ALCOVE_E2E_DSH、ALCOVE_E2E_TOOLDIR
 #                        随包运行时；不给就用 resources/<平台>/runtime（installer/stage-runtime.sh 备出来的）
 #   PERSONAL_CAPTURE=0   不抓包（报告里那一步记为 SKIP）
+#   PERSONAL_NETTRACE=1  排查用：给每个 Node 进程挂上 e2e/nettrace.cjs，把每次对外的域名解析与连接连同
+#                        进程和调用栈记到 e2e/report/personal-nettrace.log。抓包说明有东西出去了，它说明是谁发的
 #
 # 抓包只在 Linux 上做，要 root（sudo）、iproute2、tcpdump、socat：
 #   测试进程放进一个新建的网络命名空间，它通往外面的唯一一条路是一对 veth；tcpdump 守在 veth 的宿主一端，
@@ -59,6 +61,11 @@ export DOVETAIL_DAILY_TGZ
 printf '\n== 编译 e2e\n'
 (cd "$ROOT" && go test -tags e2e -c -o "$W/e2e.test" ./e2e/)
 RUN=("$W/e2e.test" -test.run '^TestPersonal$' -test.count=1 -test.v)
+if [ "${PERSONAL_NETTRACE:-0}" = 1 ]; then
+  mkdir -p "$ROOT/e2e/report"
+  export NETTRACE_LOG="$ROOT/e2e/report/personal-nettrace.log" NODE_OPTIONS="--require $ROOT/e2e/nettrace.cjs"
+  : > "$NETTRACE_LOG"
+fi
 
 if [ "${PERSONAL_CAPTURE:-1}" = 0 ] || [ "$(uname -s)" != Linux ]; then
   printf '\n== 跑整链（不抓包：%s）\n' "$([ "$(uname -s)" = Linux ] && echo 'PERSONAL_CAPTURE=0' || echo '只有 Linux 上抓')"
@@ -95,7 +102,7 @@ socat "TCP-LISTEN:$RELAY_PORT,bind=$HOSTIP,fork,reuseaddr" "TCP:$NSIP:$MODEL_POR
 
 printf '\n== 跑整链（命名空间 %s，出口 %s，%s）\n' "$NS" "$HOSTIF" "$MAC"
 sudo ip netns exec "$NS" sudo -u "$ME" env \
-  PATH="$PATH" HOME="$HOME" \
+  PATH="$PATH" HOME="$HOME" NODE_OPTIONS="${NODE_OPTIONS:-}" NETTRACE_LOG="${NETTRACE_LOG:-}" \
   ALCOVE_E2E_NODE="$ALCOVE_E2E_NODE" ALCOVE_E2E_DSH="$ALCOVE_E2E_DSH" ALCOVE_E2E_TOOLDIR="${ALCOVE_E2E_TOOLDIR:-}" \
   DOVETAIL_DAILY_TGZ="$DOVETAIL_DAILY_TGZ" \
   ALCOVE_E2E_PCAP="$W/personal.pcap" ALCOVE_E2E_PCAP_MAC="$MAC" \
