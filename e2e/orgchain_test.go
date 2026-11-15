@@ -14,8 +14,9 @@
 // this one can no longer write to it, until it gets it back → the reminder
 // comes due on the device and in WeCom → the member makes this device the
 // bot's primary → a WeCom message is answered by the daily engine here,
-// through the gateway → leaving takes the workspace away and kills the
-// gateway token.
+// through the gateway → a reminder set by the engine here comes due from the
+// cloud once the bot is back there → leaving takes the workspace away and
+// kills the gateway token.
 //
 // Only the model providers (the gateway's and the cloud bot's) and WeCom are
 // stand-ins. The gateway's provider keeps what it was sent, which is the
@@ -46,12 +47,20 @@
 //     and the reply in WeCom must carry the values themselves;
 //   - a reminder that reaches only one side: it is looked for both in the
 //     daily assistant's conversation on the device and in WeCom;
+//   - a bot workspace that does not follow the bot: the reminder set on the
+//     device must come from the cloud (no ⏰, which the device would add)
+//     after the switch back, and no sooner than asked; only the device's
+//     engine ever had it. The switch waits for the device's turn to close,
+//     and the bot must have promised it once: a turn still open at the
+//     switch goes back to the cloud, whose engine would set the reminder
+//     again on its own (a mutation run that drops the device's changes
+//     passed before this);
 //   - "read-only" that is only the plugin no longer uploading: while another
 //     device holds the workspace, the model here is told to write a file and
 //     then to ask for full access, and with an answerer that would say yes
 //     to anything, no file may appear and nothing may be asked.
 //
-// Not here yet: cloud tasks, the switch of the bot's primary environment. e2e/org.sh starts everything and
+// Not here yet: cloud tasks; a device that goes offline while the bot runs there. e2e/org.sh starts everything and
 // sets the variables below. Writes e2e/report/org-chain.md.
 package e2e
 
@@ -139,7 +148,9 @@ func TestOrgChain(t *testing.T) {
 	}
 	// The daily engine's turns, on this device once it is the bot's primary
 	// environment: the newest candidate card it shows the model is answered
-	// with a reply that repeats the message, then routed as done.
+	// with a reply that repeats the message, then routed as done. Asked for
+	// a reminder ("N 秒后提醒我…"), it sets one first, worded as the cloud
+	// bot's model words them, and says so.
 	provider.Turn = func(msgs []fakeopenai.Message) *fakeopenai.ToolCall {
 		at, id, text := -1, "", ""
 		for i, m := range msgs {
@@ -163,11 +174,18 @@ func TestOrgChain(t *testing.T) {
 				results++
 			}
 		}
-		switch results {
-		case 0:
-			return &fakeopenai.ToolCall{Name: "orchestrator_reply", Args: map[string]any{"trigger_id": id, "purpose": "answer", "text": "收到：" + text}}
-		case 1:
-			return &fakeopenai.ToolCall{Name: "orchestrator_route", Args: map[string]any{"decisions": []any{map[string]any{"kind": "ignore", "trigger_id": id, "reason": "已答复"}}}}
+		calls := []*fakeopenai.ToolCall{
+			{Name: "orchestrator_reply", Args: map[string]any{"trigger_id": id, "purpose": "answer", "text": "收到：" + text}},
+			{Name: "orchestrator_route", Args: map[string]any{"decisions": []any{map[string]any{"kind": "ignore", "trigger_id": id, "reason": "已答复"}}}},
+		}
+		if m := regexp.MustCompile(`(\d+) 秒后提醒我(\S+?)[。.!！]?$`).FindStringSubmatch(strings.TrimSpace(text)); m != nil {
+			secs, _ := time.ParseDuration(m[1] + "s")
+			calls = append([]*fakeopenai.ToolCall{{Name: "schedule_create", Args: map[string]any{
+				"at": time.Now().Add(secs).Format(time.RFC3339), "timezone": "Asia/Shanghai", "kind": "notify", "text": "提醒：" + m[2], "trigger_id": id}}}, calls...)
+			calls[1].Args["text"] = fmt.Sprintf("好的，%s 秒后提醒你%s。", m[1], m[2])
+		}
+		if results < len(calls) {
+			return calls[results]
 		}
 		return nil
 	}
@@ -259,6 +277,9 @@ func TestOrgChain(t *testing.T) {
 		"PRECINCT_CLOISTER_SYNC_URL=" + cloud["CLOISTER_E2E_SYNC"],
 		"PRECINCT_CLOISTER_PENDING_POLL=300ms",
 		"PRECINCT_CLOISTER_LEASE_RENEW=2s",
+		// An org turn on the device closes only once its engine went idle (the
+		// next one waits for that): 3 minutes by default.
+		"PRECINCT_DAILY_IDLE_AFTER=10s",
 	}
 	logs := func() string {
 		rec.mu.Lock()
@@ -579,6 +600,87 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("本机为主力时，企微里的消息由本机的 daily 引擎回答：回合经组织网关（到外部模型的是占位符，企微收到原值），不用成员自己的 API", err,
 		fmt.Sprintf("外部模型收到 %d 个请求；企微收到：%.80s", len(provider.Bodies())-sentBefore, local.Text))
+	if err != nil {
+		return
+	}
+
+	// The bot's workspace follows the bot. A reminder set while it runs here
+	// lives only in the engine on this device; once the bot is back in the
+	// cloud it must come due there, which it can only if the device's
+	// changes reached the cloud's engine. The cloud sends a reminder's text
+	// as it is, a device puts ⏰ in front: which side fired it shows.
+	spoke = time.Now()
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": fmt.Sprintf("%d 秒后提醒我%s", int(handOverIn/time.Second), handOverWhat)}, &said)
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
+	}
+	var promised wecomSent
+	if err == nil {
+		want := fmt.Sprintf("好的，%d 秒后提醒你%s。", int(handOverIn/time.Second), handOverWhat)
+		err = waitFor(func() bool { promised = wecomFind(wecom, member, want); return promised.Text != "" }, 3*time.Minute)
+		if err != nil {
+			err = fmt.Errorf("no %q in WeCom; sent there: %v", want, wecomTexts(wecom, member))
+		}
+	}
+	r.step(fmt.Sprintf("本机为主力时在企微里说“%d 秒后提醒我%s”：本机的 daily 引擎设下提醒并答应", int(handOverIn/time.Second), handOverWhat), err,
+		fmt.Sprintf("%.0f 秒后答：%s", time.Since(spoke).Seconds(), promised.Text))
+	if err != nil {
+		return
+	}
+	// The turn closes once the engine here went idle. Switching before that
+	// would hand the message back to the cloud, whose engine would set the
+	// reminder itself: the cloud has to get it from the device.
+	idle := func() int { return strings.Count(logs(), "org bot: daily turn process going idle") }
+	idleAt := idle()
+	err = waitFor(func() bool { return idle() > idleAt }, time.Minute)
+	if err != nil {
+		r.step("本机的引擎答完后空闲退出，回合关闭", err, "")
+		return
+	}
+	switched := time.Now()
+	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "cloud"}))
+	if err == nil {
+		err = waitFor(func() bool { return strings.Contains(pageText(page()), "云端：主力") }, 60*time.Second)
+	}
+	r.step("把主力切回云端：本机的引擎先交出它的改动，插件显示云端为主力", err,
+		fmt.Sprintf("%.0f 秒；%s", time.Since(switched).Seconds(), lineWith(pageText(page()), "主力")))
+	if err != nil {
+		return
+	}
+	handed := "提醒：" + handOverWhat
+	var came wecomSent
+	err = waitFor(func() bool {
+		came = wecomSent{}
+		var sent []wecomSent
+		adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+		for _, m := range sent {
+			if strings.Contains(m.Text, handed) {
+				came = m
+			}
+		}
+		return came.Text != "" && view.has(handed)
+	}, handOverIn+3*time.Minute)
+	promises := 0
+	for _, m := range wecomTexts(wecom, member) {
+		if m == promised.Text {
+			promises++
+		}
+	}
+	switch {
+	case err != nil:
+		err = fmt.Errorf("in WeCom: %v; on the device: %v", wecomTexts(wecom, member), view.texts())
+	case promises != 1:
+		err = fmt.Errorf("%q was said %d times: the cloud answered the message again instead of taking the device's state", promised.Text, promises)
+	case strings.Contains(came.Text, "⏰"):
+		err = fmt.Errorf("the reminder was fired by the device, not the cloud: %q", came.Text)
+	case time.Duration(came.At-promised.At)*time.Millisecond < handOverIn-5*time.Second:
+		err = fmt.Errorf("the reminder came %d ms after the reply, sooner than the %s asked for", came.At-promised.At, handOverIn)
+	}
+	r.step("本机设下的提醒在切回云端后由云端按时发出：到企微与客户端，没有⏰（不是本机发的）", err,
+		fmt.Sprintf("答应后 %.0f 秒到企微：%s", float64(came.At-promised.At)/1000, came.Text))
+	if err != nil {
+		return
+	}
 
 	// Another of the member's devices takes the workspace over. From then on
 	// this one may read it and nothing more: the model's write does not
@@ -687,10 +789,14 @@ func TestOrgChain(t *testing.T) {
 }
 
 // The reminder the member asks their bot for in WeCom: long enough to be
-// due after the workspace steps rather than at once.
+// due after the workspace steps rather than at once. The second is asked for
+// while the bot runs on the device and comes due after it is back in the
+// cloud.
 const (
-	remindIn   = 30 * time.Second
-	remindWhat = "交周报"
+	remindIn     = 30 * time.Second
+	remindWhat   = "交周报"
+	handOverIn   = 60 * time.Second
+	handOverWhat = "开周会"
 )
 
 // wecomSent is a message the fake WeCom says the app sent; At is in ms.

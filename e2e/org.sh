@@ -93,6 +93,7 @@ done
 . "$W/cloud.env"
 
 printf '\n== 跑整链（网关 %s）\n' "$ALCOVE_E2E_GATEWAY_LISTEN"
-(cd "$ROOT/e2e" && "$W/e2e.test" -test.run '^TestOrgChain$' -test.count=1 -test.v) 2>&1 | tee "$W/test.log"
+# 失败时也要往下走：pipefail 加 set -e 会在这一行直接退出，云端的日志就打不出来了。
+(cd "$ROOT/e2e" && "$W/e2e.test" -test.run '^TestOrgChain$' -test.count=1 -test.v) 2>&1 | tee "$W/test.log" || true
 # 测试自己会在缺东西时跳过，跳过的退出码也是 0：这里只认它真的跑过并通过。
-grep -q -- '^--- PASS: TestOrgChain' "$W/test.log" || { tail -60 "$W/cloud.log" >&2; fail "TestOrgChain did not run to a pass (skipped or not run)"; }
+grep -q -- '^--- PASS: TestOrgChain' "$W/test.log" || { tail -150 "$W/cloud.log" >&2; fail "TestOrgChain did not run to a pass (skipped or not run)"; }
