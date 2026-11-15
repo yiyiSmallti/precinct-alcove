@@ -1078,11 +1078,14 @@ func TestOrgChain(t *testing.T) {
 	// the cloister plugin follows. With the bot here again, a tap moves it to
 	// the cloud.
 	var card string
+	// The sidecar is still posting to the view (inboxView.post): read it under its lock.
+	view.mu.Lock()
 	for _, id := range view.order {
 		if c, ok := view.items[id]["card"].(map[string]any); ok && strings.Contains(fmt.Sprint(c["body"]), "目前离线") {
 			card = id
 		}
 	}
+	view.mu.Unlock()
 	caughtAt = caught()
 	err = nil
 	if card == "" {
