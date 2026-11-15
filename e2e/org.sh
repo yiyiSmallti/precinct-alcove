@@ -79,7 +79,8 @@ PORT=$("$ALCOVE_E2E_NODE" -e 's=require("net").createServer().listen(0,"127.0.0.
 export ALCOVE_E2E_GATEWAY_LISTEN="127.0.0.1:$PORT"
 # 云端的 bot 用随包的 dsh：ALCOVE_E2E_DSH 是 <node_modules>/@deepseek-ai/dsh/lib/bin.js。
 DSH_MODULES=$(cd "$(dirname "$ALCOVE_E2E_DSH")/../../.." && pwd)
-(cd "$CLOISTER" && CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES" \
+# 云端的引擎闲 10 秒就退：本机设的提醒在云端到点时没有引擎在跑，云端自己发出（引擎还没听说），切回本机时要先交给引擎。
+(cd "$CLOISTER" && CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 CLOISTER_E2E_DAILY_IDLE_S=10 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES" \
   exec node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
 CLOUD_PID=$!
 # 先要打出 daily 包、装进 bot 的 daily profile，一两分钟。
