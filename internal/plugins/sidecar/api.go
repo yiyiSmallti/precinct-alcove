@@ -559,9 +559,12 @@ func (p *plugin) register(raw json.RawMessage) error {
 	return nil
 }
 
-// LaunchContext is what plugin.launchHook receives before a runtime starts.
+// LaunchContext is what plugin.launchHook receives before a runtime starts:
+// a workspace's (WorkspaceID), or one a plugin starts for one of its own
+// profiles with runtime.ensure (Plugin, and no WorkspaceID).
 type LaunchContext struct {
 	WorkspaceID string `json:"workspaceId"`
+	Plugin      string `json:"plugin,omitempty"`
 	Profile     string `json:"profile"`
 	Cwd         string `json:"cwd"`
 }
@@ -577,6 +580,12 @@ type LaunchResult struct {
 	// EnvBy is Env split by plugin name, so the host can let one plugin's
 	// values win (the owner's, for an attached workspace).
 	EnvBy map[string][]string
+	// Answered lists the plugins whose hook answered (Failed has the rest
+	// that were asked). Claims lists those that claimed a runtime another
+	// plugin starts: by `claim`, or by giving a route. Only plugins with
+	// provider_endpoint can claim.
+	Answered map[string]bool
+	Claims   map[string]bool
 }
 
 // EnvFor is Env with owner's variables taking precedence: any variable the
@@ -640,7 +649,8 @@ func checkEnv(m map[string]string) ([]string, error) {
 // env and profile patches. A hook that fails or exceeds HookTimeout is
 // skipped and reported; it never blocks the launch.
 func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResult {
-	res := LaunchResult{Failed: map[string]error{}, Providers: map[string]Provider{}, EnvBy: map[string][]string{}}
+	res := LaunchResult{Failed: map[string]error{}, Providers: map[string]Provider{}, EnvBy: map[string][]string{},
+		Answered: map[string]bool{}, Claims: map[string]bool{}}
 	for _, p := range m.running("runtime_launch_hook") {
 		p.mu.Lock()
 		hook := p.hook
@@ -654,6 +664,7 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 			Env          map[string]string `json:"env"`
 			ProfilePatch json.RawMessage   `json:"profilePatch"`
 			Provider     *Provider         `json:"provider"`
+			Claim        bool              `json:"claim"`
 		}
 		err := c.Call(hctx, "launchHook", lc, &out)
 		cancel()
@@ -677,6 +688,10 @@ func (m *Manager) LaunchHooks(ctx context.Context, lc LaunchContext) LaunchResul
 			default:
 				res.Providers[p.name] = *out.Provider
 			}
+		}
+		res.Answered[p.name] = true
+		if p.has("provider_endpoint") && (out.Claim || out.Provider != nil) {
+			res.Claims[p.name] = true
 		}
 		res.Env = append(res.Env, env...)
 		res.EnvBy[p.name] = env

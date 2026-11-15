@@ -109,7 +109,7 @@ package.json
   session.cancel({workspaceId, sessionId}) → { cancelled }  需要 workspace_session；经 alcove-bridge 取消该会话正在跑的回合并丢掉排队的消息；会话不在运行回 cancelled:false
   task.start({id, title, prompt, detail?}) → { accepted, workspaceId?, sessionId?, reason? }  需要 workspace_task；请用户选一个自己的工作区来跑插件的任务。宿主在该插件的对话视图和「等你处理」里画确认卡（标题、detail 的 markdown、每个个人工作区一个"在「X」里运行"按钮（当前项目在前，最多 4 个）和"拒绝"），工作区由用户选，插件无权指定。同意后宿主记下授权（plugins/task-grants.json，插件 + 工作区 + 会话），在侧栏该工作区建任务（标题为 title，标签为插件显示名），把 prompt 作为会话 task-<id> 的第一条消息发出；此后该插件可以对这个会话用 session.prompt/cancel，并照常收到 onSessionIdle。调用一直等到用户回答；用户拒绝或调用被插件取消回 accepted:false；同一 id 再问（插件重启后）直接回原来的答复，不再打扰用户
   runtime.registerLaunchHook()            需要 runtime_launch_hook；之后宿主在每次拉起前调 plugin.launchHook(ctx) 取 env/profilePatch
-  runtime.ensure(profile, cwd, env?) → { runtimeId }  需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）。只允许插件自己装入的非工作区 profile（如 daily），cwd 须为已存在的绝对目录；env 是插件给的变量（如 DAILY_TOOLS_HOST/_TOKEN），保留名（ALCOVE_*、DSH_HOME）被拒（-32602）；凭据由宿主注入。卸载插件时一并停掉这些运行时。
+  runtime.ensure(profile, cwd, env?) → { runtimeId }  需要 background；按需拉起指定 profile 的 dsh（daily 回合进程用）。只允许插件自己装入的非工作区 profile（如 daily），cwd 须为已存在的绝对目录；env 是插件给的变量（如 DAILY_TOOLS_HOST/_TOKEN），保留名（ALCOVE_*、DSH_HOME）被拒（-32602）；凭据由宿主注入，拉起前同样问拉起钩子（ctx 带 `plugin`，见下文"认领"）。卸载插件时一并停掉这些运行时。
   ui.register(contribution)               需要 settings_page 等能力；contribution 为声明式 schema
   ui.update(id, data)                      刷新卡片/侧栏数据
   settings.read(ns) / settings.write(ns, v) 命名空间隔离，策略段只有带 policy_write 能力的插件可写
@@ -125,7 +125,7 @@ package.json
   inbox.post(item)                         需要 inbox；向通用对话视图投递。item = { id, kind:"message", text, ts, replyTo? } 或 { id, kind:"card", card:{ title, body, actions:[{ id, label, style?:"primary"|"danger" }] } }；id 必填（缺失 -32602），同 id 再投视为更新；text/body 为 markdown 子集（段落、粗斜体、行内代码、代码块、链接、列表）；卡片按钮走 onUiAction(contributionId=item.id, action=按钮 id, payload={})
   log(level, msg)
 插件提供（宿主可调）
-  launchHook(ctx) → { env, profilePatch, provider? }   一期只应用 env 与 provider；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn。provider = { route, model }：SDK provider 路由名（由该插件装进 profile 的 bundle 挂载）与模型，只认有 provider_endpoint 的插件
+  launchHook(ctx) → { env, profilePatch, provider?, claim? }   一期只应用 env、provider 与 claim；profilePatch 为保留字段，宿主忽略并在 plugins.log 记一条 warn。provider = { route, model }：SDK provider 路由名（由该插件装进 profile 的 bundle 挂载）与模型，只认有 provider_endpoint 的插件
   onWorkspaceEvent(evt)                    需要 workspace_hook：opened/closed/created/removed；通知，evt = { kind, workspace{ id, name, dir, profile } }。opened 在该工作区运行时启动时发一次（不是每条消息），closed 在运行时退出时发（空闲退出、崩溃、停止、移除工作区），removed 在 closed 之后
   onInboxInput{ id, text, ts }              需要 inbox；用户在该插件的对话视图里输入。插件落盘后应答 {}；宿主按 id 幂等重发（超时、断连、边车重启后），插件见重复 id 直接应答 {}；未应答的输入在视图标"未送达"。ts 为 RFC 3339 UTC
   onUiAction(contributionId, action, payload)
@@ -154,6 +154,7 @@ package.json
 - 把关：`session.prompt`、`session.cancel` 需 `workspace_session`（只对自己 attach 的工作区，或用户经 task.start 同意过的那个会话），`task.start` 需 `workspace_task`，`runtime.registerLaunchHook` 需 `runtime_launch_hook`，`runtime.ensure` 需 `background`，`inbox.post` 需 `inbox`，`plugins.*` 需 `plugin_install`，`browser.*` 需 `browser`；界面贡献 `settings_page`、`sidebar_item` 需同名能力，`card`、`inbox_intro` 需 `inbox`；`ui.update` 只能改自己登记过的贡献；ready 里带的贡献在握手结束时登记，握手结束前到达的 `ui.update` 会等到握手结束再处理。设置命名空间：插件拥有与包名同名的命名空间及其下 `<name>/...`；`policy` 段人人可读，只有 `policy_write` 可写；其他插件的命名空间一律拒绝。
 - 错误码：`-32030` 能力或命名空间未授权；`-32031` 宿主暂未提供该服务（如 `keychain.resolveForRuntime`，随凭据 PR 提供）；`-32602` 参数错误；`-32601` 未知方法。`log` 既可作请求也可作通知。
 - 拉起钩子：每次拉起 dsh 前按插件名顺序调用已登记插件的 `launchHook(ctx{ workspaceId, profile, cwd })`，每个限时 3 秒；失败、超时或想设置保留变量（`ALCOVE_*`、`DSH_HOME`）的钩子被跳过并记日志，不阻塞拉起。例外是归插件的工作区（`workspace.attach`）：只用 owner 钩子给的 provider 路由与模型，不注入个人凭据；owner 的钩子失败、超时或没给 provider 时拒绝拉起，绝不退回个人凭据；拉起期间归属若被 attach/detach 改变，拉起后按新归属核对，不符就停掉重拉。owner 插件被卸载后工作区保留归属并拒绝拉起（文件夹里可能有组织数据），提示重装插件或移除工作区。个人工作区忽略钩子给的 provider。
+- 认领：插件用 `runtime.ensure` 拉起自己的 profile 时，钩子的 ctx 是 `{ plugin, profile, cwd }`（没有 `workspaceId`）。有 `provider_endpoint` 的插件可以认领这个运行时：回 `provider`，或回 `claim: true`（认领但这次不给路由，例如策略不允许）。被认领的运行时只按认领者的路由与 env 拉起（`runtime.ensure` 给的变量放在最后），不注入个人凭据，没给路由就拒绝拉起。认领记在数据目录的 `runtime-claims.json`；之后认领者的钩子失败、超时、边车没在跑或插件已卸载都拒绝拉起，绝不退回个人凭据；认领者正常应答而不再认领，才放回个人凭据。不止一个插件认领、或别的插件想接走已被认领的运行时，都拒绝。归属一变（认领或放回），已在跑的运行时不论忙不忙都停掉。首个用例：`cloister` 插件认领 `daily` 插件的 bot 引擎（组织成员的 bot 工作区归组织，走组织网关）。
 - 常驻：Alcove 运行期间边车一律常驻，宿主不按空闲停边车；`background` 只决定能否调 `runtime.ensure`。有插件声明 `background` 时，关窗口最小化到托盘（Windows）/ 菜单栏（macOS），边车继续跑（D3 界面实现）。
 - 停止：`shutdown` 请求后等 3 秒，再结束整个进程树；插件登记的界面贡献与拉起钩子随之撤销。
 - 崩溃限频：未经宿主要求的退出（含握手失败）算一次崩溃，按 1 s、2 s、4 s… 退避重启；10 分钟内满 3 次即停在 `crashed`，插件页显示最后错误与 stderr 尾部，用户手动启动时清零计数。

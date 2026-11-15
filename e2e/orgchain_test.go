@@ -12,8 +12,10 @@
 // placeholders and come back as themselves → the organisation's audit holds
 // categories and counts only → another device takes the workspace over and
 // this one can no longer write to it, until it gets it back → the reminder
-// comes due on the device and in WeCom → leaving takes the workspace away
-// and kills the gateway token.
+// comes due on the device and in WeCom → the member makes this device the
+// bot's primary → a WeCom message is answered by the daily engine here,
+// through the gateway → leaving takes the workspace away and kills the
+// gateway token.
 //
 // Only the model providers (the gateway's and the cloud bot's) and WeCom are
 // stand-ins. The gateway's provider keeps what it was sent, which is the
@@ -37,6 +39,11 @@
 //     carry the words of the request (the cloud bot's model takes them from
 //     what the engine shows it), and the reminder must come no sooner than
 //     its time after the reply, so it is the host's timer and not an echo;
+//   - a bot turn on the device that uses the member's own API: the bot's
+//     workspace belongs to the organisation, so once this device is primary
+//     the personal endpoint must still have seen nothing, the gateway's
+//     provider must have got new requests with placeholders and no values,
+//     and the reply in WeCom must carry the values themselves;
 //   - a reminder that reaches only one side: it is looked for both in the
 //     daily assistant's conversation on the device and in WeCom;
 //   - "read-only" that is only the plugin no longer uploading: while another
@@ -129,6 +136,40 @@ func TestOrgChain(t *testing.T) {
 			}
 		}
 		return ""
+	}
+	// The daily engine's turns, on this device once it is the bot's primary
+	// environment: the newest candidate card it shows the model is answered
+	// with a reply that repeats the message, then routed as done.
+	provider.Turn = func(msgs []fakeopenai.Message) *fakeopenai.ToolCall {
+		at, id, text := -1, "", ""
+		for i, m := range msgs {
+			for _, p := range m.Texts {
+				var card struct {
+					Kind      string `json:"kind"`
+					TriggerID string `json:"trigger_id"`
+					Text      string `json:"text"`
+				}
+				if strings.Contains(p, `"kind":"candidate"`) && json.Unmarshal([]byte(p), &card) == nil && card.TriggerID != "" {
+					at, id, text = i, card.TriggerID, card.Text
+				}
+			}
+		}
+		if at < 0 {
+			return nil
+		}
+		results := 0
+		for _, m := range msgs[at+1:] {
+			if m.Role == "tool" {
+				results++
+			}
+		}
+		switch results {
+		case 0:
+			return &fakeopenai.ToolCall{Name: "orchestrator_reply", Args: map[string]any{"trigger_id": id, "purpose": "answer", "text": "收到：" + text}}
+		case 1:
+			return &fakeopenai.ToolCall{Name: "orchestrator_route", Args: map[string]any{"decisions": []any{map[string]any{"kind": "ignore", "trigger_id": id, "reason": "已答复"}}}}
+		}
+		return nil
 	}
 	// A message that names a file to write (orgWrite) has the model write
 	// it, then create a second one from the shell, and when that is refused,
@@ -488,6 +529,56 @@ func TestOrgChain(t *testing.T) {
 		err = fmt.Errorf("the reminder came %d ms after the reply, sooner than the %s asked for", fired.At-reply.At, remindIn)
 	}
 	r.step("到点提醒同时到客户端（daily 助手的对话）与企微", err, fmt.Sprintf("答应后 %.0f 秒到企微", float64(fired.At-reply.At)/1000))
+
+	// The bot's primary environment moves to this device: from now on the
+	// member's WeCom messages are answered by the daily engine here, and its
+	// model calls are organisation data like a workspace turn's. They go out
+	// through the organisation's gateway, never on the member's own key.
+	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "device"}))
+	if err == nil {
+		err = waitFor(func() bool { return strings.Contains(pageText(page()), "（本机）：主力") }, 30*time.Second)
+	}
+	r.step("把日常 bot 的主力环境切到本机：插件显示本机为主力", err, lineWith(pageText(page()), "主力"))
+	if err != nil {
+		return
+	}
+	sentBefore := len(provider.Bodies())
+	ask := fmt.Sprintf("帮我记一下：给%s的王经理%s，号码 %s", orgCustomer, orgMarker, orgPhone)
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": ask}, &said)
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
+	}
+	var local wecomSent
+	if err == nil {
+		err = waitFor(func() bool {
+			var sent []wecomSent
+			adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+			for _, m := range sent {
+				if strings.Contains(m.Text, orgMarker) && strings.HasPrefix(m.Text, "收到：") {
+					local = m
+				}
+			}
+			return local.Text != ""
+		}, 3*time.Minute)
+	}
+	out := strings.Join(provider.Bodies()[sentBefore:], "\n")
+	switch {
+	case err != nil:
+		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v",
+			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey))
+	case personal.SawKey(personalKey):
+		err = errors.New("the device's bot turn used the member's own credential")
+	case len(provider.Bodies()) == sentBefore:
+		err = errors.New("the gateway's provider got no request for the bot turn")
+	case strings.Contains(out, orgPhone) || strings.Contains(out, orgCustomer):
+		err = errors.New("the bot turn sent the phone number or the customer name to the provider as they are")
+	case !placeholder.MatchString(out):
+		err = errors.New("the bot turn's requests have no placeholders")
+	case !strings.Contains(local.Text, orgPhone) || !strings.Contains(local.Text, orgCustomer) || placeholder.MatchString(local.Text):
+		err = fmt.Errorf("the answer in WeCom does not carry the original values: %q", local.Text)
+	}
+	r.step("本机为主力时，企微里的消息由本机的 daily 引擎回答：回合经组织网关（到外部模型的是占位符，企微收到原值），不用成员自己的 API", err,
+		fmt.Sprintf("外部模型收到 %d 个请求；企微收到：%.80s", len(provider.Bodies())-sentBefore, local.Text))
 
 	// Another of the member's devices takes the workspace over. From then on
 	// this one may read it and nothing more: the model's write does not

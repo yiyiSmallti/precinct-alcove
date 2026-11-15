@@ -31,11 +31,21 @@ type Server struct {
 	// the conversation holds so far, and returns the call to make, or nil to
 	// answer with text.
 	Tool func(parts []string, results int) *ToolCall
+	// Turn, when set, is asked before Tool with the whole conversation: the
+	// role and text parts of every message, in order. A non-nil call is
+	// made; nil leaves the answer to Tool, then to text.
+	Turn func(msgs []Message) *ToolCall
 
 	mu     sync.Mutex
 	bodies []string
 	auth   []string
 	srv    *http.Server
+}
+
+// Message is one message of a conversation as Turn sees it.
+type Message struct {
+	Role  string
+	Texts []string
 }
 
 // ToolCall is a tool the provider asks the runtime to run.
@@ -97,8 +107,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var parts []string
+	var msgs []Message
 	results := 0
 	for _, m := range req.Messages {
+		msgs = append(msgs, Message{Role: m.Role, Texts: texts(m.Content)})
 		switch m.Role {
 		case "user":
 			parts = append(parts, texts(m.Content)...)
@@ -107,7 +119,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var call *ToolCall
-	if s.Tool != nil {
+	if s.Turn != nil {
+		call = s.Turn(msgs)
+	}
+	if call == nil && s.Tool != nil {
 		call = s.Tool(parts, results)
 	}
 	user := ""
