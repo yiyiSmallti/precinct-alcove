@@ -119,6 +119,9 @@ type Appearance struct {
 
 // App is one running Alcove.
 type App struct {
+	// claims are runtimes of plugins' own profiles other plugins hold.
+	claims claims
+
 	Layout     paths.Layout
 	Identity   *identity.Identity
 	CLI        *dsh.CLI
@@ -638,6 +641,10 @@ func (a *App) ensure(ctx context.Context, spec alrt.LaunchSpec) (*alrt.Process, 
 	if p := a.Runtimes.Get(alrt.Key{Profile: spec.Profile, Cwd: spec.Cwd}); p != nil && p.Spec.Owner == spec.Owner &&
 		(p.Spec.Credential != spec.Credential || p.Spec.Provider != spec.Provider || p.Spec.Model != spec.Model || p.Spec.Tuning != spec.Tuning) && !p.Busy() {
 		p.Stop(0)
+	} else if p != nil && p.Spec.Owner != spec.Owner {
+		// Whose route it runs on changed (a plugin claimed or gave back a
+		// runtime it starts): busy or not, it may not go on on the old one.
+		p.Stop(0)
 	}
 	if spec.IdleTimeout == 0 {
 		spec.IdleTimeout = a.cfg.RuntimeIdle
@@ -735,7 +742,23 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 			a.pluginLog("host", "warn", fmt.Sprintf("profile %s: updating the bridge: %v", prof, err))
 		}
 	}
-	p, err := a.launch(ctx, prof, cwd, env, nil, "")
+	// Another plugin may hold this runtime: an organisation's, say, for the
+	// daily bot of a member. It then runs on that plugin's route or not at
+	// all (claims.go).
+	hooks := a.Sidecars.LaunchHooks(ctx, sidecar.LaunchContext{Plugin: plugin, Profile: prof, Cwd: cwd})
+	owner, err := a.runtimeOwner(prof, cwd, hooks)
+	if err != nil {
+		return "", err
+	}
+	var p *alrt.Process
+	if owner == "" {
+		p, err = a.launch(ctx, prof, cwd, env, nil, "")
+	} else {
+		route := hooks.Providers[owner]
+		// The plugin's own variables last: its endpoint and token for the
+		// runtime are not the owner's to change.
+		p, err = a.launch(ctx, prof, cwd, append(hooks.EnvFor(owner), env...), &route, owner)
+	}
 	if err != nil {
 		return "", err
 	}
