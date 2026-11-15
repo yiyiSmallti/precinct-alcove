@@ -717,6 +717,11 @@ func TestOrgChain(t *testing.T) {
 	if err != nil {
 		return
 	}
+	if early := wecomFind(wecom, member, "⏰ 提醒："+handOverWhat); early.Text != "" {
+		r.step("把主力切回云端：本机的引擎先交出它的改动，插件显示云端为主力",
+			fmt.Errorf("%q came due on the device before the switch (%.0f s after the reply): handOverIn is too short for this machine", handOverWhat, float64(early.At-promised.At)/1000), "")
+		return
+	}
 	switched := time.Now()
 	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "cloud"}))
 	if err == nil {
@@ -1056,9 +1061,12 @@ func TestOrgChain(t *testing.T) {
 // while the bot runs on the device and comes due after it is back in the
 // cloud.
 const (
-	remindIn     = 30 * time.Second
-	remindWhat   = "交周报"
-	handOverIn   = 60 * time.Second
+	remindIn   = 30 * time.Second
+	remindWhat = "交周报"
+	// Long enough for the next step (a whole device turn, then its 20 s
+	// reminder) to finish before it is due: a device turn takes about 90 s
+	// on CI.
+	handOverIn   = 180 * time.Second
 	handOverWhat = "开周会"
 	// Set after that one and due before the switch, while the device's
 	// engine is not running (it exits PRECINCT_DAILY_IDLE_AFTER after
