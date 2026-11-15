@@ -15,7 +15,8 @@
 // comes due on the device and in WeCom → the member makes this device the
 // bot's primary → a WeCom message is answered by the daily engine here,
 // through the gateway → a reminder set by the engine here comes due from the
-// cloud once the bot is back there → the bot runs on the device again, the
+// cloud once the bot is back there → the cloud's model is told what was said
+// while the bot ran on the device → the bot runs on the device again, the
 // device goes offline and the member moves the bot to the cloud from another
 // device → the reminder due meanwhile fires on both, and once the device is
 // back what it did offline is not taken: its copy follows the cloud's, the
@@ -59,6 +60,12 @@
 //     switch goes back to the cloud, whose engine would set the reminder
 //     again on its own (a mutation run that drops the device's changes
 //     passed before this);
+//   - a conversation that does not follow the bot: what the cloud's model is
+//     told after the switch back must hold the device's engine's own answer
+//     to the message with orgMarker as a reply call in the conversation; the
+//     rows that came along (the trigger, the outbox message) are no reply
+//     call, so they cannot pass for it (a mutation run that skips taking the
+//     log fails here);
 //   - a device that comes back after the bot was taken from it while offline
 //     looking right only because nothing happened offline: the device must
 //     have fired the reminder itself (its log) while the cloud fired it in
@@ -127,12 +134,36 @@ func TestOrgChain(t *testing.T) {
 	cloud := map[string]string{}
 	for _, k := range []string{"CLOISTER_E2E_ACCESS", "CLOISTER_E2E_BOT", "CLOISTER_E2E_SYNC", "CLOISTER_E2E_ADMIN", "CLOISTER_E2E_GATEWAY_SECRET",
 		"CLOISTER_E2E_WECOM", "CLOISTER_E2E_USER",
+		"CLOISTER_E2E_MODEL",
 		"ALCOVE_E2E_GATEHOUSE", "ALCOVE_E2E_GATEHOUSE_CLOISTER", "ALCOVE_E2E_GATEWAY_LISTEN", "DOVETAIL_DAILY_TGZ", "DOVETAIL_CLOISTER_TGZ"} {
 		if cloud[k] = os.Getenv(k); cloud[k] == "" {
 			t.Skipf("set %s (e2e/org.sh starts the cloud and the gateway and sets all of them)", k)
 		}
 	}
 	access, admin := cloud["CLOISTER_E2E_ACCESS"], cloud["CLOISTER_E2E_ADMIN"]
+	// The edition policy holds proactive WeCom pushes (the offline notice with
+	// its 切回云端 button, say) outside 08:00-21:00 Asia/Shanghai. This chain
+	// is not about that window (Cloister's e2e/wecom.ts is), so it is lifted:
+	// otherwise the notice is held, rightly, whenever this runs after 13:00 UTC.
+	var layers []struct {
+		Level  string         `json:"level"`
+		Target string         `json:"target"`
+		Rules  map[string]any `json:"rules"`
+	}
+	if _, err := adminCall(http.MethodGet, access+"/v1/admin/policy/layers", admin, nil, &layers); err != nil {
+		t.Fatalf("reading the policy layers: %v", err)
+	}
+	for _, l := range layers {
+		if l.Level != "edition" {
+			continue
+		}
+		if bot, ok := l.Rules["daily_bot"].(map[string]any); ok {
+			delete(bot, "proactive_push_hours")
+		}
+		if _, err := adminCall(http.MethodPut, access+"/v1/admin/policy/layers/edition/"+l.Target, admin, map[string]any{"rules": l.Rules}, nil); err != nil {
+			t.Fatalf("lifting the proactive push hours: %v", err)
+		}
+	}
 	// The device reaches the cloud through these, as through its network:
 	// cutting them takes it offline with its plugins still running.
 	var net3 []*cuttable
@@ -722,12 +753,32 @@ func TestOrgChain(t *testing.T) {
 			fmt.Errorf("%q came due on the device before the switch (%.0f s after the reply): handOverIn is too short for this machine", handOverWhat, float64(early.At-promised.At)/1000), "")
 		return
 	}
+	// The member switches back from their phone, not from this device's
+	// settings page: the bot host asks this device to hand over first
+	// (bot.handover), and its engine takes the reminder fired above before
+	// the cloud runs the bot.
+	_, phoneToken, err := enrollDevice(access, admin, "成员的手机")
+	cloudID := ""
+	if err == nil {
+		cloudID, err = cloudInstance(cloud["CLOISTER_E2E_BOT"], phoneToken)
+	}
 	switched := time.Now()
-	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "cloud"}))
+	handedAt := strings.Count(logs(), "handed the bot over")
+	if err == nil {
+		var moved map[string]any
+		var code int
+		code, err = adminCall(http.MethodPost, cloud["CLOISTER_E2E_BOT"]+"/v1/bot/instances/"+url.PathEscape(cloudID)+"/activate", phoneToken, map[string]any{}, &moved)
+		if err == nil && code != http.StatusOK {
+			err = fmt.Errorf("activating the cloud instance from the phone answered %d: %v", code, moved)
+		}
+	}
 	if err == nil {
 		err = waitFor(func() bool { return strings.Contains(pageText(page()), "云端：主力") }, 60*time.Second)
 	}
-	r.step("把主力切回云端：本机的引擎先交出它的改动，插件显示云端为主力", err,
+	if err == nil && strings.Count(logs(), "handed the bot over") == handedAt {
+		err = errors.New("the switch went ahead without this device handing the bot over")
+	}
+	r.step("成员在手机上把主力切回云端：本机先交出它的改动（bot.handover），插件显示云端为主力", err,
 		fmt.Sprintf("%.0f 秒；%s", time.Since(switched).Seconds(), lineWith(pageText(page()), "主力")))
 	if err != nil {
 		return
@@ -763,6 +814,79 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("本机设下的提醒在切回云端后由云端按时发出：到企微与客户端，没有⏰（不是本机发的）", err,
 		fmt.Sprintf("答应后 %.0f 秒到企微：%s", float64(came.At-promised.At)/1000, came.Text))
+	if err != nil {
+		return
+	}
+
+	// The main Session's conversation follows the bot too: the cloud's
+	// engine took the log the device's engine extended, so what was said
+	// while the bot ran here is in what the cloud's model is told. The
+	// device's answer to the message with orgMarker is checked as the
+	// engine's own reply call in the conversation (an assistant tool_use),
+	// which no workspace row turns into: the rows that came along (the
+	// trigger, the outbox message) are no conversation.
+	modelURL := cloud["CLOISTER_E2E_MODEL"]
+	var modelSaw struct {
+		Count  int      `json:"count"`
+		Bodies []string `json:"bodies"`
+	}
+	_, err = adminCall(http.MethodGet, modelURL+"/_fake/requests?from=0", "", nil, &modelSaw)
+	from := modelSaw.Count
+	follow := "我们刚才在本机上说到哪了？"
+	var followed wecomSent
+	if err == nil {
+		_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": follow}, &said)
+	}
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
+	}
+	if err == nil {
+		err = waitFor(func() bool { followed = wecomFind(wecom, member, "收到："+follow); return followed.Text != "" }, 3*time.Minute)
+		if err != nil {
+			err = fmt.Errorf("no answer from the cloud in WeCom: %v", wecomTexts(wecom, member))
+		}
+	}
+	carried, cloudAsked := "", 0
+	if err == nil {
+		modelSaw.Bodies = nil
+		_, err = adminCall(http.MethodGet, modelURL+fmt.Sprintf("/_fake/requests?from=%d", from), "", nil, &modelSaw)
+		cloudAsked = len(modelSaw.Bodies)
+		for _, b := range modelSaw.Bodies {
+			var req struct {
+				Messages []struct {
+					Role    string          `json:"role"`
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			if json.Unmarshal([]byte(b), &req) != nil {
+				continue
+			}
+			for _, m := range req.Messages {
+				var blocks []struct {
+					Type  string          `json:"type"`
+					Name  string          `json:"name"`
+					Input json.RawMessage `json:"input"`
+				}
+				if m.Role != "assistant" || json.Unmarshal(m.Content, &blocks) != nil {
+					continue
+				}
+				for _, bl := range blocks {
+					var in struct {
+						Text string `json:"text"`
+					}
+					if bl.Type == "tool_use" && bl.Name == "orchestrator_reply" && json.Unmarshal(bl.Input, &in) == nil &&
+						strings.HasPrefix(in.Text, "收到：") && strings.Contains(in.Text, orgMarker) {
+						carried = in.Text
+					}
+				}
+			}
+		}
+		if err == nil && carried == "" {
+			err = fmt.Errorf("none of the cloud model's %d request(s) for %q has the device's answer about %q in its conversation", cloudAsked, follow, orgMarker)
+		}
+	}
+	r.step("会话记录跟着主力走：切回云端后，云端引擎回答企微里的新消息时，给模型的对话里有在本机时 bot 的回答", err,
+		fmt.Sprintf("云端模型收到 %d 个请求；其中带着本机时的回答：%.80s", cloudAsked, carried))
 	if err != nil {
 		return
 	}
@@ -817,36 +941,33 @@ func TestOrgChain(t *testing.T) {
 	cutAt := time.Now()
 	if firedHere() != firedAt {
 		offline(false)
-		r.step("本机断网（插件仍在运行），成员在手机上把主力强制切回云端", fmt.Errorf("the reminder fired before the device went offline (%.1f s after the promise)", time.Since(spoke).Seconds()), "")
+		r.step("本机断网（插件仍在运行），成员在企微里发消息，收到本机离线的提示，点「切回云端」", fmt.Errorf("the reminder fired before the device went offline (%.1f s after the promise)", time.Since(spoke).Seconds()), "")
 		return
 	}
-	_, phoneToken, err := enrollDevice(access, admin, "成员的手机")
-	var instances []struct {
-		InstanceID string `json:"instance_id"`
-		Kind       string `json:"kind"`
-		State      string `json:"state"`
+	// The member writes in WeCom meanwhile. The message waits for the device,
+	// and the member is told it is offline, with a 切回云端 button: one tap
+	// moves the bot back to the cloud (forced), which then answers.
+	time.Sleep(3 * time.Second) // the bot host sees the device gone (presence window)
+	offlineAsk := "本机离线了吗"
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": offlineAsk}, &said)
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
 	}
+	var notice wecomCard
 	if err == nil {
-		_, err = adminCall(http.MethodGet, cloud["CLOISTER_E2E_BOT"]+"/v1/bot/instances", phoneToken, nil, &instances)
-	}
-	cloudID := ""
-	for _, in := range instances {
-		if in.Kind == "cloud" {
-			cloudID = in.InstanceID
+		err = waitFor(func() bool { notice = wecomCardWith(wecom, member, "切回云端"); return notice.TaskID != "" }, 30*time.Second)
+		if err != nil {
+			err = fmt.Errorf("no offline notice with a 切回云端 button in WeCom: %v", wecomTexts(wecom, member))
 		}
 	}
-	if err == nil && cloudID == "" {
-		err = fmt.Errorf("no cloud instance among %v", instances)
-	}
 	if err == nil {
-		var moved map[string]any
-		var code int
-		code, err = adminCall(http.MethodPost, cloud["CLOISTER_E2E_BOT"]+"/v1/bot/instances/"+url.PathEscape(cloudID)+"/activate", phoneToken, map[string]any{"force": true}, &moved)
-		if err == nil && code != http.StatusOK {
-			err = fmt.Errorf("activating the cloud instance answered %d: %v", code, moved)
+		var clicked struct{ Status int }
+		_, err = adminCall(http.MethodPost, wecom+"/_fake/click", "", map[string]string{"userid": member, "task_id": notice.TaskID, "key": notice.Key, "response_code": notice.ResponseCode}, &clicked)
+		if err == nil && clicked.Status != http.StatusOK {
+			err = fmt.Errorf("the bot host answered the click with %d", clicked.Status)
 		}
 	}
-	r.step("本机断网（插件仍在运行），成员在手机上把主力强制切回云端", err, "")
+	r.step("本机断网（插件仍在运行），成员在企微里发消息，收到本机离线的提示，点「切回云端」", err, notice.Title)
 	if err != nil {
 		offline(false)
 		return
@@ -937,6 +1058,8 @@ func TestOrgChain(t *testing.T) {
 	switch {
 	case err != nil:
 		err = fmt.Errorf("the cloud never answered %q: %v", nudge, wecomTexts(wecom, member))
+	case wecomFind(wecom, member, "收到："+offlineAsk).Text == "":
+		err = fmt.Errorf("the message written while the device was offline was never answered from the cloud: %v", wecomTexts(wecom, member))
 	case reminders != 1 || withClock != 0 || meetings != 1 || punches != 1:
 		err = fmt.Errorf("%q reached WeCom %d times, %q %d, %q %d, %d other message(s) with the device's ⏰: %v", offDue, reminders, "提醒："+handOverWhat, meetings, "提醒："+firedWhat, punches, withClock, wecomTexts(wecom, member))
 	case qerr != nil:
@@ -944,8 +1067,41 @@ func TestOrgChain(t *testing.T) {
 	case unpushed != 0:
 		err = fmt.Errorf("the device's org bot still has %d change(s) it never pushed", unpushed)
 	}
-	r.step("本机离线时发的提醒没有到企微，云端再跑也不会替它发；主力切来切去，每条提醒在企微里只有一条", err,
+	r.step("离线时在企微发的消息由云端回答；本机离线时发的提醒没有到企微，云端再跑也不会替它发；主力切来切去，每条提醒在企微里只有一条", err,
 		fmt.Sprintf("企微里“%s” %d 条、“提醒：%s” %d 条、“提醒：%s” %d 条，其余带⏰ %d 条；本机还有 %d 条改动没推", offDue, reminders, handOverWhat, meetings, firedWhat, punches, withClock, unpushed))
+	if err != nil {
+		return
+	}
+
+	// The offline notice reached this device too, once it was back: a card in
+	// the daily assistant whose 切回云端 button is the bot host's link, which
+	// the cloister plugin follows. With the bot here again, a tap moves it to
+	// the cloud.
+	var card string
+	for _, id := range view.order {
+		if c, ok := view.items[id]["card"].(map[string]any); ok && strings.Contains(fmt.Sprint(c["body"]), "目前离线") {
+			card = id
+		}
+	}
+	caughtAt = caught()
+	err = nil
+	if card == "" {
+		err = fmt.Errorf("no offline notice among what the device shows: %v", view.texts())
+	}
+	if err == nil {
+		err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "device"}))
+	}
+	if err == nil {
+		err = waitFor(func() bool { return strings.Contains(pageText(page()), "（本机）：主力") && caught() > caughtAt }, time.Minute)
+	}
+	if err == nil {
+		// The card is the daily assistant's (an org item); its button goes to cloister as org.action.
+		err = a.Sidecars.UIAction(ctx, dailyPlugin, card, "switch_to_cloud", nil)
+	}
+	if err == nil {
+		err = waitFor(func() bool { return strings.Contains(pageText(page()), "云端：主力") }, time.Minute)
+	}
+	r.step("本机上那条离线提示的「切回云端」按钮：链接交给 cloister 插件，主力从本机回到云端", err, lineWith(pageText(page()), "主力"))
 	if err != nil {
 		return
 	}
@@ -1087,6 +1243,59 @@ type wecomSent struct {
 	ToUser string `json:"touser"`
 	Text   string `json:"text"`
 	At     int64  `json:"at"`
+}
+
+// wecomCard is a button card sent to the member in WeCom, as the stand-in
+// WeCom's /_fake/click takes it.
+type wecomCard struct{ TaskID, Key, ResponseCode, Title string }
+
+// wecomCardWith is the latest card sent to the member with a button labelled
+// label.
+func wecomCardWith(wecom, member, label string) wecomCard {
+	var sent []struct {
+		Card *struct {
+			TaskID    string `json:"task_id"`
+			MainTitle struct {
+				Title string `json:"title"`
+			} `json:"main_title"`
+			Buttons []struct {
+				Text string `json:"text"`
+				Key  string `json:"key"`
+			} `json:"button_list"`
+		} `json:"card"`
+		ResponseCode string `json:"response_code"`
+	}
+	adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+	out := wecomCard{}
+	for _, m := range sent {
+		if m.Card == nil {
+			continue
+		}
+		for _, b := range m.Card.Buttons {
+			if b.Text == label {
+				out = wecomCard{TaskID: m.Card.TaskID, Key: b.Key, ResponseCode: m.ResponseCode, Title: m.Card.MainTitle.Title}
+			}
+		}
+	}
+	return out
+}
+
+// cloudInstance is the member's cloud bot instance, as a device of theirs
+// lists it.
+func cloudInstance(bot, token string) (string, error) {
+	var instances []struct {
+		InstanceID string `json:"instance_id"`
+		Kind       string `json:"kind"`
+	}
+	if _, err := adminCall(http.MethodGet, bot+"/v1/bot/instances", token, nil, &instances); err != nil {
+		return "", err
+	}
+	for _, in := range instances {
+		if in.Kind == "cloud" {
+			return in.InstanceID, nil
+		}
+	}
+	return "", fmt.Errorf("no cloud instance among %v", instances)
 }
 
 // wecomFind is the first message sent to the member in WeCom with exactly
