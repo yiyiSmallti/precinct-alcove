@@ -1,19 +1,23 @@
 //go:build e2e
 
-// The organisation edition end to end, first stretch (Charter
+// The organisation edition end to end, first two stretches (Charter
 // mvp-architecture 7.8, the organisation script): one Alcove core with the
 // real daily and cloister plugins, a real Cloister (access, sync, bothost;
-// e2e/serve.ts in precinct-cloister) and a real Gatehouse in org mode with
-// the real gatehouse-cloister plugin. Scan to join → the admin approves the
-// device → a folder becomes an organisation workspace → a turn there goes
+// e2e/serve.ts in precinct-cloister) with the member's bot running in the
+// cloud (the daily-tools engine where the daily runner would be), and a real
+// Gatehouse in org mode with the real gatehouse-cloister plugin. Scan to
+// join → the admin approves the device → the member asks their bot in WeCom
+// for a reminder → a folder becomes an organisation workspace → a turn there goes
 // out through the gateway → a phone number and a customer name leave as
 // placeholders and come back as themselves → the organisation's audit holds
 // categories and counts only → another device takes the workspace over and
-// this one can no longer write to it, until it gets it back → leaving takes
-// the workspace away and kills the gateway token.
+// this one can no longer write to it, until it gets it back → the reminder
+// comes due on the device and in WeCom → leaving takes the workspace away
+// and kills the gateway token.
 //
-// Only the model provider and WeCom are stand-ins. The provider keeps what
-// it was sent, which is the evidence of what left for the outside.
+// Only the model providers (the gateway's and the cloud bot's) and WeCom are
+// stand-ins. The gateway's provider keeps what it was sent, which is the
+// evidence of what left for the outside.
 //
 // Ways this could pass while the product is wrong, and what rules each out:
 //   - nothing reached the provider at all: "no phone number in what it got"
@@ -29,13 +33,18 @@
 //   - the audit kept values or placeholders: its record is searched for both;
 //   - a gateway token that outlives membership: it is used once before
 //     leaving (accepted) and again afterwards (refused);
+//   - a bot that only seems to answer: the reply in WeCom and the reminder
+//     carry the words of the request (the cloud bot's model takes them from
+//     what the engine shows it), and the reminder must come no sooner than
+//     its time after the reply, so it is the host's timer and not an echo;
+//   - a reminder that reaches only one side: it is looked for both in the
+//     daily assistant's conversation on the device and in WeCom;
 //   - "read-only" that is only the plugin no longer uploading: while another
 //     device holds the workspace, the model here is told to write a file and
 //     then to ask for full access, and with an answerer that would say yes
 //     to anything, no file may appear and nothing may be asked.
 //
-// Not here yet: the conversation with the bot in WeCom, cloud tasks, the
-// switch of the bot's primary environment. e2e/org.sh starts everything and
+// Not here yet: cloud tasks, the switch of the bot's primary environment. e2e/org.sh starts everything and
 // sets the variables below. Writes e2e/report/org-chain.md.
 package e2e
 
@@ -88,6 +97,7 @@ var placeholder = regexp.MustCompile(`\{\{[A-Z_]+_[a-z2-7]{8}\}\}`)
 func TestOrgChain(t *testing.T) {
 	cloud := map[string]string{}
 	for _, k := range []string{"CLOISTER_E2E_ACCESS", "CLOISTER_E2E_BOT", "CLOISTER_E2E_SYNC", "CLOISTER_E2E_ADMIN", "CLOISTER_E2E_GATEWAY_SECRET",
+		"CLOISTER_E2E_WECOM", "CLOISTER_E2E_USER",
 		"ALCOVE_E2E_GATEHOUSE", "ALCOVE_E2E_GATEHOUSE_CLOISTER", "ALCOVE_E2E_GATEWAY_LISTEN", "DOVETAIL_DAILY_TGZ", "DOVETAIL_CLOISTER_TGZ"} {
 		if cloud[k] = os.Getenv(k); cloud[k] == "" {
 			t.Skipf("set %s (e2e/org.sh starts the cloud and the gateway and sets all of them)", k)
@@ -99,7 +109,7 @@ func TestOrgChain(t *testing.T) {
 	work := shortTemp(t)
 	base := testCLI(t, work)
 	ver, _ := base.Version(ctx)
-	r := &report{t: t, title: "组织版整链验收（第一段）：扫码加入 → 设备审批 → 组织工作区 → 经网关脱敏 → 审计 → 退出组织", file: "org-chain.md"}
+	r := &report{t: t, title: "组织版整链验收（前两段）：扫码加入 → 设备审批 → 企微里设提醒 → 组织工作区 → 经网关脱敏 → 审计 → 提醒到客户端与企微 → 退出组织", file: "org-chain.md"}
 	defer r.write(fmt.Sprintf("dsh %s · %s/%s · %s · %s · 真实 Cloister 与 Gatehouse，模型与企微是假的 · %s", ver, runtime.GOOS, runtime.GOARCH,
 		filepath.Base(cloud["DOVETAIL_DAILY_TGZ"]), filepath.Base(cloud["DOVETAIL_CLOISTER_TGZ"]), time.Now().UTC().Format(time.RFC3339)))
 
@@ -314,6 +324,34 @@ func TestOrgChain(t *testing.T) {
 		return
 	}
 
+	// In WeCom the member asks their bot for a reminder. The bot answers there;
+	// the reminder comes due while the rest of the chain runs and is looked
+	// for further down.
+	wecom, member := cloud["CLOISTER_E2E_WECOM"], cloud["CLOISTER_E2E_USER"]
+	spoke := time.Now()
+	var said struct {
+		Status int `json:"status"`
+	}
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": fmt.Sprintf("%d 秒后提醒我%s", int(remindIn/time.Second), remindWhat)}, &said)
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
+	}
+	var reply wecomSent
+	if err == nil {
+		want := fmt.Sprintf("好的，%d 秒后提醒你%s。", int(remindIn/time.Second), remindWhat)
+		// The first message wakes the member's cloud runner: the engine starts
+		// and attaches before it answers.
+		err = waitFor(func() bool { reply = wecomFind(wecom, member, want); return reply.Text != "" }, 3*time.Minute)
+		if err != nil {
+			err = fmt.Errorf("no %q in WeCom; sent there: %v", want, wecomTexts(wecom, member))
+		}
+	}
+	r.step(fmt.Sprintf("在企微里对日常 bot 说“%d 秒后提醒我%s”：云端的 bot（真实 daily 引擎）在企微里答应", int(remindIn/time.Second), remindWhat), err,
+		fmt.Sprintf("%.0f 秒后答：%s", time.Since(spoke).Seconds(), reply.Text))
+	if err != nil {
+		return
+	}
+
 	// An organisation workspace out of an ordinary folder.
 	dir := filepath.Join(work, "org-proj")
 	os.MkdirAll(dir, 0o755)
@@ -439,6 +477,18 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("组织的审计里有这次调用，只有类别与计数", err, strings.TrimSpace(fmt.Sprintf("%.300s", raw)))
 
+	// The reminder asked for in WeCom: due now or soon, on both sides.
+	due := "提醒：" + remindWhat
+	var fired wecomSent
+	err = waitFor(func() bool { fired = wecomFind(wecom, member, due); return fired.Text != "" && view.has(due) }, remindIn+2*time.Minute)
+	switch {
+	case err != nil:
+		err = fmt.Errorf("in WeCom: %v; on the device: %v", wecomTexts(wecom, member), view.texts())
+	case time.Duration(fired.At-reply.At)*time.Millisecond < remindIn-5*time.Second:
+		err = fmt.Errorf("the reminder came %d ms after the reply, sooner than the %s asked for", fired.At-reply.At, remindIn)
+	}
+	r.step("到点提醒同时到客户端（daily 助手的对话）与企微", err, fmt.Sprintf("答应后 %.0f 秒到企微", float64(fired.At-reply.At)/1000))
+
 	// Another of the member's devices takes the workspace over. From then on
 	// this one may read it and nothing more: the model's write does not
 	// land, and its request for full access is turned down without the user
@@ -543,6 +593,43 @@ func TestOrgChain(t *testing.T) {
 		}
 	}
 	r.step(fmt.Sprintf("退出后旧的网关令牌失效（%s 之内）", departureLimit), err, fmt.Sprintf("退出前 %d；退出后 %s 起网关答 %d", before, time.Since(left).Round(time.Second), after))
+}
+
+// The reminder the member asks their bot for in WeCom: long enough to be
+// due after the workspace steps rather than at once.
+const (
+	remindIn   = 30 * time.Second
+	remindWhat = "交周报"
+)
+
+// wecomSent is a message the fake WeCom says the app sent; At is in ms.
+type wecomSent struct {
+	ToUser string `json:"touser"`
+	Text   string `json:"text"`
+	At     int64  `json:"at"`
+}
+
+// wecomFind is the first message sent to the member in WeCom with exactly
+// this text; none has an empty Text.
+func wecomFind(wecom, member, text string) wecomSent {
+	var sent []wecomSent
+	adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+	for _, m := range sent {
+		if m.Text == text {
+			return m
+		}
+	}
+	return wecomSent{}
+}
+
+func wecomTexts(wecom, member string) []string {
+	var sent []wecomSent
+	adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+	var out []string
+	for _, m := range sent {
+		out = append(out, m.Text)
+	}
+	return out
 }
 
 // departureLimit is how long a member's gateway token may go on working

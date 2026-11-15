@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 组织版整链验收，第一段（Charter 架构文档第 7 节第 8 条的组织那条）：跑 e2e 的 TestOrgChain。
-# 真实的：Alcove 核心、daily 与 cloister 两个插件、Cloister（access、sync、bothost）、Gatehouse（org 模式）
-# 与它的 gatehouse-cloister 插件。假的：模型提供方、企业微信、云沙盒编排。写出 e2e/report/org-chain.md。
+# 组织版整链验收，前两段（Charter 架构文档第 7 节第 8 条的组织那条）：跑 e2e 的 TestOrgChain。
+# 真实的：Alcove 核心、daily 与 cloister 两个插件、Cloister（access、sync、bothost）、成员在云端的 bot
+# （daily-tools 引擎，从 DOVETAIL_DIR 现打，跑在随包的 dsh 里）、Gatehouse（org 模式）与它的 gatehouse-cloister
+# 插件。假的：两个模型提供方、企业微信、云沙盒编排。写出 e2e/report/org-chain.md。
 #
 # 用法：e2e/org.sh        要 DATABASE_URL（一个能 CREATE DATABASE 的 Postgres）、go、node ≥ 22.18、pnpm
 #   DOVETAIL_DIR、CLOISTER_DIR、GATEHOUSE_DIR   三个仓库的检出，默认是本仓库旁边的 precinct-*；
@@ -76,18 +77,22 @@ printf '\n== 编译 e2e\n'
 printf '\n== 起 Cloister（%s）\n' "$CLOISTER"
 PORT=$("$ALCOVE_E2E_NODE" -e 's=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
 export ALCOVE_E2E_GATEWAY_LISTEN="127.0.0.1:$PORT"
-(cd "$CLOISTER" && CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" exec node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
+# 云端的 bot 用随包的 dsh：ALCOVE_E2E_DSH 是 <node_modules>/@deepseek-ai/dsh/lib/bin.js。
+DSH_MODULES=$(cd "$(dirname "$ALCOVE_E2E_DSH")/../../.." && pwd)
+(cd "$CLOISTER" && CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES" \
+  exec node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
 CLOUD_PID=$!
-for _ in $(seq 900); do
+# 先要打出 daily 包、装进 bot 的 daily profile，一两分钟。
+for _ in $(seq 3000); do
   [ -f "$W/cloud.env" ] && break
   kill -0 "$CLOUD_PID" 2>/dev/null || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not start"; }
   sleep 0.1
 done
-[ -f "$W/cloud.env" ] || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not come up in 90 s"; }
+[ -f "$W/cloud.env" ] || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not come up in 5 minutes"; }
 # shellcheck disable=SC1091
 . "$W/cloud.env"
 
 printf '\n== 跑整链（网关 %s）\n' "$ALCOVE_E2E_GATEWAY_LISTEN"
 (cd "$ROOT/e2e" && "$W/e2e.test" -test.run '^TestOrgChain$' -test.count=1 -test.v) 2>&1 | tee "$W/test.log"
 # 测试自己会在缺东西时跳过，跳过的退出码也是 0：这里只认它真的跑过并通过。
-grep -q -- '^--- PASS: TestOrgChain' "$W/test.log" || fail "TestOrgChain did not run to a pass (skipped or not run)"
+grep -q -- '^--- PASS: TestOrgChain' "$W/test.log" || { tail -60 "$W/cloud.log" >&2; fail "TestOrgChain did not run to a pass (skipped or not run)"; }
