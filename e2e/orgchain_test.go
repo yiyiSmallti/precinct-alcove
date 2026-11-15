@@ -15,8 +15,12 @@
 // comes due on the device and in WeCom → the member makes this device the
 // bot's primary → a WeCom message is answered by the daily engine here,
 // through the gateway → a reminder set by the engine here comes due from the
-// cloud once the bot is back there → leaving takes the workspace away and
-// kills the gateway token.
+// cloud once the bot is back there → the bot runs on the device again, the
+// device goes offline and the member moves the bot to the cloud from another
+// device → the reminder due meanwhile fires on both, and once the device is
+// back what it did offline is not taken: its copy follows the cloud's, the
+// settings page says so, and nothing it wrote then reaches WeCom → leaving
+// takes the workspace away and kills the gateway token.
 //
 // Only the model providers (the gateway's and the cloud bot's) and WeCom are
 // stand-ins. The gateway's provider keeps what it was sent, which is the
@@ -55,12 +59,20 @@
 //     switch goes back to the cloud, whose engine would set the reminder
 //     again on its own (a mutation run that drops the device's changes
 //     passed before this);
+//   - a device that comes back after the bot was taken from it while offline
+//     looking right only because nothing happened offline: the device must
+//     have fired the reminder itself (its log) while the cloud fired it in
+//     WeCom; then exactly one reminder may reach WeCom, none with the
+//     device's ⏰, even after the cloud's engine ran again (it would send a
+//     reply the device left in the stream), and the device's own database
+//     must no longer hold the reply it wrote offline (put back to the
+//     cloud's version, not just never sent);
 //   - "read-only" that is only the plugin no longer uploading: while another
 //     device holds the workspace, the model here is told to write a file and
 //     then to ask for full access, and with an answerer that would say yes
 //     to anything, no file may appear and nothing may be asked.
 //
-// Not here yet: cloud tasks; a device that goes offline while the bot runs there. e2e/org.sh starts everything and
+// Not here yet: cloud tasks. e2e/org.sh starts everything and
 // sets the variables below. Writes e2e/report/org-chain.md.
 package e2e
 
@@ -72,6 +84,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -120,6 +133,28 @@ func TestOrgChain(t *testing.T) {
 		}
 	}
 	access, admin := cloud["CLOISTER_E2E_ACCESS"], cloud["CLOISTER_E2E_ADMIN"]
+	// The device reaches the cloud through these, as through its network:
+	// cutting them takes it offline with its plugins still running.
+	var net3 []*cuttable
+	through := func(raw string) string {
+		p, err := newCuttable(raw)
+		if err != nil {
+			t.Fatalf("a proxy in front of %s: %v", raw, err)
+		}
+		net3 = append(net3, p)
+		return p.URL()
+	}
+	devAccess, devBot, devSync := through(access), through(cloud["CLOISTER_E2E_BOT"]), through(cloud["CLOISTER_E2E_SYNC"])
+	offline := func(down bool) {
+		for _, p := range net3 {
+			p.set(down)
+		}
+	}
+	defer func() {
+		for _, p := range net3 {
+			p.close()
+		}
+	}()
 	gateway := "http://" + cloud["ALCOVE_E2E_GATEWAY_LISTEN"]
 	ctx := context.Background()
 	work := shortTemp(t)
@@ -183,6 +218,14 @@ func TestOrgChain(t *testing.T) {
 			calls = append([]*fakeopenai.ToolCall{{Name: "schedule_create", Args: map[string]any{
 				"at": time.Now().Add(secs).Format(time.RFC3339), "timezone": "Asia/Shanghai", "kind": "notify", "text": "提醒：" + m[2], "trigger_id": id}}}, calls...)
 			calls[1].Args["text"] = fmt.Sprintf("好的，%s 秒后提醒你%s。", m[1], m[2])
+		}
+		// "N 秒后开始每天提醒我…": the first in N seconds, then daily.
+		if m := regexp.MustCompile(`(\d+) 秒后开始每天提醒我(\S+?)[。.!！]?$`).FindStringSubmatch(strings.TrimSpace(text)); m != nil {
+			secs, _ := time.ParseDuration(m[1] + "s")
+			calls = append([]*fakeopenai.ToolCall{{Name: "schedule_create", Args: map[string]any{
+				"at": time.Now().Add(secs).Format(time.RFC3339), "timezone": "Asia/Shanghai", "recurrence": "FREQ=DAILY;COUNT=3",
+				"kind": "notify", "text": "提醒：" + m[2], "trigger_id": id}}}, calls...)
+			calls[1].Args["text"] = fmt.Sprintf("好的，%s 秒后开始每天提醒你%s。", m[1], m[2])
 		}
 		if results < len(calls) {
 			return calls[results]
@@ -261,7 +304,20 @@ func TestOrgChain(t *testing.T) {
 		return
 	}
 	defer a.Close()
-	a.Sidecars.Services.Log = rec.log
+	// The same lines with the time each came, for telling what happened when.
+	var stampMu sync.Mutex
+	var stamped []string
+	a.Sidecars.Services.Log = func(plugin, level, msg string) {
+		rec.log(plugin, level, msg)
+		stampMu.Lock()
+		stamped = append(stamped, time.Now().Format("15:04:05.000")+" "+msg)
+		stampMu.Unlock()
+	}
+	stampedTail := func(n int) string {
+		stampMu.Lock()
+		defer stampMu.Unlock()
+		return strings.Join(stamped[max(0, len(stamped)-n):], "\n")
+	}
 	a.Sidecars.Backoff = 100 * time.Millisecond
 	// The cloister sidecar opens the sign-in page in the system browser;
 	// here the test follows that address itself, so the opener is a no-op.
@@ -273,8 +329,8 @@ func TestOrgChain(t *testing.T) {
 	a.Sidecars.Env = []string{
 		"ALCOVE_DATA_DIR=" + dataDir,
 		"PATH=" + stubs + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"PRECINCT_CLOISTER_BOT_URL=" + cloud["CLOISTER_E2E_BOT"],
-		"PRECINCT_CLOISTER_SYNC_URL=" + cloud["CLOISTER_E2E_SYNC"],
+		"PRECINCT_CLOISTER_BOT_URL=" + devBot,
+		"PRECINCT_CLOISTER_SYNC_URL=" + devSync,
 		"PRECINCT_CLOISTER_PENDING_POLL=300ms",
 		"PRECINCT_CLOISTER_LEASE_RENEW=2s",
 		// An org turn on the device closes only once its engine went idle (the
@@ -337,7 +393,7 @@ func TestOrgChain(t *testing.T) {
 		}
 		return text
 	}
-	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "join", values(map[string]any{"server_url": access, "device_name": "e2e 设备"}))
+	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "join", values(map[string]any{"server_url": devAccess, "device_name": "e2e 设备"}))
 	var signIn string
 	if err == nil {
 		if waitFor(func() bool {
@@ -637,6 +693,35 @@ func TestOrgChain(t *testing.T) {
 		r.step("本机的引擎答完后空闲退出，回合关闭", err, "")
 		return
 	}
+	// One more, due before the switch: the device fires it without its
+	// engine (a one-shot reminder does not start it), so only the host knows
+	// it went out. The switch hands it to the engine first; otherwise the
+	// cloud finds it still due and sends it again.
+	firedText := "提醒：" + firedWhat
+	spoke = time.Now()
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": fmt.Sprintf("%d 秒后提醒我%s", int(firedIn/time.Second), firedWhat)}, &said)
+	if err == nil {
+		want := fmt.Sprintf("好的，%d 秒后提醒你%s。", int(firedIn/time.Second), firedWhat)
+		err = waitFor(func() bool { return wecomFind(wecom, member, want).Text != "" }, 3*time.Minute)
+	}
+	if err == nil {
+		idleAt = idle()
+		err = waitFor(func() bool { return idle() > idleAt }, time.Minute)
+	}
+	var firedHereMsg wecomSent
+	if err == nil {
+		err = waitFor(func() bool { firedHereMsg = wecomFind(wecom, member, "⏰ "+firedText); return firedHereMsg.Text != "" }, firedIn+time.Minute)
+	}
+	r.step(fmt.Sprintf("本机为主力时设“%d 秒后提醒我%s”：引擎答完退出，提醒到点由本机发到企微（不拉起引擎）", int(firedIn/time.Second), firedWhat), err,
+		fmt.Sprintf("%.0f 秒后：%s", time.Since(spoke).Seconds(), firedHereMsg.Text))
+	if err != nil {
+		return
+	}
+	if early := wecomFind(wecom, member, "⏰ 提醒："+handOverWhat); early.Text != "" {
+		r.step("把主力切回云端：本机的引擎先交出它的改动，插件显示云端为主力",
+			fmt.Errorf("%q came due on the device before the switch (%.0f s after the reply): handOverIn is too short for this machine", handOverWhat, float64(early.At-promised.At)/1000), "")
+		return
+	}
 	switched := time.Now()
 	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "cloud"}))
 	if err == nil {
@@ -678,6 +763,189 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("本机设下的提醒在切回云端后由云端按时发出：到企微与客户端，没有⏰（不是本机发的）", err,
 		fmt.Sprintf("答应后 %.0f 秒到企微：%s", float64(came.At-promised.At)/1000, came.Text))
+	if err != nil {
+		return
+	}
+
+	// The bot runs on the device again, and the device goes offline: its
+	// network is gone, its plugins keep running. The member moves the bot to
+	// the cloud from their phone. A reminder due meanwhile fires on both: the
+	// device does not know the bot left. When the device is back, what it
+	// did offline is not taken, so the cloud does not send it again; the
+	// device's copy goes back to the cloud's version, and its settings page
+	// says what was not taken.
+	caught := func() int { return strings.Count(logs(), "the org bot caught up with the cloud") }
+	caughtAt := caught()
+	err = a.Sidecars.UIAction(ctx, cloisterPlugin, cloisterPage, "submit", values(map[string]any{"bot_primary": "device"}))
+	if err == nil {
+		err = waitFor(func() bool { return strings.Contains(pageText(page()), "（本机）：主力") && caught() > caughtAt }, time.Minute)
+	}
+	r.step("再把主力切到本机：本机的引擎追上云端的变更", err, lineWith(pageText(page()), "主力"))
+	if err != nil {
+		return
+	}
+	spoke = time.Now()
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": fmt.Sprintf("%d 秒后开始每天提醒我%s", int(offlineIn/time.Second), offlineWhat)}, &said)
+	if err == nil && said.Status != http.StatusOK {
+		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
+	}
+	var kept wecomSent
+	if err == nil {
+		want := fmt.Sprintf("好的，%d 秒后开始每天提醒你%s。", int(offlineIn/time.Second), offlineWhat)
+		err = waitFor(func() bool { kept = wecomFind(wecom, member, want); return kept.Text != "" }, 3*time.Minute)
+		if err != nil {
+			err = fmt.Errorf("no %q in WeCom; sent there: %v", want, wecomTexts(wecom, member))
+		}
+	}
+	if err == nil {
+		// Pushed: the cloud has the reminder before the device goes. The
+		// engine stays up (it goes idle only after a while), so the reminder
+		// fires into a running engine that then cannot push.
+		err = waitFor(func() bool {
+			n, err := orgBotCount(dataDir, "SELECT count(*) FROM replica_log")
+			return err == nil && n == 0
+		}, 5*time.Second)
+	}
+	r.step(fmt.Sprintf("本机为主力时在企微里说“%d 秒后开始每天提醒我%s”：本机设下每天的提醒并推到云端", int(offlineIn/time.Second), offlineWhat), err,
+		fmt.Sprintf("%.0f 秒后答：%s", time.Since(spoke).Seconds(), kept.Text))
+	if err != nil {
+		return
+	}
+	firedHere := func() int { return strings.Count(logs(), "org bot: schedule ") }
+	firedAt := firedHere()
+	offline(true)
+	cutAt := time.Now()
+	if firedHere() != firedAt {
+		offline(false)
+		r.step("本机断网（插件仍在运行），成员在手机上把主力强制切回云端", fmt.Errorf("the reminder fired before the device went offline (%.1f s after the promise)", time.Since(spoke).Seconds()), "")
+		return
+	}
+	_, phoneToken, err := enrollDevice(access, admin, "成员的手机")
+	var instances []struct {
+		InstanceID string `json:"instance_id"`
+		Kind       string `json:"kind"`
+		State      string `json:"state"`
+	}
+	if err == nil {
+		_, err = adminCall(http.MethodGet, cloud["CLOISTER_E2E_BOT"]+"/v1/bot/instances", phoneToken, nil, &instances)
+	}
+	cloudID := ""
+	for _, in := range instances {
+		if in.Kind == "cloud" {
+			cloudID = in.InstanceID
+		}
+	}
+	if err == nil && cloudID == "" {
+		err = fmt.Errorf("no cloud instance among %v", instances)
+	}
+	if err == nil {
+		var moved map[string]any
+		var code int
+		code, err = adminCall(http.MethodPost, cloud["CLOISTER_E2E_BOT"]+"/v1/bot/instances/"+url.PathEscape(cloudID)+"/activate", phoneToken, map[string]any{"force": true}, &moved)
+		if err == nil && code != http.StatusOK {
+			err = fmt.Errorf("activating the cloud instance answered %d: %v", code, moved)
+		}
+	}
+	r.step("本机断网（插件仍在运行），成员在手机上把主力强制切回云端", err, "")
+	if err != nil {
+		offline(false)
+		return
+	}
+	offDue := "提醒：" + offlineWhat
+	var cloudFired wecomSent
+	err = waitFor(func() bool {
+		cloudFired = wecomSent{}
+		var sent []wecomSent
+		adminCall(http.MethodGet, wecom+"/_fake/sent?touser="+url.QueryEscape(member), "", nil, &sent)
+		for _, m := range sent {
+			if strings.Contains(m.Text, offDue) {
+				cloudFired = m
+			}
+		}
+		return cloudFired.Text != "" && firedHere() > firedAt
+	}, offlineIn+3*time.Minute)
+	if err != nil {
+		err = fmt.Errorf("in WeCom: %v; fired on the device: %d", wecomTexts(wecom, member), firedHere()-firedAt)
+	}
+	unpushed := 0
+	if err == nil {
+		// The device's engine, still up, moves the reminder to the next day
+		// and cannot push that: still offline.
+		err = waitFor(func() bool {
+			n, err := orgBotCount(dataDir, "SELECT count(*) FROM replica_log WHERE tbl = 'schedule'")
+			unpushed = n
+			return err == nil && n > 0
+		}, 30*time.Second)
+		if err != nil {
+			err = fmt.Errorf("the device's engine logged no change of the schedule it fired offline: %v", err)
+		}
+	}
+	r.step("离线期间提醒到点：云端发到企微，断网的本机也自己发了一遍（发不出去），它的引擎把日程推进到下一次", err,
+		fmt.Sprintf("答应后 %.0f 秒到企微：%s；本机有 %d 条日程的改动推不出去", float64(cloudFired.At-kept.At)/1000, cloudFired.Text, unpushed))
+	if err != nil {
+		offline(false)
+		return
+	}
+	offline(false)
+	back := time.Now()
+	err = waitFor(func() bool {
+		return strings.Contains(pageText(page()), "处改动没有采用") && strings.Contains(pageText(page()), "云端：主力")
+	}, 2*time.Minute)
+	if err != nil {
+		db, _ := orgBotDB(dataDir)
+		dump, _ := exec.Command("sqlite3", "-cmd", ".timeout 5000", db, "SELECT 'effect', kind, key, attempts FROM effect; SELECT 'outbox', id, substr(value,1,160) FROM outbox; SELECT 'schedule', id, substr(value,1,240) FROM schedule; SELECT 'log', n, tbl, pk, op, substr(row,1,200) FROM replica_log; SELECT 'ctl', * FROM replica_ctl;").CombinedOutput()
+		t.Logf("device org bot after coming back (%s):\n%s\ncut %s, mended %s; sidecar log with times:\n%s", db, dump, cutAt.Format("15:04:05.000"), back.Format("15:04:05.000"), stampedTail(80))
+	}
+	r.step("本机回线：插件显示云端为主力，并说明本机离线期间的改动没有采用", err,
+		fmt.Sprintf("%.0f 秒；%s", time.Since(back).Seconds(), lineWith(pageText(page()), "没有采用")))
+	if err != nil {
+		return
+	}
+	// The cloud's engine runs again (a reminder asked for there): a reply the
+	// device left in the stream would be sent now.
+	nudge := fmt.Sprintf("%d 秒后提醒我%s", int(nudgeIn/time.Second), nudgeWhat)
+	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": nudge}, &said)
+	if err == nil {
+		err = waitFor(func() bool { return wecomFind(wecom, member, "提醒："+nudgeWhat).Text != "" }, 3*time.Minute)
+	}
+	if err == nil {
+		time.Sleep(5 * time.Second)
+	}
+	reminders, withClock, meetings, punches := 0, 0, 0, 0
+	for _, m := range wecomTexts(wecom, member) {
+		// Sent by the device while it ran the bot; the cloud must not send it
+		// again after the switch.
+		if strings.Contains(m, "提醒："+firedWhat) {
+			punches++
+			continue
+		}
+		if strings.Contains(m, offDue) {
+			reminders++
+		}
+		// The cloud sent this one before the bot came back here; the device
+		// must not send it again (the hand-over gave it to the engine).
+		if strings.Contains(m, "提醒："+handOverWhat) {
+			meetings++
+		}
+		if strings.Contains(m, "⏰") {
+			withClock++
+		}
+	}
+	// What the device changed offline went to the stream and came back
+	// refused: nothing of it is left to push.
+	unpushed, qerr := orgBotCount(dataDir, "SELECT count(*) FROM replica_log")
+	switch {
+	case err != nil:
+		err = fmt.Errorf("the cloud never answered %q: %v", nudge, wecomTexts(wecom, member))
+	case reminders != 1 || withClock != 0 || meetings != 1 || punches != 1:
+		err = fmt.Errorf("%q reached WeCom %d times, %q %d, %q %d, %d other message(s) with the device's ⏰: %v", offDue, reminders, "提醒："+handOverWhat, meetings, "提醒："+firedWhat, punches, withClock, wecomTexts(wecom, member))
+	case qerr != nil:
+		err = qerr
+	case unpushed != 0:
+		err = fmt.Errorf("the device's org bot still has %d change(s) it never pushed", unpushed)
+	}
+	r.step("本机离线时发的提醒没有到企微，云端再跑也不会替它发；主力切来切去，每条提醒在企微里只有一条", err,
+		fmt.Sprintf("企微里“%s” %d 条、“提醒：%s” %d 条、“提醒：%s” %d 条，其余带⏰ %d 条；本机还有 %d 条改动没推", offDue, reminders, handOverWhat, meetings, firedWhat, punches, withClock, unpushed))
 	if err != nil {
 		return
 	}
@@ -793,10 +1061,25 @@ func TestOrgChain(t *testing.T) {
 // while the bot runs on the device and comes due after it is back in the
 // cloud.
 const (
-	remindIn     = 30 * time.Second
-	remindWhat   = "交周报"
-	handOverIn   = 60 * time.Second
+	remindIn   = 30 * time.Second
+	remindWhat = "交周报"
+	// Long enough for the next step (a whole device turn, then its 20 s
+	// reminder) to finish before it is due: a device turn takes about 90 s
+	// on CI.
+	handOverIn   = 180 * time.Second
 	handOverWhat = "开周会"
+	// Set after that one and due before the switch, while the device's
+	// engine is not running (it exits PRECINCT_DAILY_IDLE_AFTER after
+	// answering).
+	firedIn   = 20 * time.Second
+	firedWhat = "打卡"
+	// The third is set on the device and comes due while it is offline:
+	// soon, so that it fires into the engine that set it, before that goes
+	// idle (PRECINCT_DAILY_IDLE_AFTER).
+	offlineIn   = 8 * time.Second
+	offlineWhat = "写周报"
+	nudgeIn     = 5 * time.Second
+	nudgeWhat   = "喝水"
 )
 
 // wecomSent is a message the fake WeCom says the app sent; At is in ms.
@@ -1078,4 +1361,128 @@ func (g *gatehouse) chat(token, text string) (int, error) {
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
+}
+
+// cuttable stands between the device and a cloud service as the device's
+// network: set(true) closes every connection through it and refuses new
+// ones, set(false) lets them through again.
+type cuttable struct {
+	ln     net.Listener
+	scheme string
+	target string
+	mu     sync.Mutex
+	down   bool
+	conns  map[net.Conn]struct{}
+}
+
+func newCuttable(raw string) (*cuttable, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	p := &cuttable{ln: ln, scheme: u.Scheme, target: u.Host, conns: map[net.Conn]struct{}{}}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go p.pipe(c)
+		}
+	}()
+	return p, nil
+}
+
+func (p *cuttable) URL() string { return p.scheme + "://" + p.ln.Addr().String() }
+
+// keep tracks c while the network is up; false (and c closed) when it is down.
+func (p *cuttable) keep(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.down {
+		c.Close()
+		return false
+	}
+	p.conns[c] = struct{}{}
+	return true
+}
+
+func (p *cuttable) drop(cs ...net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range cs {
+		c.Close()
+		delete(p.conns, c)
+	}
+}
+
+func (p *cuttable) pipe(c net.Conn) {
+	if !p.keep(c) {
+		return
+	}
+	s, err := net.Dial("tcp", p.target)
+	if err != nil {
+		p.drop(c)
+		return
+	}
+	if !p.keep(s) {
+		p.drop(c)
+		return
+	}
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(s, c); done <- struct{}{} }()
+	go func() { io.Copy(c, s); done <- struct{}{} }()
+	<-done
+	p.drop(c, s)
+}
+
+func (p *cuttable) set(down bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.down = down
+	if down {
+		for c := range p.conns {
+			c.Close()
+			delete(p.conns, c)
+		}
+	}
+}
+
+func (p *cuttable) close() {
+	p.ln.Close()
+	p.set(true)
+}
+
+// orgBotCount runs a count over the device's org bot database (bot-org).
+func orgBotCount(dataDir, query string) (int, error) {
+	db, err := orgBotDB(dataDir)
+	if err != nil {
+		return 0, err
+	}
+	out, err := exec.Command("sqlite3", "-cmd", ".timeout 5000", db, query).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite3 %s: %v: %s", db, err, out)
+	}
+	var n int
+	_, err = fmt.Sscan(strings.TrimSpace(string(out)), &n)
+	return n, err
+}
+
+// orgBotDB is the device's org bot database (bot-org).
+func orgBotDB(dataDir string) (string, error) {
+	db := ""
+	filepath.WalkDir(dataDir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "orchestrator.sqlite" && strings.Contains(filepath.ToSlash(path), "/bot-org/") {
+			db = path
+		}
+		return nil
+	})
+	if db == "" {
+		return "", fmt.Errorf("no org bot database under %s", dataDir)
+	}
+	return db, nil
 }
