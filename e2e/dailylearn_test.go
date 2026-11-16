@@ -308,6 +308,26 @@ func TestDailyLearn(t *testing.T) {
 		return
 	}
 
+	// 7. Deleted on the 技能 page: the personal context's copy goes too,
+	// and a skill daily did not write there stays.
+	other := filepath.Join(a.Layout.PersonalHome(), "skills", "my-own", "SKILL.md")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	err = os.WriteFile(other, []byte("---\nname: my-own\ndescription: mine\n---\nmine\n"), 0o644)
+	if err == nil {
+		err = a.Sidecars.UIAction(ctx, dailyPlugin, "skills", "delete:release-notes", json.RawMessage(`{"values":{}}`))
+	}
+	if err == nil {
+		err = waitFor(func() bool {
+			_, shared := os.Stat(filepath.Join(a.Layout.PersonalHome(), "skills", "release-notes"))
+			_, own := os.Stat(filepath.Join(dataDir, "bot", ".dsh", "skills", "release-notes"))
+			return os.IsNotExist(shared) && os.IsNotExist(own)
+		}, 20*time.Second)
+	}
+	if _, serr := os.Stat(other); err == nil && serr != nil {
+		err = fmt.Errorf("a skill daily did not write was removed: %v", serr)
+	}
+	r.step("在「技能」页删掉学到的技能：助手自己的和个人上下文里的副本都删掉，别的个人技能不动", err, "")
+
 	err = nil
 	if e := bot.errors(); e != "" {
 		err = fmt.Errorf("tool errors: %s", e)
