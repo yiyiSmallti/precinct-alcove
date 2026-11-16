@@ -48,6 +48,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: yiyiSmallti/precinct-cloister
+          ref: e2e-ticket-lets-go # TEMP: verify the Cloister e2e fix before it merges
           ssh-key: ${{ secrets.CLOISTER_DEPLOY_KEY }}
           path: .deps/precinct-cloister
       - uses: actions/checkout@v4
