@@ -717,6 +717,11 @@ func TestOrgChain(t *testing.T) {
 				i += len(marker)
 			}
 		}
+		if db, derr := orgBotDB(dataDir); derr == nil {
+			out, _ := exec.Command("sqlite3", "-cmd", ".timeout 5000", db,
+				"SELECT 'thread', key, value FROM thread; SELECT 'ticket', id, substr(value, 1, 1500) FROM ticket; SELECT 'trigger', id, substr(value, 1, 400) FROM trigger WHERE id LIKE 'trg_wecom%';").CombinedOutput()
+			last += "\n== device db\n" + string(out)
+		}
 		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v; DEBUG requests: %s",
 			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey), last)
 	case personal.SawKey(personalKey):
