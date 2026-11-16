@@ -54,6 +54,9 @@ type Services struct {
 	Market Market
 	// Browser is Alcove's browser (browser cap).
 	Browser Browser
+	// Personal is the personal context and the personal workspaces'
+	// conversations (personal_context and personal_history caps).
+	Personal Personal
 }
 
 // Browser is Alcove's browser: one page per workspace, shown in a pane
@@ -193,6 +196,12 @@ var methodCaps = map[string]string{
 	"browser.capture":            "browser",
 	"browser.state":              "browser",
 	"browser.close":              "browser",
+	"personal.history":           "personal_history",
+	"personal.get":               "personal_context",
+	"personal.getSkill":          "personal_context",
+	"personal.setProfile":        "personal_context",
+	"personal.putSkill":          "personal_context",
+	"personal.removeSkill":       "personal_context",
 }
 
 type api struct {
@@ -471,6 +480,11 @@ func (a *api) Request(ctx context.Context, method string, raw json.RawMessage) (
 			return nil, unavailable(method)
 		}
 		return svc.Browser.Browse(ctx, p.name, q.WorkspaceID, q.BrowserOp)
+	case "personal.history", "personal.get", "personal.getSkill", "personal.setProfile", "personal.putSkill", "personal.removeSkill":
+		if svc.Personal == nil {
+			return nil, unavailable(method)
+		}
+		return personalRequest(ctx, svc.Personal, p.name, method, raw)
 	case "plugins.list", "plugins.trustedKeys", "plugins.install":
 		if svc.Market == nil {
 			return nil, unavailable(method)

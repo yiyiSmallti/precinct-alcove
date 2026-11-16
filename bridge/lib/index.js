@@ -20,6 +20,8 @@
 //                    drops its queued messages (plugin sessions, Alcove session.cancel)
 import net from 'node:net'
 import { randomUUID } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 export const name = 'alcove-bridge'
 export const PROTOCOL = 'alcove-bridge/1'
@@ -128,7 +130,37 @@ async function ask (peerP, method, params, signal) {
 
 const OUTCOMES = new Set(['allowed-once', 'rejected', 'cancelled'])
 
+// The personal context's profile (Alcove SPEC 3.1 个人上下文): in a personal
+// workspace's runtime, ALCOVE_PERSONAL_HOME names the folder, and its
+// AGENTS.md goes to the model as runtime context, read again at each step
+// (cached by size and mtime), so an edit reaches the next step of a running
+// session. Runtime context is a message after the cached history, not the
+// system prompt, so a change costs no prompt cache.
+const PROFILE_MAX = 16 << 10
+const PROFILE_INTRO = 'About the user (their personal context in Alcove, learned from their work and editable by them). Treat it as their standing preferences; what they ask in this conversation comes first.'
+
+function personalProfile (ctx) {
+  const home = process.env.ALCOVE_PERSONAL_HOME
+  if (!home) return
+  const file = join(home, 'AGENTS.md')
+  let seen = { mtimeMs: -1, size: -1, text: '' }
+  const text = () => {
+    let st
+    try { st = statSync(file) } catch { return '' }
+    if (st.mtimeMs !== seen.mtimeMs || st.size !== seen.size) {
+      let body = ''
+      try { body = readFileSync(file, 'utf8').slice(0, PROFILE_MAX).trim() } catch {}
+      seen = { mtimeMs: st.mtimeMs, size: st.size, text: body }
+    }
+    return seen.text ? `${PROFILE_INTRO}\n\n${seen.text}` : ''
+  }
+  ctx.inject(['systemPrompt'], (ctx) => {
+    ctx.systemPrompt.context({ name: 'alcove:personal-profile', order: 130, interpolate: false, text })
+  })
+}
+
 export function apply (ctx) {
+  personalProfile(ctx)
   const endpoint = process.env.ALCOVE_BRIDGE_HOST
   const token = process.env.ALCOVE_BRIDGE_HOST_TOKEN
   if (!endpoint || !token) return

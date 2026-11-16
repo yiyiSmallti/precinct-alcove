@@ -60,3 +60,15 @@
 - id: agent-default-model
   config: !!js |-
     JSON.parse(process.env.ALCOVE_DEFAULT_MODEL || '{"provider":"deepseek-official","model":"deepseek-flash"}')
+# The personal context (Alcove SPEC 3.1, internal/core/personal): Alcove sets
+# ALCOVE_PERSONAL_HOME only for the runtime of a personal workspace. There its
+# skills/ is one more skill folder, after the project's own; its AGENTS.md
+# (what the agent should know about the user) is added by the bridge plugin
+# as runtime context, since dsh reads user-level AGENTS.md only from its
+# process homes. An org workspace or a plugin's runtime gets neither, so
+# what Alcove learned about the user never goes out through an org's gateway.
+- id: skill-filesystem
+  config: !!js |-
+    (process.env.ALCOVE_PERSONAL_HOME
+      ? { customSkillDirs: [process.env.ALCOVE_PERSONAL_HOME + (process.platform === 'win32' ? '\\' : '/') + 'skills'] }
+      : {})

@@ -68,6 +68,10 @@ func (l Layout) TaskGrants() string { return filepath.Join(l.Root, "plugins", "t
 
 func (l Layout) Logs() string    { return filepath.Join(l.Root, "logs") }
 func (l Layout) DSHHome() string { return filepath.Join(l.Root, "dsh") }
+
+// PersonalHome is the user's personal context: AGENTS.md (what the agent
+// should know about them) and skills/, which only personal workspaces read.
+func (l Layout) PersonalHome() string { return filepath.Join(l.Root, "personal") }
 func (l Layout) PluginSettings() string {
 	return filepath.Join(l.Root, "plugins", "settings")
 }

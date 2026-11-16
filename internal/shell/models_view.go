@@ -58,7 +58,76 @@ func (s *Shell) modelSettings(c *ui.Context, pal *palette) {
 		})
 	}
 	s.addService(c, pal)
+	if len(s.creds) > 0 {
+		s.toolModelSettings(c, pal)
+	}
 	s.compactionSettings(c, pal)
+}
+
+// toolChoice is one model offered for background work.
+type toolChoice struct {
+	label string
+	tm    app.ToolModel
+}
+
+// toolChoices are the models background work can run on next to the
+// default credential's: the enabled models of every credential that does
+// not take the default one's place (app.ToolConflict), the first being
+// the runtime's own model. A custom service offers the one it is set to.
+func (s *Shell) toolChoices(def *credentials.Credential) []toolChoice {
+	out := []toolChoice{{label: "和对话相同（默认）"}}
+	for _, cr := range s.creds {
+		if def != nil && app.ToolConflict(*def, cr) {
+			continue
+		}
+		models := credentials.EnabledModels(cr)
+		if cr.Provider == credentials.Custom {
+			models = []string{credentials.ModelOf(cr)}
+		}
+		for _, m := range models {
+			out = append(out, toolChoice{label: cr.Label + " · " + m, tm: app.ToolModel{Credential: cr.ID, Model: m}})
+		}
+	}
+	return out
+}
+
+// toolModelSettings is the model plugins' background work runs on, such
+// as the daily bot's tidying and learning.
+func (s *Shell) toolModelSettings(c *ui.Context, pal *palette) {
+	t := c.Theme()
+	def := s.defaultCred()
+	cur := s.settings.ToolModel
+	settingsGroup(c, pal, "工具模型", func() {
+		prefRow(c, pal, "后台活用的模型", "日常助手闲时整理记忆、从对话里学习时用它，选一个快又便宜的小模型更省。和对话用的服务相同但 key 不同的连接不能同时用，不在列表里。修改从助手下次启动开始生效。", func() {
+			choices := s.toolChoices(def)
+			var options []string
+			pick := choices[0].label
+			for _, ch := range choices {
+				options = append(options, ch.label)
+				if ch.tm == cur {
+					pick = ch.label
+				}
+			}
+			if ui.Select(c, &pick, options).Label("工具模型").Width(240).Changed() {
+				for _, ch := range choices {
+					if ch.label == pick {
+						st := s.settings
+						st.ToolModel = ch.tm
+						s.saveSettings(st)
+					}
+				}
+			}
+		})
+		// A choice the default credential no longer allows (it changed to
+		// another credential of the same service) is kept, unused.
+		if cur.Credential != "" && def != nil {
+			for _, cr := range s.creds {
+				if cr.ID == cur.Credential && app.ToolConflict(*def, cr) {
+					ui.Text(c, "选的工具模型和现在对话用的服务冲突，后台活暂时改用对话的模型。").FontSize(12).TextColor(t.Danger).Padding(8, 16)
+				}
+			}
+		}
+	})
 }
 
 // serviceBox is one connected service: its name, the picker of its models

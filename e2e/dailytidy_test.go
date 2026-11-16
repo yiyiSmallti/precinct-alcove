@@ -84,6 +84,19 @@ func TestDailyTidy(t *testing.T) {
 	if _, err := a.Creds.Add("假模型", "deepseek-official", model.URL, "sk-e2e-daily", ""); err != nil {
 		t.Fatal(err)
 	}
+	// The tool model: another service (a custom one) with a key of its own,
+	// which the daily runtime takes next to the default credential's.
+	small, err := a.Creds.AddCustom("小模型", model.URL, "anthropic-messages", "sk-e2e-small", "fake-small")
+	if err == nil {
+		var st app.Settings
+		if st, err = a.Settings(); err == nil {
+			st.ToolModel = app.ToolModel{Credential: small.ID}
+			err = a.SaveSettings(st)
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tgz := filepath.Join(work, filepath.Base(src))
 	err = copyFile(src, tgz)
@@ -183,7 +196,10 @@ func TestDailyTidy(t *testing.T) {
 	case view.has("整理完成"):
 		err = fmt.Errorf("the tidy turn posted a message")
 	}
-	r.step("安静一段时间后自动整理：两条咖啡合并成「美式咖啡，不加糖」、过期体检删掉，「记忆」页列出改动并可撤销，对话里不出消息", err, fmt.Sprintf("安静 %s 后开始", waited))
+	if err == nil {
+		err = bot.modelsUsed("fake-small")
+	}
+	r.step("安静一段时间后自动整理：两条咖啡合并成「美式咖啡，不加糖」、过期体检删掉，「记忆」页列出改动并可撤销，对话里不出消息；整理在单独的会话里用工具模型（另一个服务的小模型）跑，对话仍用主模型", err, fmt.Sprintf("安静 %s 后开始；%s", waited, bot.modelSummary()))
 	if err != nil {
 		return
 	}
@@ -259,6 +275,74 @@ func TestDailyTidy(t *testing.T) {
 type tidyModel struct {
 	mu   sync.Mutex
 	seen []string
+	// models are the models asked, by kind of request: "chat" (the main
+	// Session's) and "tidy" (a housekeeping Session's).
+	models map[string]map[string]int
+}
+
+// housekeepingJob is the job text of a housekeeping Session's request (its
+// first message is the job itself, not a candidate), "" for another one.
+func housekeepingJob(body []byte) string {
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil || len(req.Messages) == 0 {
+		return ""
+	}
+	first := req.Messages[0].Content
+	var blocks []msgBlock
+	if json.Unmarshal(first, &blocks) != nil {
+		var s string
+		if json.Unmarshal(first, &s) == nil {
+			blocks = []msgBlock{{Type: "text", Text: s}}
+		}
+	}
+	for _, b := range blocks {
+		if b.Type == "text" && strings.Contains(b.Text, "（闲时整理）") && !strings.Contains(b.Text, `"kind":"candidate"`) {
+			return b.Text[strings.Index(b.Text, "（闲时整理）"):]
+		}
+	}
+	return ""
+}
+
+// note records the model a request asked for.
+func (m *tidyModel) note(body []byte, kind string) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	json.Unmarshal(body, &req)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.models == nil {
+		m.models = map[string]map[string]int{}
+	}
+	if m.models[kind] == nil {
+		m.models[kind] = map[string]int{}
+	}
+	m.models[kind][req.Model]++
+}
+
+// modelsUsed checks the housekeeping requests asked for tool alone and the
+// main Session's for another model.
+func (m *tidyModel) modelsUsed(tool string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n := m.models["tidy"]; len(n) != 1 || n[tool] == 0 {
+		return fmt.Errorf("the tidy asked for %v, want only %s", n, tool)
+	}
+	if n := m.models["chat"]; len(n) == 0 || n[tool] > 0 {
+		return fmt.Errorf("the conversation asked for %v, want the main model", n)
+	}
+	return nil
+}
+
+func (m *tidyModel) modelSummary() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return fmt.Sprintf("对话请求的模型 %v，整理请求的模型 %v", m.models["chat"], m.models["tidy"])
 }
 
 func (m *tidyModel) saw(sub string) bool {
@@ -292,6 +376,11 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 	m.mu.Lock()
 	m.seen = append(m.seen, string(body))
 	m.mu.Unlock()
+	if job := housekeepingJob(body); job != "" {
+		m.note(body, "tidy")
+		return m.tidy(body)
+	}
+	m.note(body, "chat")
 	var req struct {
 		Messages []struct {
 			Content json.RawMessage `json:"content"`
@@ -300,7 +389,7 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, "好"
 	}
-	var trigger, text, memories string
+	var trigger, text string
 	calls := 0
 	for _, msg := range req.Messages {
 		var blocks []msgBlock
@@ -317,16 +406,12 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 				if strings.Contains(b.Text, `"kind":"candidate"`) && json.Unmarshal([]byte(b.Text), &raw) == nil {
 					id, _ := raw["trigger_id"].(string)
 					if id != "" && id != trigger {
-						trigger, calls, memories = id, 0, ""
+						trigger, calls = id, 0
 						text, _ = raw["text"].(string)
 					}
 				}
 			case "tool_use":
 				calls++
-			case "tool_result":
-				if strings.Contains(string(b.Content), `memories`) {
-					memories = string(b.Content)
-				}
 			}
 		}
 	}
@@ -344,43 +429,6 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 		plan = []fakemodel.ToolCall{{Name: "memory_write", Input: map[string]any{"label": label, "text": fact, "trigger_id": trigger}}, reply("记下了：" + fact), ignore}
 	case strings.HasPrefix(text, "写周报："):
 		plan = []fakemodel.ToolCall{reply("周报：" + strings.TrimPrefix(text, "写周报：")), ignore}
-	case strings.HasPrefix(text, "（闲时整理）"):
-		if calls == 0 {
-			return &fakemodel.ToolCall{Name: "memory_read", Input: map[string]any{"limit": 50}}, ""
-		}
-		if memories == "" {
-			return nil, "好"
-		}
-		var blocks []msgBlock
-		json.Unmarshal([]byte(memories), &blocks)
-		var res struct {
-			Memories []struct{ ID, Label string } `json:"memories"`
-		}
-		for _, b := range blocks {
-			json.Unmarshal([]byte(b.Text), &res)
-		}
-		var coffee []any
-		var checkup string
-		for _, mm := range res.Memories {
-			switch mm.Label {
-			case "咖啡":
-				coffee = append(coffee, mm.ID)
-			case "体检":
-				checkup = mm.ID
-			}
-		}
-		plan = []fakemodel.ToolCall{
-			{Name: "memory_read", Input: map[string]any{"limit": 50}},
-			{Name: "memory_tidy", Input: map[string]any{
-				"merges": []any{map[string]any{"ids": coffee, "label": "咖啡", "text": "美式咖啡，不加糖"}},
-				"drops":  []any{map[string]any{"id": checkup, "reason": "11 月 1 日的体检已经过去"}},
-			}},
-			{Name: "skill_propose", Input: map[string]any{"name": "weekly-report", "description": "我让你写周报时",
-				"body": "按本周完成、进行中、下周计划三段写，每段不超过 5 条。", "why": "你两次让我写周报，并要求分三段"}},
-			{Name: "skill_propose", Input: map[string]any{"name": "standup-notes", "description": "我让你整理站会记录时",
-				"body": "按昨天、今天、阻碍三项列。", "why": "你常让我整理站会"}},
-			{Name: "orchestrator_route", Input: map[string]any{"decisions": []any{map[string]any{"kind": "ignore", "trigger_id": trigger, "reason": "整理完成：合并 1 组、删除 1 条、建议 2 个技能"}}}},
-		}
 	case strings.Contains(text, "再建议一次站会技能"):
 		plan = []fakemodel.ToolCall{
 			{Name: "skill_propose", Input: map[string]any{"name": "standup-notes", "description": "我让你整理站会记录时",
@@ -394,4 +442,73 @@ func (m *tidyModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 		return &c, ""
 	}
 	return nil, "好"
+}
+
+// tidy scripts a housekeeping Session: read the memories, tidy them,
+// propose two skills, and end the turn with no message to anyone.
+func (m *tidyModel) tidy(body []byte) (*fakemodel.ToolCall, string) {
+	var req struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	json.Unmarshal(body, &req)
+	calls, memories := 0, ""
+	for _, msg := range req.Messages {
+		var blocks []msgBlock
+		json.Unmarshal(msg.Content, &blocks)
+		for _, b := range blocks {
+			switch {
+			case b.Type == "tool_use":
+				calls++
+			case b.Type == "tool_result" && strings.Contains(string(b.Content), `memories`):
+				memories = string(b.Content)
+			}
+		}
+	}
+	if calls == 0 {
+		return &fakemodel.ToolCall{Name: "memory_read", Input: map[string]any{"limit": 50}}, ""
+	}
+	// A tool result's content is blocks on one route and a string on another.
+	var res struct {
+		Memories []struct{ ID, Label string } `json:"memories"`
+	}
+	var blocks []msgBlock
+	var text string
+	if json.Unmarshal([]byte(memories), &blocks) == nil {
+		for _, b := range blocks {
+			json.Unmarshal([]byte(b.Text), &res)
+		}
+	} else if json.Unmarshal([]byte(memories), &text) == nil {
+		json.Unmarshal([]byte(text), &res)
+	}
+	if len(res.Memories) == 0 {
+		return nil, "读不出记忆：" + memories
+	}
+	var coffee []any
+	var checkup string
+	for _, mm := range res.Memories {
+		switch mm.Label {
+		case "咖啡":
+			coffee = append(coffee, mm.ID)
+		case "体检":
+			checkup = mm.ID
+		}
+	}
+	plan := []fakemodel.ToolCall{
+		{Name: "memory_read", Input: map[string]any{"limit": 50}},
+		{Name: "memory_tidy", Input: map[string]any{
+			"merges": []any{map[string]any{"ids": coffee, "label": "咖啡", "text": "美式咖啡，不加糖"}},
+			"drops":  []any{map[string]any{"id": checkup, "reason": "11 月 1 日的体检已经过去"}},
+		}},
+		{Name: "skill_propose", Input: map[string]any{"name": "weekly-report", "description": "我让你写周报时",
+			"body": "按本周完成、进行中、下周计划三段写，每段不超过 5 条。", "why": "你两次让我写周报，并要求分三段"}},
+		{Name: "skill_propose", Input: map[string]any{"name": "standup-notes", "description": "我让你整理站会记录时",
+			"body": "按昨天、今天、阻碍三项列。", "why": "你常让我整理站会"}},
+	}
+	if calls < len(plan) {
+		c := plan[calls]
+		return &c, ""
+	}
+	return nil, "整理完成：合并 1 组、删除 1 条、建议 2 个技能"
 }
