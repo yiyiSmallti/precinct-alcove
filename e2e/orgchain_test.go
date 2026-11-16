@@ -705,6 +705,18 @@ func TestOrgChain(t *testing.T) {
 				last += "\n  [" + m.Role + "] " + t
 			}
 		}
+		cm := modelRequests(cloud["CLOISTER_E2E_MODEL"], 0).joined
+		for _, marker := range []string{`"name":"orchestrator_thread_unsubscribe","input"`, `worker_report`} {
+			for i, n := 0, 0; n < 3; n++ {
+				j := strings.Index(cm[i:], marker)
+				if j < 0 {
+					break
+				}
+				i += j
+				last += "\n== cloud " + marker + ": " + cm[i:min(len(cm), i+900)]
+				i += len(marker)
+			}
+		}
 		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v; DEBUG requests: %s",
 			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey), last)
 	case personal.SawKey(personalKey):
