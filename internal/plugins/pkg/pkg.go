@@ -72,6 +72,8 @@ var KnownCapabilities = map[string]bool{
 	"policy_write":        true,
 	"plugin_install":      true,
 	"browser":             true,
+	"personal_context":    true,
+	"personal_history":    true,
 }
 
 // installScripts are lifecycle scripts pnpm would run; first-party packages

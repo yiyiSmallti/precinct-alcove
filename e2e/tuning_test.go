@@ -203,6 +203,20 @@ func TestModelTuning(t *testing.T) {
 	}
 	r.step("目录未收录的 OpenAI 模型：不声明会被拒，声明后 initialize 通过", err, "")
 
+	// A listed conversation model and an unlisted tool model on one route
+	// (a plugin's runtime): a models list replaces the served catalog, so
+	// the patch names both, and each initializes; one naming only the
+	// unlisted model loses the listed one.
+	both := `ALCOVE_ROUTE_PATCH={"openai":{"models":[{"id":"gpt-6.1-sol"},{"id":"gpt-e2e-unlisted"}]}}`
+	err = init("openai", "gpt-6.1-sol", "", both)
+	if err == nil {
+		err = init("openai", "gpt-e2e-unlisted", "", both)
+	}
+	if err == nil && init("openai", "gpt-6.1-sol", "", `ALCOVE_ROUTE_PATCH={"openai":{"models":[{"id":"gpt-e2e-unlisted"}]}}`) == nil {
+		err = fmt.Errorf("a models list without gpt-6.1-sol still served it")
+	}
+	r.step("同一路由上对话用目录里的模型、工具模型未收录：两个都声明后都能 initialize，只声明未收录的会丢掉对话模型", err, "")
+
 	var mismatches []string
 	checked := 0
 	for _, c := range []struct{ provider, model string }{

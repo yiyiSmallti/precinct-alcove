@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/fsutil"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/identity"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/paths"
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/personal"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/tasks"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 	"github.com/yiyiSmallti/precinct-alcove/internal/dsh"
@@ -85,6 +87,26 @@ type Settings struct {
 	ScratchDir string `json:"scratchDir,omitempty"`
 	// Appearance is how the window looks; zero is Alcove's default look.
 	Appearance Appearance `json:"appearance"`
+	// ToolModel is what plugins' engines run background work on; zero is
+	// the model the runtime runs on.
+	ToolModel ToolModel `json:"toolModel"`
+}
+
+// ToolModel is a fast, cheap model plugins' engines do background work
+// with, such as the daily bot's tidying and learning (its tidy.run). It
+// reaches a runtime a plugin runs on the personal credentials in
+// ALCOVE_TOOL_MODEL, with its credential's key when that is another one.
+type ToolModel struct {
+	Credential string `json:"credential,omitempty"`
+	// Model is one of the credential's models; "" is the one it is set to.
+	Model string `json:"model,omitempty"`
+}
+
+// ToolConflict is whether tool cannot be the tool credential of a runtime
+// on main: one runtime takes one key per service (its environment
+// variable), so another credential of main's service has no place.
+func ToolConflict(main, tool credentials.Credential) bool {
+	return tool.ID != main.ID && tool.Provider == main.Provider
 }
 
 // Compaction tunes dsh's compaction-basic for every task.
@@ -128,11 +150,13 @@ type App struct {
 	Creds      *credentials.Store
 	Workspaces *workspace.Store
 	Tasks      *tasks.Store
-	Plugins    *host.Host
-	Profiles   *profile.Assembler
-	Bridge     *alrt.Bridge
-	Runtimes   *alrt.Manager
-	Sidecars   *sidecar.Manager
+	// Personal is the personal context (paths.Layout.PersonalHome).
+	Personal *personal.Store
+	Plugins  *host.Host
+	Profiles *profile.Assembler
+	Bridge   *alrt.Bridge
+	Runtimes *alrt.Manager
+	Sidecars *sidecar.Manager
 	// Catalog is what the bundled runtime knows of each model.
 	Catalog *catalog.Catalog
 
@@ -186,6 +210,7 @@ func New(cfg Config) (*App, error) {
 	}
 	a.Workspaces = &workspace.Store{Path: l.Workspaces(), DataDir: l.Root}
 	a.Tasks = &tasks.Store{Path: l.Tasks(), Dir: l.Transcripts()}
+	a.Personal = &personal.Store{Dir: l.PersonalHome()}
 	a.Plugins = &host.Host{
 		DSH: cli, Dir: l.Plugins(), AlcoveVersion: cfg.AlcoveVersion, GOOS: runtime.GOOS,
 		TrustedKeys: cfg.TrustedKeys, AllowUnsigned: cfg.AllowUnsigned,
@@ -218,6 +243,7 @@ func New(cfg Config) (*App, error) {
 			Log:           a.pluginLog,
 			Market:        market{a},
 			Browser:       cfg.Browser,
+			Personal:      personalService{a},
 		},
 	}
 	return a, nil
@@ -509,7 +535,13 @@ func (a *App) openOnce(ctx context.Context, w *workspace.Workspace) (*alrt.Proce
 	}
 	// The owner's variables win over other plugins' (e.g. the same model
 	// endpoint variables pointing somewhere else).
-	return a.launch(ctx, w.Profile, w.Dir, hooks.EnvFor(owner), route, owner)
+	env := hooks.EnvFor(owner)
+	if owner == "" {
+		// Only a personal workspace reads the personal context: an org
+		// workspace's sessions go out through the org's gateway.
+		env = append(env, PersonalHomeEnv+"="+a.Layout.PersonalHome())
+	}
+	return a.launch(ctx, w.Profile, w.Dir, env, route, owner, false)
 }
 
 func (a *App) pluginInstalled(name string) bool {
@@ -591,14 +623,15 @@ func (a *App) runtimeExited(k alrt.Key, runtimeID string, err error) {
 
 // launch starts (or returns) the runtime of prof in cwd with the plugin
 // variables extra. With a route, the runtime uses it and gets no personal
-// credential; otherwise it uses the default credential.
-func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, route *sidecar.Provider, owner string) (*alrt.Process, error) {
+// credential; otherwise it uses the default credential, and with tool the
+// tool model too (a plugin's runtime: its engine does background work).
+func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, route *sidecar.Provider, owner string, tool bool) (*alrt.Process, error) {
 	s, err := a.Settings()
 	if err != nil {
 		return nil, err
 	}
 	if route != nil {
-		effort, tuning := a.tuning(s, route.Route, route.Model, 0)
+		effort, tuning := a.tuning(s, route.Route, route.Model, 0, nil)
 		return a.ensure(ctx, alrt.LaunchSpec{
 			Profile: prof, Cwd: cwd, Provider: route.Route, Model: route.Model, ReasoningEffort: effort,
 			Tuning: effort + "\n" + strings.Join(tuning, "\n"), Owner: owner,
@@ -624,11 +657,20 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 	if err != nil {
 		return nil, err
 	}
-	effort, tuning := a.tuning(s, provider, model, cr.Context[model])
+	var tr *toolRoute
+	if tool {
+		var toolEnv []string
+		if tr, toolEnv = a.toolRoute(s, cr); tr != nil {
+			env = append(env, toolEnv...)
+		}
+	}
+	effort, tuning := a.tuning(s, provider, model, cr.Context[model], tr)
 	return a.ensure(ctx, alrt.LaunchSpec{
 		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort,
-		Tuning: effort + "\n" + strings.Join(tuning, "\n"), Credential: credID,
-		// Plugin variables first: the credential always wins.
+		// The tool model and its credential are in the tuning: a change
+		// restarts an idle runtime, even to a credential of the same model.
+		Tuning: effort + "\n" + strings.Join(tuning, "\n") + tr.fingerprint(), Credential: credID,
+		// Plugin variables first: the credentials always win.
 		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})
 }
@@ -652,12 +694,54 @@ func (a *App) ensure(ctx context.Context, spec alrt.LaunchSpec) (*alrt.Process, 
 	return a.Runtimes.Ensure(ctx, spec)
 }
 
+// toolRoute is the tool model a runtime on main runs, and the variables of
+// its credential when that is another one; nil when there is none to run:
+// none chosen, its credential deleted, or one of main's service
+// (ToolConflict), as after the default credential changed.
+func (a *App) toolRoute(s Settings, main credentials.Credential) (*toolRoute, []string) {
+	id := s.ToolModel.Credential
+	if id == "" {
+		return nil, nil
+	}
+	tc, err := a.Creds.Get(id)
+	if err != nil || ToolConflict(main, tc) {
+		return nil, nil
+	}
+	model := s.ToolModel.Model
+	// A custom service serves the one model it is set to (ALCOVE_CUSTOM_MODEL).
+	if model == "" || tc.Provider == credentials.Custom {
+		model = credentials.ModelOf(tc)
+	}
+	if tc.ID == main.ID {
+		return &toolRoute{cred: tc.ID, route: tc.Provider, model: model}, nil
+	}
+	route, _, env, err := a.Creds.LaunchEnv(id)
+	if err != nil {
+		return nil, nil
+	}
+	return &toolRoute{cred: tc.ID, route: route, model: model}, env
+}
+
+// toolRoute is the credential, route and model of a runtime's tool model.
+type toolRoute struct{ cred, route, model string }
+
+// fingerprint is the tool credential's id for LaunchSpec.Tuning, which
+// ALCOVE_TOOL_MODEL alone leaves out: two credentials of one service and
+// model differ only in their key. "" without a tool model.
+func (t *toolRoute) fingerprint() string {
+	if t == nil {
+		return ""
+	}
+	return "\ntool-credential:" + t.cred
+}
+
 // tuning is how the settings reach a runtime of model on route: the
 // reasoning effort it takes (none when the model takes no such effort),
 // and the variables bridge/cordis.patch.yml reads (the compaction settings,
-// a route patch, the default model). limit is the context
-// chosen for the model in tokens (0: the runtime's window).
-func (a *App) tuning(s Settings, route, model string, limit int) (effort string, env []string) {
+// a route patch, the default model) and the tool model (tool, if any) a
+// plugin's engine reads. limit is the context chosen for the model in
+// tokens (0: the runtime's window).
+func (a *App) tuning(s Settings, route, model string, limit int, tool *toolRoute) (effort string, env []string) {
 	m, listed := a.Catalog.Lookup(route, model)
 	if m.Supports(s.ReasoningEffort) {
 		effort = s.ReasoningEffort
@@ -672,22 +756,15 @@ func (a *App) tuning(s Settings, route, model string, limit int) (effort string,
 	case limit > 0 && window > 0 && limit < window:
 		scale = float64(limit) / float64(window)
 	}
-	// pi-ai serves only the models its catalog lists; another one the
-	// service offers is declared for this runtime's route, and a widened
-	// window is set on the route's entry for the model.
-	var patch map[string]any
-	switch {
-	case !listed && a.Catalog.Routes(route):
-		entry := map[string]any{"id": model}
-		if window != m.Context {
-			entry["contextWindow"] = window
-		}
-		patch = map[string]any{"models": []any{entry}}
-	case window != m.Context:
-		patch = map[string]any{"modelOverrides": map[string]any{model: map[string]any{"contextWindow": window}}}
+	served := []servedModel{{route: route, model: m, listed: listed, window: window}}
+	if tool != nil {
+		tm, tlisted := a.Catalog.Lookup(tool.route, tool.model)
+		served = append(served, servedModel{route: tool.route, model: tm, listed: tlisted, window: tm.Context})
+		b, _ := json.Marshal(map[string]string{"provider": tool.route, "model": tool.model})
+		env = append(env, "ALCOVE_TOOL_MODEL="+string(b))
 	}
-	if patch != nil {
-		b, _ := json.Marshal(map[string]any{route: patch})
+	if patches := a.routePatches(served); len(patches) > 0 {
+		b, _ := json.Marshal(patches)
 		env = append(env, "ALCOVE_ROUTE_PATCH="+string(b))
 	}
 	pct := s.Compaction.Threshold
@@ -708,6 +785,62 @@ func (a *App) tuning(s Settings, route, model string, limit int) (effort string,
 	}
 	b, _ := json.Marshal(def)
 	return effort, append(env, "ALCOVE_COMPACTION="+string(cfg), "ALCOVE_DEFAULT_MODEL="+string(b))
+}
+
+// servedModel is a model a runtime runs on route, in a window of window
+// tokens; listed is whether the route's catalog lists it.
+type servedModel struct {
+	route  string
+	model  catalog.Model
+	listed bool
+	window int
+}
+
+// routePatches is what each route needs to serve its models (the
+// conversation's, and the tool model's). pi-ai serves only the models its
+// catalog lists: a route with another one the service offers gets a models
+// list, which replaces the served catalog, so it names every model the
+// runtime runs there (an entry takes its catalog's facts, by id) with any
+// widened window on its entry; otherwise a widened window is a
+// modelOverrides entry. dsh-llm-pi-ai takes one or the other, not both.
+func (a *App) routePatches(served []servedModel) map[string]map[string]any {
+	patches := map[string]map[string]any{}
+	for _, sm := range served {
+		route := sm.route
+		if patches[route] != nil {
+			continue
+		}
+		var on []servedModel
+		declare := false
+		for _, o := range served {
+			if o.route == route && !slices.ContainsFunc(on, func(x servedModel) bool { return x.model.ID == o.model.ID }) {
+				on = append(on, o)
+				declare = declare || (!o.listed && a.Catalog.Routes(route))
+			}
+		}
+		if declare {
+			var models []any
+			for _, o := range on {
+				entry := map[string]any{"id": o.model.ID}
+				if o.window != o.model.Context {
+					entry["contextWindow"] = o.window
+				}
+				models = append(models, entry)
+			}
+			patches[route] = map[string]any{"models": models}
+			continue
+		}
+		overrides := map[string]any{}
+		for _, o := range on {
+			if o.window != o.model.Context {
+				overrides[o.model.ID] = map[string]any{"contextWindow": o.window}
+			}
+		}
+		if len(overrides) > 0 {
+			patches[route] = map[string]any{"modelOverrides": overrides}
+		}
+	}
+	return patches
 }
 
 // ensureForPlugin is runtime.ensure for sidecars with the background
@@ -752,12 +885,12 @@ func (a *App) ensureForPlugin(ctx context.Context, plugin, prof, cwd string, env
 	}
 	var p *alrt.Process
 	if owner == "" {
-		p, err = a.launch(ctx, prof, cwd, env, nil, "")
+		p, err = a.launch(ctx, prof, cwd, env, nil, "", true)
 	} else {
 		route := hooks.Providers[owner]
 		// The plugin's own variables last: its endpoint and token for the
 		// runtime are not the owner's to change.
-		p, err = a.launch(ctx, prof, cwd, append(hooks.EnvFor(owner), env...), &route, owner)
+		p, err = a.launch(ctx, prof, cwd, append(hooks.EnvFor(owner), env...), &route, owner, false)
 	}
 	if err != nil {
 		return "", err

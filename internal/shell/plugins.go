@@ -651,6 +651,8 @@ var capNames = map[string]string{
 	"policy_write":        "修改策略设置（例如关闭本地执行）",
 	"plugin_install":      "从插件市场安装和更新插件（每次都由你确认）",
 	"browser":             "在 Alcove 的浏览器里打开、阅读和操作网页（你能看到并随时接手）",
+	"personal_history":    "读取你个人工作区里的对话（只读你自己发起的，不含组织工作区），在本机用来了解你的习惯",
+	"personal_context":    "改写个人工作区共用的「关于我」和全局技能（只有个人工作区读取）",
 }
 
 func capName(c string) string {
