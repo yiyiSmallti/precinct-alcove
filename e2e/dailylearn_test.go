@@ -205,7 +205,12 @@ func TestDailyLearn(t *testing.T) {
 	if err == nil && view.has("学习完成") {
 		err = fmt.Errorf("the learning turn posted a message")
 	}
-	r.step("学到的两条工作偏好立即生效：「记忆」页列为「关于我」条目，个人上下文的 AGENTS.md 里有这两条，用户自己原来写的内容还在；对话里不出消息", err, profile())
+	if rej := bot.rejection(); err == nil && !strings.Contains(rej, "more than once") {
+		err = fmt.Errorf("profile_note naming one id twice was not refused: %q", rej)
+	} else if err == nil && strings.Contains(profile(), dupNote) {
+		err = fmt.Errorf("the refused profile_note still added %q", dupNote)
+	}
+	r.step("学到的两条工作偏好立即生效：「记忆」页列为「关于我」条目，个人上下文的 AGENTS.md 里有这两条，用户自己原来写的内容还在；对话里不出消息；同一条删两次的 profile_note 被拒、什么也没写", err, profile())
 	if err != nil {
 		return
 	}
@@ -344,14 +349,25 @@ func TestDailyLearn(t *testing.T) {
 // learnModel scripts the housekeeping Session of TestDailyLearn; the main
 // Session only answers.
 type learnModel struct {
-	mu    sync.Mutex
-	tidy  string   // the tidy's text, once it came
-	asked string   // the model the tidy asked for
-	errs  []string // tool errors seen
+	mu       sync.Mutex
+	tidy     string   // the tidy's text, once it came
+	asked    string   // the model the tidy asked for
+	errs     []string // tool errors seen, past the first call's
+	rejected string   // the first call's result, which must be an error
 }
 
 func (m *learnModel) trigger() string { m.mu.Lock(); defer m.mu.Unlock(); return m.tidy }
 func (m *learnModel) model() string   { m.mu.Lock(); defer m.mu.Unlock(); return m.asked }
+func (m *learnModel) rejection() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rejected
+}
+
+// dupNote is what the first profile_note adds while naming one removal twice,
+// which the engine must refuse whole.
+const dupNote = "这条不该写进去"
+
 func (m *learnModel) errors() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -370,7 +386,7 @@ func (m *learnModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 		} `json:"messages"`
 	}
 	json.Unmarshal(body, &req)
-	calls := 0
+	calls, results := 0, 0
 	for _, msg := range req.Messages {
 		var blocks []msgBlock
 		json.Unmarshal(msg.Content, &blocks)
@@ -379,7 +395,14 @@ func (m *learnModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 			case "tool_use":
 				calls++
 			case "tool_result":
-				if b.IsError {
+				results++
+				if results == 1 {
+					m.mu.Lock()
+					if b.IsError {
+						m.rejected = string(b.Content)
+					}
+					m.mu.Unlock()
+				} else if b.IsError {
 					m.mu.Lock()
 					m.errs = append(m.errs, string(b.Content))
 					m.mu.Unlock()
@@ -394,6 +417,10 @@ func (m *learnModel) respond(body []byte) (*fakemodel.ToolCall, string) {
 	m.mu.Unlock()
 	at := time.Now().Add(24 * time.Hour).Truncate(time.Minute).Format(time.RFC3339)
 	plan := []fakemodel.ToolCall{
+		{Name: "profile_note", Input: map[string]any{
+			"add":    []any{map[string]any{"text": dupNote, "why": "试探上限"}},
+			"remove": []any{map[string]any{"id": "prof-x", "reason": "a"}, map[string]any{"id": "prof-x", "reason": "b"}},
+		}},
 		{Name: "profile_note", Input: map[string]any{"add": []any{
 			map[string]any{"text": "回答先给结论，再说细节", "why": "个人工作区里两次要求先给结论"},
 			map[string]any{"text": "代码注释用英文", "why": "个人工作区里要求过"},
