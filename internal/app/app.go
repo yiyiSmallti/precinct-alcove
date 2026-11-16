@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -666,8 +667,9 @@ func (a *App) launch(ctx context.Context, prof, cwd string, extra []string, rout
 	effort, tuning := a.tuning(s, provider, model, cr.Context[model], tr)
 	return a.ensure(ctx, alrt.LaunchSpec{
 		Profile: prof, Cwd: cwd, Provider: provider, Model: model, ReasoningEffort: effort,
-		// The tool model is in the tuning: a change restarts an idle runtime.
-		Tuning: effort + "\n" + strings.Join(tuning, "\n"), Credential: credID,
+		// The tool model and its credential are in the tuning: a change
+		// restarts an idle runtime, even to a credential of the same model.
+		Tuning: effort + "\n" + strings.Join(tuning, "\n") + tr.fingerprint(), Credential: credID,
 		// Plugin variables first: the credentials always win.
 		Env: append(append(append([]string(nil), extra...), tuning...), env...),
 	})
@@ -711,17 +713,27 @@ func (a *App) toolRoute(s Settings, main credentials.Credential) (*toolRoute, []
 		model = credentials.ModelOf(tc)
 	}
 	if tc.ID == main.ID {
-		return &toolRoute{route: tc.Provider, model: model}, nil
+		return &toolRoute{cred: tc.ID, route: tc.Provider, model: model}, nil
 	}
 	route, _, env, err := a.Creds.LaunchEnv(id)
 	if err != nil {
 		return nil, nil
 	}
-	return &toolRoute{route: route, model: model}, env
+	return &toolRoute{cred: tc.ID, route: route, model: model}, env
 }
 
-// toolRoute is the route and model of a runtime's tool model.
-type toolRoute struct{ route, model string }
+// toolRoute is the credential, route and model of a runtime's tool model.
+type toolRoute struct{ cred, route, model string }
+
+// fingerprint is the tool credential's id for LaunchSpec.Tuning, which
+// ALCOVE_TOOL_MODEL alone leaves out: two credentials of one service and
+// model differ only in their key. "" without a tool model.
+func (t *toolRoute) fingerprint() string {
+	if t == nil {
+		return ""
+	}
+	return "\ntool-credential:" + t.cred
+}
 
 // tuning is how the settings reach a runtime of model on route: the
 // reasoning effort it takes (none when the model takes no such effort),
@@ -744,15 +756,14 @@ func (a *App) tuning(s Settings, route, model string, limit int, tool *toolRoute
 	case limit > 0 && window > 0 && limit < window:
 		scale = float64(limit) / float64(window)
 	}
-	patches := map[string]map[string]any{}
-	a.routePatch(patches, route, model, m, listed, window)
+	served := []servedModel{{route: route, model: m, listed: listed, window: window}}
 	if tool != nil {
 		tm, tlisted := a.Catalog.Lookup(tool.route, tool.model)
-		a.routePatch(patches, tool.route, tool.model, tm, tlisted, tm.Context)
+		served = append(served, servedModel{route: tool.route, model: tm, listed: tlisted, window: tm.Context})
 		b, _ := json.Marshal(map[string]string{"provider": tool.route, "model": tool.model})
 		env = append(env, "ALCOVE_TOOL_MODEL="+string(b))
 	}
-	if len(patches) > 0 {
+	if patches := a.routePatches(served); len(patches) > 0 {
 		b, _ := json.Marshal(patches)
 		env = append(env, "ALCOVE_ROUTE_PATCH="+string(b))
 	}
@@ -776,40 +787,60 @@ func (a *App) tuning(s Settings, route, model string, limit int, tool *toolRoute
 	return effort, append(env, "ALCOVE_COMPACTION="+string(cfg), "ALCOVE_DEFAULT_MODEL="+string(b))
 }
 
-// routePatch adds to patches what route needs to serve model in a window
-// of window tokens. pi-ai serves only the models its catalog lists; another
-// one the service offers is declared for the route, and a widened window is
-// set on the route's entry for the model.
-func (a *App) routePatch(patches map[string]map[string]any, route, model string, m catalog.Model, listed bool, window int) {
-	at := func() map[string]any {
-		if patches[route] == nil {
-			patches[route] = map[string]any{}
+// servedModel is a model a runtime runs on route, in a window of window
+// tokens; listed is whether the route's catalog lists it.
+type servedModel struct {
+	route  string
+	model  catalog.Model
+	listed bool
+	window int
+}
+
+// routePatches is what each route needs to serve its models (the
+// conversation's, and the tool model's). pi-ai serves only the models its
+// catalog lists: a route with another one the service offers gets a models
+// list, which replaces the served catalog, so it names every model the
+// runtime runs there (an entry takes its catalog's facts, by id) with any
+// widened window on its entry; otherwise a widened window is a
+// modelOverrides entry. dsh-llm-pi-ai takes one or the other, not both.
+func (a *App) routePatches(served []servedModel) map[string]map[string]any {
+	patches := map[string]map[string]any{}
+	for _, sm := range served {
+		route := sm.route
+		if patches[route] != nil {
+			continue
 		}
-		return patches[route]
-	}
-	switch {
-	case !listed && a.Catalog.Routes(route):
-		entry := map[string]any{"id": model}
-		if window != m.Context {
-			entry["contextWindow"] = window
-		}
-		p := at()
-		models, _ := p["models"].([]any)
-		for _, e := range models {
-			if e.(map[string]any)["id"] == model {
-				return
+		var on []servedModel
+		declare := false
+		for _, o := range served {
+			if o.route == route && !slices.ContainsFunc(on, func(x servedModel) bool { return x.model.ID == o.model.ID }) {
+				on = append(on, o)
+				declare = declare || (!o.listed && a.Catalog.Routes(route))
 			}
 		}
-		p["models"] = append(models, entry)
-	case window != m.Context:
-		p := at()
-		overrides, _ := p["modelOverrides"].(map[string]any)
-		if overrides == nil {
-			overrides = map[string]any{}
-			p["modelOverrides"] = overrides
+		if declare {
+			var models []any
+			for _, o := range on {
+				entry := map[string]any{"id": o.model.ID}
+				if o.window != o.model.Context {
+					entry["contextWindow"] = o.window
+				}
+				models = append(models, entry)
+			}
+			patches[route] = map[string]any{"models": models}
+			continue
 		}
-		overrides[model] = map[string]any{"contextWindow": window}
+		overrides := map[string]any{}
+		for _, o := range on {
+			if o.window != o.model.Context {
+				overrides[o.model.ID] = map[string]any{"contextWindow": o.window}
+			}
+		}
+		if len(overrides) > 0 {
+			patches[route] = map[string]any{"modelOverrides": overrides}
+		}
 	}
+	return patches
 }
 
 // ensureForPlugin is runtime.ensure for sidecars with the background
