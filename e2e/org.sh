@@ -86,7 +86,8 @@ export ALCOVE_E2E_GATEWAY_LISTEN="127.0.0.1:$PORT"
 # 云端的 bot 用随包的 dsh：ALCOVE_E2E_DSH 是 <node_modules>/@deepseek-ai/dsh/lib/bin.js。
 DSH_MODULES=$(cd "$(dirname "$ALCOVE_E2E_DSH")/../../.." && pwd)
 # 云端的引擎闲 10 秒就退：本机设的提醒在云端到点时没有引擎在跑，云端自己发出（引擎还没听说），切回本机时要先交给引擎。
-CLOUD_ENV=(CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 CLOISTER_E2E_DAILY_IDLE_S=10 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES")
+# 云端的引擎装的是上面打好的 daily 包（以 root 起的云不在调用者的检出里构建）。
+CLOUD_ENV=(CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 CLOISTER_E2E_DAILY_IDLE_S=10 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES" CLOISTER_E2E_DAILY_TGZ="$DOVETAIL_DAILY_TGZ")
 if [ -n "$SUDO" ]; then
   # sudo 不带调用者的环境：要的变量逐个交过去（HOME 不交，root 的 Go 与 npm 缓存不写进调用者的家目录）。
   CLOUD_ENV+=(CLOISTER_E2E_SANDBOX=1 "PATH=$PATH" "DATABASE_URL=$DATABASE_URL" "CONTAINERD_ADDRESS=${CONTAINERD_ADDRESS:-/run/containerd/containerd.sock}")
@@ -97,7 +98,7 @@ else
   (cd "$CLOISTER" && exec env "${CLOUD_ENV[@]}" node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
 fi
 CLOUD_PID=$!
-# 先要打出 daily 包、装进 bot 的 daily profile，一两分钟。
+# 先要把 daily 包装进 bot 的 daily profile。
 for _ in $(seq 3000); do
   [ -f "$W/cloud.env" ] && break
   alive || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not start"; }
