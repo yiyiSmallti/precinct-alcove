@@ -40,13 +40,16 @@ type History struct {
 // calls or reasoning. Long texts are cut, and a long conversation keeps its
 // latest messages.
 type Conversation struct {
-	WorkspaceID string           `json:"workspaceId"`
-	Workspace   string           `json:"workspace"`
-	TaskID      string           `json:"taskId"`
-	Title       string           `json:"title,omitempty"`
-	UpdatedAt   string           `json:"updatedAt"`
-	Messages    []HistoryMessage `json:"messages"`
-	Cut         bool             `json:"cut,omitempty"`
+	WorkspaceID string `json:"workspaceId"`
+	Workspace   string `json:"workspace"`
+	TaskID      string `json:"taskId"`
+	Title       string `json:"title,omitempty"`
+	UpdatedAt   string `json:"updatedAt"`
+	// Cursor asks for the conversations after this one (a HistoryQuery's
+	// After), for a reader that takes only part of a page.
+	Cursor   string           `json:"cursor"`
+	Messages []HistoryMessage `json:"messages"`
+	Cut      bool             `json:"cut,omitempty"`
 }
 
 // HistoryMessage is one message; Role is user or assistant.

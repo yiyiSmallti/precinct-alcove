@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -92,6 +93,44 @@ func (s *Store) LoadTranscript(ws, id string, v any) error {
 		return err
 	}
 	return json.Unmarshal(b, v)
+}
+
+// TranscriptPath is where a task's transcript is kept.
+func (s *Store) TranscriptPath(ws, id string) string { return s.transcript(ws, id) }
+
+// LoadTranscriptAt is LoadTranscript that also says when the version read
+// was saved (the file's time: a save replaces the whole file at once).
+func (s *Store) LoadTranscriptAt(ws, id string, v any) (time.Time, error) {
+	if s.Dir == "" {
+		return time.Time{}, os.ErrNotExist
+	}
+	f, err := os.Open(s.transcript(ws, id))
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return time.Time{}, err
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fi.ModTime(), json.Unmarshal(b, v)
+}
+
+// TranscriptTime is when a task's transcript was last saved; an error
+// matching os.ErrNotExist when it has none.
+func (s *Store) TranscriptTime(ws, id string) (time.Time, error) {
+	if s.Dir == "" {
+		return time.Time{}, os.ErrNotExist
+	}
+	fi, err := os.Stat(s.transcript(ws, id))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fi.ModTime(), nil
 }
 
 func (s *Store) load() (file, error) {

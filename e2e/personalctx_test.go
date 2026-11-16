@@ -126,6 +126,15 @@ func TestPersonalContext(t *testing.T) {
 	seed(pw, "chat-2", "", t0.Add(time.Minute), "代码注释用中文", "好的")
 	seed(pw, "task-plugin", e2ePlugin, t0.Add(2*time.Minute), "PLUGIN-RAN", "x")
 	seed(ow, "chat-org", "", t0.Add(3*time.Minute), "ORG-SECRET", "x")
+	// The two conversations' views saved at the same moment: history still
+	// pages through them one at a time.
+	same := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
+	for _, id := range []string{"chat-1", "chat-2"} {
+		if err := os.Chtimes(a.Tasks.TranscriptPath(pw, id), same, same); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstCursor := same.UTC().Format(time.RFC3339Nano) + "|" + pw + "|chat-1"
 
 	hookFile := filepath.Join(work, "hook.json")
 	raw, _ := json.Marshal(map[string]any{
@@ -143,6 +152,7 @@ func TestPersonalContext(t *testing.T) {
 		{"method": "personal.get", "params": map[string]any{}},
 		{"method": "personal.history", "params": map[string]any{"limit": 1}},
 		{"method": "personal.history", "params": map[string]any{}},
+		{"method": "personal.history", "params": map[string]any{"after": firstCursor, "limit": 1}},
 	})
 	a.Sidecars.Env = []string{"FAKE_PLUGIN_CALLS=" + string(calls), "FAKE_PLUGIN_HOOK_FILE=" + hookFile}
 	tgz := pack(t, work, "1.0.0", buildFakePlugin(t, work), func(pj map[string]any) {
@@ -204,6 +214,18 @@ func TestPersonalContext(t *testing.T) {
 		err = fmt.Errorf("not oldest first: %s", h2)
 	}
 	r.step("personal.history：只有个人工作区里用户自己发起的对话，旧的在前，只含双方的文字，limit 生效", err, h2)
+
+	// 2b. Saved at the same moment: the first page's cursor names the
+	// conversation, and the next page has the other one.
+	h3 := result(8)
+	err = nil
+	switch {
+	case !strings.Contains(h1, `"cursor":"`+firstCursor+`"`):
+		err = fmt.Errorf("first page has no cursor %s: %s", firstCursor, h1)
+	case !strings.Contains(h3, `"taskId":"chat-2"`) || strings.Contains(h3, `"taskId":"chat-1"`) || !strings.Contains(h3, `"more":false`):
+		err = fmt.Errorf("after the first: %s", h3)
+	}
+	r.step("两段对话同一时刻保存：按第一页给的游标翻页，第二页正好是另一段，不会漏", err, h3)
 
 	// 3. A personal workspace's request carries the profile and the skill.
 	p, err := a.OpenWorkspace(ctx, pw)

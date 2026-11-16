@@ -123,7 +123,7 @@ package.json
   browser.capture({workspaceId}) → { png }  需要 browser；页面当前画面，base64 PNG
   browser.state / browser.close({workspaceId}) → BrowserState  需要 browser；state 不创建页面（没有时 open:false），close 销毁页面并收起窗格
   BrowserState = { open, url, title, loading, canGoBack, canGoForward, error? }。浏览器是工作区页右侧的窗格（地球按钮开关，占右栏的位置），用户可在里面自己浏览、随时接手；页面用独立的持久数据存储（mygo.NewSession("browser")），不与用户的浏览器或 Alcove 自身共享 Cookie；新窗口在同一页打开，相机、麦克风、定位等权限一律拒绝。Agent 操作过的两分钟内，窗格工具栏有“接手”：用户接手后该工作区除 state 外的 `browser.*` 一律报错（"the user has taken over the browser…"），直到用户点“交还给 Agent”。加载中工具栏显示停止按钮和细进度条；对话里浏览器工具显示为“打开网页 / 阅读页面 / 点击 / 输入…”，点击和输入显示点到的元素。实现：`internal/shell/browser.go`
-  personal.history({after?, limit?}) → { conversations[]{ workspaceId, workspace, taskId, title, updatedAt, messages[]{ role, text }, cut? }, next?, more }  需要 personal_history；用户在个人工作区里自己发起的对话（不含组织工作区，不含插件跑的任务），按更新时间从旧到新；after 是上一页的 next（RFC 3339 时间游标）。只有用户与助手的正文，不含工具输出和推理；每条最多 4000 字，每段对话只留最后约 24 KB（cut:true），一页最多 50 段（默认 20）、约 96 KB
+  personal.history({after?, limit?}) → { conversations[]{ workspaceId, workspace, taskId, title, updatedAt, cursor, messages[]{ role, text }, cut? }, next?, more }  需要 personal_history；用户在个人工作区里自己发起的对话（不含组织工作区，不含插件跑的任务），按对话视图保存的时间从旧到新（不按任务自己的时间：任务的时间先变、视图后存，按它翻页会跳过还没存的那一版），同一时刻保存的再按工作区与任务 id 排；after 是上一页的 next，或某段对话的 cursor（只收了一页的前几段时从那里接着读），格式 `<RFC 3339 时间>|<工作区>|<任务>`，只给时间的旧游标也收。只有用户与助手的正文，不含工具输出和推理；每条最多 4000 字，每段对话只留最后约 24 KB（cut:true），一页最多 50 段（默认 20）、约 96 KB
   personal.get() → { profile, skills[]{ name, description, source? } }  需要 personal_context
   personal.getSkill({name}) → { name, description, body, source? }  需要 personal_context
   personal.setProfile({text})               需要 personal_context；整份替换「关于我」，空串即删除

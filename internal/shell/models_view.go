@@ -88,6 +88,25 @@ func (s *Shell) toolChoices(def *credentials.Credential) []toolChoice {
 			out = append(out, toolChoice{label: cr.Label + " · " + m, tm: app.ToolModel{Credential: cr.ID, Model: m}})
 		}
 	}
+	// Credentials may share a name: the picker matches a choice by its
+	// label, so a label taken already gets the connection's address, then a
+	// number, until it is the only one.
+	seen := map[string]bool{}
+	for i := range out {
+		label := out[i].label
+		if seen[label] {
+			for _, cr := range s.creds {
+				if cr.ID == out[i].tm.Credential && cr.BaseURL != "" {
+					label += "（" + hostOf(cr.BaseURL) + "）"
+				}
+			}
+			for n := 2; seen[label]; n++ {
+				label = fmt.Sprintf("%s（%d）", out[i].label, n)
+			}
+		}
+		seen[label] = true
+		out[i].label = label
+	}
 	return out
 }
 
@@ -114,6 +133,7 @@ func (s *Shell) toolModelSettings(c *ui.Context, pal *palette) {
 						st := s.settings
 						st.ToolModel = ch.tm
 						s.saveSettings(st)
+						break
 					}
 				}
 			}

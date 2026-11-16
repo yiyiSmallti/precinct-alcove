@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -89,17 +90,54 @@ func (p personalService) RemoveSkill(_ context.Context, plugin, name string) err
 	return nil
 }
 
+// historyKey orders the history: when a task's view was saved, then its
+// workspace and task, so tasks saved at the same time still page.
+type historyKey struct {
+	at       time.Time
+	ws, task string
+}
+
+func (k historyKey) after(o historyKey) bool {
+	switch {
+	case !k.at.Equal(o.at):
+		return k.at.After(o.at)
+	case k.ws != o.ws:
+		return k.ws > o.ws
+	}
+	return k.task > o.task
+}
+
+// String is the cursor of k: "<time>|<workspace>|<task>".
+func (k historyKey) String() string {
+	return k.at.UTC().Format(time.RFC3339Nano) + "|" + k.ws + "|" + k.task
+}
+
+// parseHistoryKey reads a cursor; a bare time (an older Alcove's) is the
+// start of that moment.
+func parseHistoryKey(s string) (historyKey, error) {
+	at, rest, _ := strings.Cut(s, "|")
+	t, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return historyKey{}, err
+	}
+	ws, task, _ := strings.Cut(rest, "|")
+	return historyKey{t, ws, task}, nil
+}
+
 // History pages through the tasks the user started in personal workspaces,
-// by when they last moved, oldest first, as their views last saved them. A
-// task with no saved view (never shown since it ran) is skipped.
+// by when their views were last saved, oldest first, as saved then. The
+// save time, not the task's own, orders them: a task's time moves before
+// its view is saved, and a cursor past a version not saved yet would skip
+// it for good. A task with no saved view (never shown since it ran) is
+// skipped.
 func (p personalService) History(_ context.Context, plugin string, q sidecar.HistoryQuery) (sidecar.History, error) {
-	var after time.Time
+	var after historyKey
 	if q.After != "" {
-		t, err := time.Parse(time.RFC3339Nano, q.After)
+		k, err := parseHistoryKey(q.After)
 		if err != nil {
 			return sidecar.History{}, sidecar.InvalidPersonal{Err: fmt.Errorf("after is not a cursor this host gave: %v", err)}
 		}
-		after = t
+		after = k
 	}
 	limit := q.Limit
 	if limit == 0 {
@@ -113,6 +151,7 @@ func (p personalService) History(_ context.Context, plugin string, q sidecar.His
 	type item struct {
 		ws   workspace.Workspace
 		task tasks.Task
+		key  historyKey
 	}
 	var items []item
 	for _, w := range all {
@@ -124,12 +163,19 @@ func (p personalService) History(_ context.Context, plugin string, q sidecar.His
 			return sidecar.History{}, err
 		}
 		for _, t := range list {
-			if t.Source == "" && t.UpdatedAt.After(after) {
-				items = append(items, item{w, t})
+			if t.Source != "" {
+				continue
+			}
+			at, err := p.a.Tasks.TranscriptTime(w.ID, t.ID)
+			if err != nil {
+				continue
+			}
+			if k := (historyKey{at, w.ID, t.ID}); k.after(after) {
+				items = append(items, item{w, t, k})
 			}
 		}
 	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].task.UpdatedAt.Before(items[j].task.UpdatedAt) })
+	sort.Slice(items, func(i, j int) bool { return items[j].key.after(items[i].key) })
 	out := sidecar.History{Conversations: []sidecar.Conversation{}}
 	size := 0
 	for _, it := range items {
@@ -137,13 +183,16 @@ func (p personalService) History(_ context.Context, plugin string, q sidecar.His
 			out.More = true
 			break
 		}
-		cursor := it.task.UpdatedAt.UTC().Format(time.RFC3339Nano)
-		out.Next = cursor
+		out.Next = it.key.String()
 		var snap events.Snapshot
-		if err := p.a.Tasks.LoadTranscript(it.ws.ID, it.task.ID, &snap); err != nil {
+		at, err := p.a.Tasks.LoadTranscriptAt(it.ws.ID, it.task.ID, &snap)
+		if err != nil {
 			continue
 		}
-		c := conversation(it.ws, it.task, snap)
+		// Saved again since it was listed: the newer version is read now,
+		// and once more after its time, which is only a repeat.
+		c := conversation(it.ws, it.task, snap, at)
+		c.Cursor = it.key.String()
 		if len(c.Messages) == 0 {
 			continue
 		}
@@ -160,7 +209,7 @@ func (p personalService) History(_ context.Context, plugin string, q sidecar.His
 
 // conversation keeps the user's and the agent's text of a task view, the
 // latest historyConversation bytes of it.
-func conversation(w workspace.Workspace, t tasks.Task, snap events.Snapshot) sidecar.Conversation {
+func conversation(w workspace.Workspace, t tasks.Task, snap events.Snapshot, saved time.Time) sidecar.Conversation {
 	var msgs []sidecar.HistoryMessage
 	for _, e := range snap.Entries {
 		if (e.Kind != events.User && e.Kind != events.Assistant) || e.Text == "" {
@@ -173,7 +222,7 @@ func conversation(w workspace.Workspace, t tasks.Task, snap events.Snapshot) sid
 		msgs = append(msgs, sidecar.HistoryMessage{Role: string(e.Kind), Text: text})
 	}
 	c := sidecar.Conversation{WorkspaceID: w.ID, Workspace: w.Name, TaskID: t.ID, Title: t.Title,
-		UpdatedAt: t.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+		UpdatedAt: saved.UTC().Format(time.RFC3339Nano)}
 	size, from := 0, len(msgs)
 	for from > 0 && size+len(msgs[from-1].Text) <= historyConversation {
 		from--
