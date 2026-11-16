@@ -229,13 +229,15 @@ func runCloudStretch(ctx context.Context, r *report, c cloudStretch) bool {
 	return err == nil
 }
 
-// cardTitled is the id of the newest card with this title.
+// cardTitled is the id of the newest card with this title. The daily
+// assistant's conversation shows the organisation's cards with "组织 · " in
+// front.
 func (v *inboxView) cardTitled(title string) string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	found := ""
 	for _, id := range v.order {
-		if c, ok := v.items[id]["card"].(map[string]any); ok && c["title"] == title {
+		if c, ok := v.items[id]["card"].(map[string]any); ok && (c["title"] == title || c["title"] == "组织 · "+title) {
 			found = id
 		}
 	}
