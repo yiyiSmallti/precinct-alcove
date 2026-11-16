@@ -114,6 +114,12 @@ func TestDailyLearn(t *testing.T) {
 	seed("chat-1", "", t0, "LEARN-SEED-1 别铺垫，先给结论再说细节", "好，先说结论")
 	seed("chat-2", "", t0.Add(time.Minute), "LEARN-SEED-2 又来了，先给结论；代码注释用英文", "明白")
 	seed("chat-plugin", "@someone/else", t0.Add(2*time.Minute), "PLUGIN-RAN", "x")
+	// 关于我 the person wrote before installing: learning adds its own
+	// section and leaves this as it is.
+	const ownRule = "USER-OWN-RULE 提交信息用英文"
+	if err := a.Personal.SetProfile("# 我的约定\n- " + ownRule); err != nil {
+		t.Fatal(err)
+	}
 
 	tgz := filepath.Join(work, filepath.Base(src))
 	err = copyFile(src, tgz)
@@ -190,7 +196,7 @@ func TestDailyLearn(t *testing.T) {
 	if err == nil {
 		err = waitFor(func() bool {
 			p := profile()
-			return strings.Contains(p, "回答先给结论，再说细节") && strings.Contains(p, "代码注释用英文")
+			return strings.Contains(p, "回答先给结论，再说细节") && strings.Contains(p, "代码注释用英文") && strings.Contains(p, ownRule)
 		}, 20*time.Second)
 		if err != nil {
 			err = fmt.Errorf("关于我 is %q: %v", profile(), err)
@@ -199,7 +205,7 @@ func TestDailyLearn(t *testing.T) {
 	if err == nil && view.has("学习完成") {
 		err = fmt.Errorf("the learning turn posted a message")
 	}
-	r.step("学到的两条工作偏好立即生效：「记忆」页列为「关于我」条目，个人上下文的 AGENTS.md 里有这两条；对话里不出消息", err, profile())
+	r.step("学到的两条工作偏好立即生效：「记忆」页列为「关于我」条目，个人上下文的 AGENTS.md 里有这两条，用户自己原来写的内容还在；对话里不出消息", err, profile())
 	if err != nil {
 		return
 	}
@@ -209,7 +215,7 @@ func TestDailyLearn(t *testing.T) {
 	err = action("memory", off, nil)
 	if err == nil {
 		err = waitFor(func() bool {
-			return !strings.Contains(profile(), "代码注释用英文") && strings.Contains(profile(), "先给结论") &&
+			return !strings.Contains(profile(), "代码注释用英文") && strings.Contains(profile(), "先给结论") && strings.Contains(profile(), ownRule) &&
 				pageButton(page("memory"), "已删除 · 代码注释用英文", "profile-on:") != ""
 		}, 20*time.Second)
 	}
