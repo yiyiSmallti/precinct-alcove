@@ -686,8 +686,15 @@ func TestOrgChain(t *testing.T) {
 	out := strings.Join(provider.Bodies()[sentBefore:], "\n")
 	switch {
 	case err != nil:
-		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v",
-			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey))
+		last := ""
+		if b := provider.Bodies(); len(b) > sentBefore {
+			last = b[len(b)-1]
+			if len(last) > 4000 {
+				last = last[len(last)-4000:]
+			}
+		}
+		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v; DEBUG last request tail: %s",
+			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey), last)
 	case personal.SawKey(personalKey):
 		err = errors.New("the device's bot turn used the member's own credential")
 	case len(provider.Bodies()) == sentBefore:
