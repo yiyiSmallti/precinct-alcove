@@ -364,8 +364,8 @@ func TestOrgChain(t *testing.T) {
 		"PRECINCT_CLOISTER_SYNC_URL=" + devSync,
 		"PRECINCT_CLOISTER_PENDING_POLL=300ms",
 		"PRECINCT_CLOISTER_LEASE_RENEW=2s",
-		// An org turn on the device closes only once its engine went idle (the
-		// next one waits for that): 3 minutes by default.
+		// The engine exits this long after it went idle (3 minutes by
+		// default); an org turn closes earlier, once the engine settled.
 		"PRECINCT_DAILY_IDLE_AFTER=10s",
 	}
 	logs := func() string {
@@ -651,6 +651,12 @@ func TestOrgChain(t *testing.T) {
 		return
 	}
 	sentBefore := len(provider.Bodies())
+	// The device closes each org turn once its engine settled (answered,
+	// changes pushed), and the bot host sends a member's next turn only then.
+	turnClosed := regexp.MustCompile(`org bot: org turn \S+ closed`)
+	closed := func() int { return len(turnClosed.FindAllString(logs(), -1)) }
+	closedAt := closed()
+	idle := func() int { return strings.Count(logs(), "org bot: daily turn process going idle") }
 	ask := fmt.Sprintf("帮我记一下：给%s的王经理%s，号码 %s", orgCustomer, orgMarker, orgPhone)
 	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": ask}, &said)
 	if err == nil && said.Status != http.StatusOK {
@@ -696,6 +702,7 @@ func TestOrgChain(t *testing.T) {
 	// cloud it must come due there, which it can only if the device's
 	// changes reached the cloud's engine. The cloud sends a reminder's text
 	// as it is, a device puts ⏰ in front: which side fired it shows.
+	idleAt := idle()
 	spoke = time.Now()
 	_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": fmt.Sprintf("%d 秒后提醒我%s", int(handOverIn/time.Second), handOverWhat)}, &said)
 	if err == nil && said.Status != http.StatusOK {
@@ -709,19 +716,25 @@ func TestOrgChain(t *testing.T) {
 			err = fmt.Errorf("no %q in WeCom; sent there: %v", want, wecomTexts(wecom, member))
 		}
 	}
-	r.step(fmt.Sprintf("本机为主力时在企微里说“%d 秒后提醒我%s”：本机的 daily 引擎设下提醒并答应", int(handOverIn/time.Second), handOverWhat), err,
-		fmt.Sprintf("%.0f 秒后答：%s", time.Since(spoke).Seconds(), promised.Text))
+	// Said right after the previous answer, it waits for the previous turn to
+	// close. That turn closes once the engine here settled, so the engine
+	// that answered the first one answers this one too: closing on idle
+	// instead would let it go idle and exit in between.
+	answeredIn := time.Duration(promised.At-spoke.UnixMilli()) * time.Millisecond
+	if err == nil && idle() > idleAt {
+		err = fmt.Errorf("the engine went idle before answering (%s after it was said): the previous turn on the device closed only on idle", answeredIn)
+	}
+	r.step(fmt.Sprintf("本机为主力时紧接着在企微里说“%d 秒后提醒我%s”：上一个回合在引擎了结时关闭，同一个 daily 引擎不经空闲就设下提醒并答应", int(handOverIn/time.Second), handOverWhat), err,
+		fmt.Sprintf("%.1f 秒后答：%s", answeredIn.Seconds(), promised.Text))
 	if err != nil {
 		return
 	}
-	// The turn closes once the engine here went idle. Switching before that
-	// would hand the message back to the cloud, whose engine would set the
-	// reminder itself: the cloud has to get it from the device.
-	idle := func() int { return strings.Count(logs(), "org bot: daily turn process going idle") }
-	idleAt := idle()
-	err = waitFor(func() bool { return idle() > idleAt }, time.Minute)
+	// Both turns on the device must have closed before the switch: one still
+	// open would go back to the cloud, whose engine would set the reminder
+	// itself, and the cloud has to get it from the device.
+	err = waitFor(func() bool { return closed() >= closedAt+2 }, time.Minute)
 	if err != nil {
-		r.step("本机的引擎答完后空闲退出，回合关闭", err, "")
+		r.step("本机的两个回合在引擎答完后关闭", fmt.Errorf("%d of 2 closed: %v", closed()-closedAt, err), "")
 		return
 	}
 	// One more, due before the switch: the device fires it without its
