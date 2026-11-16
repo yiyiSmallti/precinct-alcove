@@ -126,7 +126,8 @@ func runCloudStretch(ctx context.Context, r *report, c cloudStretch) bool {
 	if err == nil && waitFor(func() bool { return strings.Contains(pageText(c.page()), "云端任务运行中，本机只读") }, time.Minute) != nil {
 		err = fmt.Errorf("the settings page never showed the workspace held by a cloud task: %s", lineWith(pageText(c.page()), "本机"))
 	}
-	if err == nil && !c.view.cardHas(offer, "已派到云端") {
+	// The workspace is the task's before Cloister has taken the answer; the card says so after.
+	if err == nil && waitFor(func() bool { return c.view.cardHas(offer, "已派到云端") }, time.Minute) != nil {
 		err = fmt.Errorf("the card does not say it went to the cloud: %v", c.view.texts())
 	}
 	if err == nil {
