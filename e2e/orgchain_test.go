@@ -686,44 +686,8 @@ func TestOrgChain(t *testing.T) {
 	out := strings.Join(provider.Bodies()[sentBefore:], "\n")
 	switch {
 	case err != nil:
-		last := ""
-		for _, body := range provider.Bodies()[sentBefore:] {
-			var req struct {
-				Messages []struct {
-					Role    string          `json:"role"`
-					Content json.RawMessage `json:"content"`
-					Tools   json.RawMessage `json:"tool_calls"`
-				} `json:"messages"`
-			}
-			json.Unmarshal([]byte(body), &req)
-			last += fmt.Sprintf("\n== request with %d messages", len(req.Messages))
-			for _, m := range req.Messages[max(0, len(req.Messages)-6):] {
-				t := string(m.Content) + " " + string(m.Tools)
-				if len(t) > 700 {
-					t = t[:700]
-				}
-				last += "\n  [" + m.Role + "] " + t
-			}
-		}
-		cm := modelRequests(cloud["CLOISTER_E2E_MODEL"], 0).joined
-		for _, marker := range []string{`"name":"orchestrator_thread_unsubscribe","input"`, `worker_report`} {
-			for i, n := 0, 0; n < 3; n++ {
-				j := strings.Index(cm[i:], marker)
-				if j < 0 {
-					break
-				}
-				i += j
-				last += "\n== cloud " + marker + ": " + cm[i:min(len(cm), i+900)]
-				i += len(marker)
-			}
-		}
-		if db, derr := orgBotDB(dataDir); derr == nil {
-			out, _ := exec.Command("sqlite3", "-cmd", ".timeout 5000", db,
-				"SELECT 'thread', key, value FROM thread; SELECT 'ticket', id, substr(value, 1, 1500) FROM ticket; SELECT 'trigger', id, substr(value, 1, 400) FROM trigger WHERE id LIKE 'trg_wecom%';").CombinedOutput()
-			last += "\n== device db\n" + string(out)
-		}
-		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v; DEBUG requests: %s",
-			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey), last)
+		err = fmt.Errorf("no answer in WeCom: %v; the gateway's provider got %d request(s) since; the member's own endpoint was used: %v",
+			wecomTexts(wecom, member), len(provider.Bodies())-sentBefore, personal.SawKey(personalKey))
 	case personal.SawKey(personalKey):
 		err = errors.New("the device's bot turn used the member's own credential")
 	case len(provider.Bodies()) == sentBefore:
