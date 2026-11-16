@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# 组织版整链验收，前两段（Charter 架构文档第 7 节第 8 条的组织那条）：跑 e2e 的 TestOrgChain。
+# 组织版整链验收（Charter 架构文档第 7 节第 8 条的组织那条）：跑 e2e 的 TestOrgChain。
 # 真实的：Alcove 核心、daily 与 cloister 两个插件、Cloister（access、sync、bothost）、成员在云端的 bot
 # （daily-tools 引擎，从 DOVETAIL_DIR 现打，跑在随包的 dsh 里）、Gatehouse（org 模式）与它的 gatehouse-cloister
-# 插件。假的：两个模型提供方、企业微信、云沙盒编排。写出 e2e/report/org-chain.md。
+# 插件。假的：两个模型提供方、企业微信；云沙盒编排默认也是假的，云端任务一段记为没验。
+# ALCOVE_E2E_SANDBOX=1 时云端任务跑在真实沙盒里（Cloister 的编排服务，containerd，沙盒里是它的替身 runner）：
+# 云要 root，经 sudo 起（要免密 sudo、containerd 在 CONTAINERD_ADDRESS，默认 /run/containerd/containerd.sock）。
+# 写出 e2e/report/org-chain.md。
 #
 # 用法：e2e/org.sh        要 DATABASE_URL（一个能 CREATE DATABASE 的 Postgres）、go、node ≥ 22.18、pnpm
 #   DOVETAIL_DIR、CLOISTER_DIR、GATEHOUSE_DIR   三个仓库的检出，默认是本仓库旁边的 precinct-*；
@@ -17,10 +20,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 W=$(mktemp -d)
 CLOUD_PID=""
+# 带真实沙盒时云是 root 的进程：查它在不在、停它都得经 sudo。
+SUDO=""; [ "${ALCOVE_E2E_SANDBOX:-}" = 1 ] && SUDO=sudo
+alive() { ps -p "$CLOUD_PID" >/dev/null 2>&1; }
 cleanup() {
   rc=$?
-  if [ -n "$CLOUD_PID" ] && kill -0 "$CLOUD_PID" 2>/dev/null; then
-    kill -TERM "$CLOUD_PID" 2>/dev/null || true
+  if [ -n "$CLOUD_PID" ] && alive; then
+    $SUDO kill -TERM "$CLOUD_PID" 2>/dev/null || true
     wait "$CLOUD_PID" 2>/dev/null || true
   fi
   rm -rf "$W"
@@ -80,13 +86,21 @@ export ALCOVE_E2E_GATEWAY_LISTEN="127.0.0.1:$PORT"
 # 云端的 bot 用随包的 dsh：ALCOVE_E2E_DSH 是 <node_modules>/@deepseek-ai/dsh/lib/bin.js。
 DSH_MODULES=$(cd "$(dirname "$ALCOVE_E2E_DSH")/../../.." && pwd)
 # 云端的引擎闲 10 秒就退：本机设的提醒在云端到点时没有引擎在跑，云端自己发出（引擎还没听说），切回本机时要先交给引擎。
-(cd "$CLOISTER" && CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 CLOISTER_E2E_DAILY_IDLE_S=10 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES" \
-  exec node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
+CLOUD_ENV=(CLOISTER_E2E_GATEWAY_URL="http://127.0.0.1:$PORT" CLOISTER_E2E_ENGINE=1 CLOISTER_E2E_DAILY_IDLE_S=10 DOVETAIL_DIR="$DOVETAIL" DSH_NODE_MODULES="$DSH_MODULES")
+if [ -n "$SUDO" ]; then
+  # sudo 不带调用者的环境：要的变量逐个交过去（HOME 不交，root 的 Go 与 npm 缓存不写进调用者的家目录）。
+  CLOUD_ENV+=(CLOISTER_E2E_SANDBOX=1 "PATH=$PATH" "DATABASE_URL=$DATABASE_URL" "CONTAINERD_ADDRESS=${CONTAINERD_ADDRESS:-/run/containerd/containerd.sock}")
+  [ -n "${GOTOOLCHAIN:-}" ] && CLOUD_ENV+=("GOTOOLCHAIN=$GOTOOLCHAIN")
+  [ -n "${CLOISTER_E2E_LOG_DIR:-}" ] && CLOUD_ENV+=("CLOISTER_E2E_LOG_DIR=$CLOISTER_E2E_LOG_DIR")
+  (cd "$CLOISTER" && exec sudo env "${CLOUD_ENV[@]}" node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
+else
+  (cd "$CLOISTER" && exec env "${CLOUD_ENV[@]}" node e2e/serve.ts "$W/cloud.env") >"$W/cloud.log" 2>&1 &
+fi
 CLOUD_PID=$!
 # 先要打出 daily 包、装进 bot 的 daily profile，一两分钟。
 for _ in $(seq 3000); do
   [ -f "$W/cloud.env" ] && break
-  kill -0 "$CLOUD_PID" 2>/dev/null || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not start"; }
+  alive || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not start"; }
   sleep 0.1
 done
 [ -f "$W/cloud.env" ] || { tail -30 "$W/cloud.log" >&2; fail "the cloud did not come up in 5 minutes"; }

@@ -1,8 +1,9 @@
 name: org
 
-# The organisation edition end to end, first stretch (Charter
-# mvp-architecture 7.8): one Alcove core with the real daily and cloister
-# plugins against a real Cloister and a real Gatehouse. It checks out
+# The organisation edition end to end (Charter mvp-architecture 7.8): one
+# Alcove core with the real daily and cloister plugins against a real
+# Cloister and a real Gatehouse. Cloud tasks run in real sandboxes: the
+# cloud runs as root (sudo) on the runner's own containerd. It checks out
 # precinct-dovetail, precinct-cloister and precinct-gatehouse with read-only
 # deploy keys (secrets DOVETAIL_DEPLOY_KEY, CLOISTER_DEPLOY_KEY,
 # GATEHOUSE_DEPLOY_KEY); pull requests that cannot read the secrets (forks,
@@ -29,7 +30,7 @@ jobs:
   chain:
     if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -90,9 +91,17 @@ jobs:
           DOVETAIL_DIR: ${{ github.workspace }}/.deps/precinct-dovetail
           CLOISTER_DIR: ${{ github.workspace }}/.deps/precinct-cloister
           GATEHOUSE_DIR: ${{ github.workspace }}/.deps/precinct-gatehouse
+          ALCOVE_E2E_SANDBOX: '1'
+          CONTAINERD_ADDRESS: /run/containerd/containerd.sock
+          CLOISTER_E2E_LOG_DIR: ${{ runner.temp }}/cloud-logs
         run: ALCOVE_E2E_NODE=$(command -v node) e2e/org.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-report-org
           path: e2e/report/org-chain.md
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: org-cloud-logs
+          path: ${{ runner.temp }}/cloud-logs
