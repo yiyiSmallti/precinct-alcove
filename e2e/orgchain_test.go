@@ -79,8 +79,10 @@
 //     then to ask for full access, and with an answerer that would say yes
 //     to anything, no file may appear and nothing may be asked.
 //
-// Not here yet: cloud tasks. e2e/org.sh starts everything and
-// sets the variables below. Writes e2e/report/org-chain.md.
+// The bot also sends a piece of work to the cloud sandbox, pauses and
+// resumes it and gets its result back (orgcloud_test.go; only with real
+// sandboxes, otherwise reported as not checked). e2e/org.sh starts
+// everything and sets the variables below. Writes e2e/report/org-chain.md.
 package e2e
 
 import (
@@ -637,6 +639,12 @@ func TestOrgChain(t *testing.T) {
 		err = fmt.Errorf("the reminder came %d ms after the reply, sooner than the %s asked for", fired.At-reply.At, remindIn)
 	}
 	r.step("到点提醒同时到客户端（daily 助手的对话）与企微", err, fmt.Sprintf("答应后 %.0f 秒到企微", float64(fired.At-reply.At)/1000))
+
+	// The bot sends a piece of work to the cloud sandbox (orgcloud_test.go).
+	if !runCloudStretch(ctx, r, cloudStretch{a: a, view: view, answers: answers, page: page, wecom: wecom, member: member,
+		modelURL: cloud["CLOISTER_E2E_MODEL"], wsID: w.ID, dir: dir}) {
+		return
+	}
 
 	// The bot's primary environment moves to this device: from now on the
 	// member's WeCom messages are answered by the daily engine here, and its
