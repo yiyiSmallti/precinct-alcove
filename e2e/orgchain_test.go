@@ -705,6 +705,34 @@ func TestOrgChain(t *testing.T) {
 		return
 	}
 
+	// The bot's workspace is the same on both sides, so is what its threads
+	// are called: a ticket the cloud subscribed to the member's conversation
+	// must hear the member's next message when this device runs the bot. The
+	// WeCom messages the cloud took in arrived here with the workspace; the
+	// one just answered was taken in here (it carries the org turn's id).
+	sides := map[string][]string{}
+	rows, err := orgBotQuery(dataDir, `SELECT CASE WHEN json_extract(t.value, '$.meta.turnId') IS NULL THEN 'cloud' ELSE 'device' END,
+		(SELECT group_concat(json_extract(j.value, '$.source') || ':' || json_extract(j.value, '$.id'), ',') FROM json_each(t.value, '$.threads') j)
+		FROM trigger t WHERE t.id LIKE 'trg_wecom%' GROUP BY 1, 2`)
+	for _, line := range strings.Split(strings.TrimSpace(rows), "\n") {
+		if side, keys, ok := strings.Cut(line, "|"); ok {
+			sides[side] = append(sides[side], keys)
+		}
+	}
+	switch {
+	case err != nil:
+	case len(sides["cloud"]) != 1 || len(sides["device"]) != 1:
+		err = fmt.Errorf("expected the cloud's and this device's WeCom messages each on one set of threads: %v", sides)
+	case sides["cloud"][0] != sides["device"][0]:
+		err = fmt.Errorf("a WeCom message is on threads %s in the cloud and %s here", sides["cloud"][0], sides["device"][0])
+	case !strings.Contains(","+sides["device"][0]+",", ",org:main,"):
+		err = fmt.Errorf("a WeCom message is not on the member's main conversation (org:main): %s", sides["device"][0])
+	}
+	r.step("同一条企微消息在云端和本机记在同样的线程上（成员主会话都是 org:main），主力换到哪边 Ticket 都接得上", err, fmt.Sprintf("%v", sides))
+	if err != nil {
+		return
+	}
+
 	// The bot's workspace follows the bot. A reminder set while it runs here
 	// lives only in the engine on this device; once the bot is back in the
 	// cloud it must come due there, which it can only if the device's
@@ -1692,17 +1720,27 @@ func (p *cuttable) close() {
 
 // orgBotCount runs a count over the device's org bot database (bot-org).
 func orgBotCount(dataDir, query string) (int, error) {
-	db, err := orgBotDB(dataDir)
+	out, err := orgBotQuery(dataDir, query)
 	if err != nil {
 		return 0, err
 	}
+	var n int
+	_, err = fmt.Sscan(strings.TrimSpace(out), &n)
+	return n, err
+}
+
+// orgBotQuery runs a query over the device's org bot database (bot-org):
+// one row a line, columns split by "|".
+func orgBotQuery(dataDir, query string) (string, error) {
+	db, err := orgBotDB(dataDir)
+	if err != nil {
+		return "", err
+	}
 	out, err := exec.Command("sqlite3", "-cmd", ".timeout 5000", db, query).CombinedOutput()
 	if err != nil {
-		return 0, fmt.Errorf("sqlite3 %s: %v: %s", db, err, out)
+		return "", fmt.Errorf("sqlite3 %s: %v: %s", db, err, out)
 	}
-	var n int
-	_, err = fmt.Sscan(strings.TrimSpace(string(out)), &n)
-	return n, err
+	return string(out), nil
 }
 
 // orgBotDB is the device's org bot database (bot-org).
