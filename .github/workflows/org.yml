@@ -43,7 +43,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: yiyiSmallti/precinct-dovetail
-          ref: bot-thread-names # TEMP: verify Dovetail#40 before it merges
           ssh-key: ${{ secrets.DOVETAIL_DEPLOY_KEY }}
           path: .deps/precinct-dovetail
       - uses: actions/checkout@v4
