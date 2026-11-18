@@ -23,7 +23,7 @@ DOVETAIL_DAILY_TGZ=$(ls /tmp/daily/precinct-daily-*.tgz) go test -tags e2e -run 
 
 # 打包
 
-在 Mac 上（`.app`、签名与 `.dmg` 需要 macOS；Windows 安装包另需 NSIS：`brew install makensis`，Linux 上 `apt install nsis` 也能打 Windows 安装包）：
+在 Mac 上（`.app`、签名与 `.dmg` 需要 macOS；Windows 安装包另需 NSIS：`brew install makensis`，Linux 上 `apt install nsis` 也能打 Windows 安装包。Homebrew 的 makensis 3.13 在开发机上连空脚本都会崩，这时用 `installer/build-windows.sh`：运行时和预装插件在本机备好（签名密钥在这里），只把 `mygo build` 放进 Linux 容器跑，需要一个能跑 Linux 容器的 docker，比如 colima。2026-11-17 这样打出的安装包 85.5 MB，装好后约 310 MB，瘦身前是 120 MB 和 852 MB）：
 
 ```sh
 installer/build.sh                    # macOS arm64 与 amd64 各一个 .app/.dmg + Windows x64 安装包，产物在 build/
