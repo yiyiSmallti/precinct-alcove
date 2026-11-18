@@ -17,8 +17,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$(pwd)
 
-if [ "${ALCOVE_RESTAGE:-1}" != 0 ] || [ ! -d resources/windows-amd64/runtime ]; then
+staged=resources/windows-amd64/runtime
+if [ "${ALCOVE_RESTAGE:-1}" != 0 ] || [ ! -d "$staged" ]; then
   installer/stage-runtime.sh windows-amd64
+else
+  # The bridge is Alcove's own code, not part of the downloaded runtime: a
+  # kept runtime still gets the bridge as it is now (as in build.sh).
+  tmp=$(mktemp -d)
+  (cd bridge && npm pack --silent --pack-destination "$tmp" >/dev/null)
+  mv "$tmp"/precinct-alcove-bridge-*.tgz "$staged/alcove-bridge.tgz"
+  rm -rf "$tmp"
 fi
 if [ "${ALCOVE_MARKET:-1}" != 0 ]; then
   installer/stage-market.sh windows-amd64
