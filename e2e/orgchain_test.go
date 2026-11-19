@@ -882,6 +882,7 @@ func TestOrgChain(t *testing.T) {
 	_, err = adminCall(http.MethodGet, modelURL+"/_fake/requests?from=0", "", nil, &modelSaw)
 	from := modelSaw.Count
 	follow := "我们刚才在本机上说到哪了？"
+	followReply := "收到：" + follow
 	var followed wecomSent
 	if err == nil {
 		_, err = adminCall(http.MethodPost, wecom+"/_fake/say", "", map[string]string{"userid": member, "text": follow}, &said)
@@ -890,7 +891,7 @@ func TestOrgChain(t *testing.T) {
 		err = fmt.Errorf("the bot host answered WeCom's callback with %d", said.Status)
 	}
 	if err == nil {
-		err = waitFor(func() bool { followed = wecomFind(wecom, member, "收到："+follow); return followed.Text != "" }, 3*time.Minute)
+		err = waitFor(func() bool { followed = wecomFind(wecom, member, followReply); return followed.Text != "" }, 3*time.Minute)
 		if err != nil {
 			err = fmt.Errorf("no answer from the cloud in WeCom: %v", wecomTexts(wecom, member))
 		}
@@ -936,6 +937,16 @@ func TestOrgChain(t *testing.T) {
 	}
 	r.step("会话记录跟着主力走：切回云端后，云端引擎回答企微里的新消息时，给模型的对话里有在本机时 bot 的回答", err,
 		fmt.Sprintf("云端模型收到 %d 个请求；其中带着本机时的回答：%.80s", cloudAsked, carried))
+	if err != nil {
+		return
+	}
+
+	// WeCom sees the answer before the cloud model finishes routing the
+	// trigger. Wait for that turn's end in the replicated conversation
+	// before moving the bot, so the device does not inherit an unfinished
+	// cloud evaluation ahead of the next reminder request.
+	err = waitForCloudReplyTurn(cloud["CLOISTER_E2E_SYNC"], phoneToken, followReply)
+	r.step("云端回合答完后已写入同步会话记录，可以切回本机", err, "")
 	if err != nil {
 		return
 	}
@@ -1330,6 +1341,63 @@ func wecomCardWith(wecom, member, label string) wecomCard {
 		}
 	}
 	return out
+}
+
+// waitForCloudReplyTurn waits until sync has the completed model turn that
+// issued the reply. The log is paginated and the end can arrive on a later page.
+func waitForCloudReplyTurn(syncURL, token, reply string) error {
+	offset, replyTurn := 0, -1
+	var readErr error
+	err := waitFor(func() bool {
+		for {
+			var page struct {
+				Events []struct {
+					Type string          `json:"type"`
+					Data json.RawMessage `json:"data"`
+				} `json:"events"`
+				Length int `json:"length"`
+			}
+			_, readErr = adminCall(http.MethodGet, fmt.Sprintf("%s/v1/sync/bot/log?offset=%d", syncURL, offset), token, nil, &page)
+			if readErr != nil {
+				return false
+			}
+			for _, ev := range page.Events {
+				if ev.Type != "tool/call" && ev.Type != "turn/end" {
+					continue
+				}
+				var data struct {
+					Turn      int    `json:"turn"`
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+					Reason    struct {
+						Kind string `json:"kind"`
+					} `json:"reason"`
+				}
+				if json.Unmarshal(ev.Data, &data) != nil {
+					continue
+				}
+				switch {
+				case ev.Type == "tool/call" && data.Name == "orchestrator_reply":
+					var args struct {
+						Text string `json:"text"`
+					}
+					if json.Unmarshal([]byte(data.Arguments), &args) == nil && args.Text == reply {
+						replyTurn = data.Turn
+					}
+				case ev.Type == "turn/end" && data.Turn == replyTurn && data.Reason.Kind == "completed":
+					return true
+				}
+			}
+			offset += len(page.Events)
+			if offset >= page.Length || len(page.Events) == 0 {
+				return false
+			}
+		}
+	}, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("waiting for the synced cloud turn that replied %q: %w", reply, errors.Join(err, readErr))
+	}
+	return nil
 }
 
 // cloudInstance is the member's cloud bot instance, as a device of theirs
