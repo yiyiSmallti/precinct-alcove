@@ -89,7 +89,7 @@ func TestSubagentAndRuntimePanel(t *testing.T) {
 		offered = offered[:0]
 		for _, tl := range req.Tools {
 			offered = append(offered, tl.Name)
-			if shell == "" && strings.Contains(tl.Name, "bash") {
+			if shell == "" && (strings.Contains(tl.Name, "bash") || tl.Name == "pwsh") { // pwsh on Windows
 				shell = tl.Name
 			}
 		}
