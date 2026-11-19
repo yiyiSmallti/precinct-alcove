@@ -102,6 +102,9 @@ func (c *confirmer) count() int {
 }
 
 func TestMarket(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("Dovetail ships the market sidecar only for Windows and macOS")
+	}
 	dovetail := os.Getenv("ALCOVE_E2E_DOVETAIL")
 	if dovetail == "" {
 		dovetail = filepath.Join("..", "..", "precinct-dovetail")
