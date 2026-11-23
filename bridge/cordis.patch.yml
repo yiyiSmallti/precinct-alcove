@@ -16,14 +16,46 @@
 # address, protocol and model arrive in ALCOVE_CUSTOM_* variables.
 # ALCOVE_ROUTE_PATCH ({route: fields}) sets fields of a route for this
 # runtime: models, to declare one pi-ai's catalog does not list (the route
-# then serves only it), or modelOverrides, to widen a model's window.
+# then serves only it), or modelOverrides, to widen a model's window; its
+# compat fields are merged into the route's own.
+# A custom endpoint sends its instructions as a `system` message: pi-ai takes
+# an address it does not know for OpenAI's own and uses the `developer` role
+# for a reasoning model, which servers such as vLLM and SGLang (Vertex AI's
+# DeepSeek among them) may reject with a 400 that ends the turn. Only the
+# OpenAI protocols have that role (and that compat field): llm-pi-ai refuses
+# the whole route when an anthropic-messages one sets it, and a plugin's
+# engine then runs its tool model's work on the main model instead.
+# OpenCode Go routes a conversation to one server, and keeps its prompt
+# cache, by the x-opencode-session header; pi-ai's opencode-go provider sets
+# it from the session id dsh passes with each call, and Go rejects a request
+# without it.
+# Every route also retries a step whose failure pi-ai could not classify
+# (PI_AI_ERROR), besides dsh's default codes: that is mostly a broken stream,
+# e.g. "malformed server-sent event JSON" from one bad SSE line, which
+# otherwise ends a long task's turn on the spot. A failure that repeats still
+# ends the turn once the retries run out. The waits grow from 2 s to 60 s over
+# six retries (about two minutes in all): dsh's default of five retries from
+# 0.5 s to 10 s gives up after some 20 s, while a rate limit (a 429 such as
+# Vertex AI's RESOURCE_EXHAUSTED, counted per minute) can outlast that, and
+# ending the turn loses a long task's progress.
 - id: llm-pi-ai
   config:
     providers: !!js |-
       ((routes) => {
         const patch = JSON.parse(process.env.ALCOVE_ROUTE_PATCH || '{}');
         for (const [route, fields] of Object.entries(patch)) {
-          if (routes[route]) routes[route] = { ...routes[route], ...fields };
+          if (!routes[route]) continue;
+          const compat = fields.compat && { compat: { ...routes[route].compat, ...fields.compat } };
+          routes[route] = { ...routes[route], ...fields, ...compat };
+        }
+        const retryPolicy = {
+          mode: 'normal',
+          maxRetries: 6,
+          retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'PI_AI_ERROR'],
+          backoff: { initialDelayMs: 2000, maxDelayMs: 60000 },
+        };
+        for (const route of Object.keys(routes)) {
+          routes[route] = { retryPolicy, ...routes[route] };
         }
         return routes;
       })({
@@ -32,6 +64,7 @@
         google: { apiKeyEnv: 'GEMINI_API_KEY' },
         xai: { apiKeyEnv: 'XAI_API_KEY' },
         openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+        'opencode-go': { apiKeyEnv: 'OPENCODE_API_KEY' },
         'moonshotai-cn': { apiKeyEnv: 'MOONSHOT_API_KEY' },
         'zai-coding-cn': { apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
         'qwen-token-plan-cn': { apiKeyEnv: 'QWEN_TOKEN_PLAN_CN_API_KEY' },
@@ -45,6 +78,7 @@
             apiKeyEnv: 'ALCOVE_CUSTOM_API_KEY',
             api: process.env.ALCOVE_CUSTOM_API,
             baseURL: process.env.ALCOVE_CUSTOM_BASE_URL,
+            ...(process.env.ALCOVE_CUSTOM_API?.startsWith('openai-') && { compat: { supportsDeveloperRole: false } }),
             models: [{ id: process.env.ALCOVE_CUSTOM_MODEL }],
           },
         }),

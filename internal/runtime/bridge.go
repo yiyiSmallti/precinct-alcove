@@ -23,6 +23,10 @@ type Bridge struct {
 	Answerer Answerer
 	// AuditLog is a JSONL file; empty disables the record.
 	AuditLog string
+	// OnLive receives the bundle's session.live notifications (what a
+	// running command prints, the summary a compaction is writing) as
+	// runtime events of the runtime that sent them; nil drops them.
+	OnLive func(runtimeID string, e Event)
 
 	srv     hostipc.Server
 	mu      sync.Mutex
@@ -208,6 +212,12 @@ func (b *Bridge) Request(ctx context.Context, a *hostipc.Attachment, method stri
 }
 
 func (b *Bridge) Notify(a *hostipc.Attachment, method string, params json.RawMessage) {
+	if method == "session.live" {
+		if b.OnLive != nil {
+			b.OnLive(a.Target, Event{Method: method, Params: params})
+		}
+		return
+	}
 	if method != "request.cancel" {
 		return
 	}

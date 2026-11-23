@@ -28,6 +28,12 @@ type Server struct {
 	// Respond, when set, decides each answer from the raw request body:
 	// a tool call when it returns one, else the returned text.
 	Respond func(body []byte) (*ToolCall, string)
+	// Think, when set, gives reasoning to stream before an answer ("" for
+	// none).
+	Think func(body []byte) string
+	// Pace, when set, sends each block's content in pieces this far apart,
+	// as a real model streams it.
+	Pace time.Duration
 
 	mu       sync.Mutex
 	requests []string // request paths, in order
@@ -134,14 +140,44 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
+	s.mu.Lock()
+	pace, think := s.Pace, s.Think
+	s.mu.Unlock()
+	flusher, _ := w.(http.Flusher)
 	ev := func(name string, data any) {
 		b, _ := json.Marshal(data)
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
+		if pace > 0 && flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// deltas sends text as one delta, or paced in pieces.
+	deltas := func(index int, kind, field, text string) {
+		parts := []string{text}
+		if pace > 0 {
+			parts = pieces(text, 8)
+		}
+		for i, p := range parts {
+			if i > 0 {
+				time.Sleep(pace)
+			}
+			ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": kind, field: p}})
+		}
 	}
 	ev("message_start", map[string]any{"type": "message_start", "message": map[string]any{
 		"id": fmt.Sprintf("msg_%d", time.Now().UnixNano()), "type": "message", "role": "assistant", "model": req.Model,
 		"content": []any{}, "stop_reason": nil, "usage": map[string]int{"input_tokens": 10, "output_tokens": 0},
 	}})
+	index := 0
+	if think != nil {
+		if r := think(body); r != "" {
+			ev("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "thinking", "thinking": ""}})
+			deltas(0, "thinking_delta", "thinking", r)
+			ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "signature_delta", "signature": "fake-signature"}})
+			ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+			index = 1
+		}
+	}
 	stop := "end_turn"
 	s.mu.Lock()
 	script := s.Script
@@ -168,16 +204,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if name != "" {
 		inputJSON, _ := json.Marshal(input)
-		ev("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "tool_use", "id": fmt.Sprintf("toolu_%d_%d", done, time.Now().UnixNano()), "name": name, "input": map[string]any{}}})
-		ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(inputJSON)}})
+		ev("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": fmt.Sprintf("toolu_%d_%d", done, time.Now().UnixNano()), "name": name, "input": map[string]any{}}})
+		deltas(index, "input_json_delta", "partial_json", string(inputJSON))
 		stop = "tool_use"
 	} else {
-		ev("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
-		ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": text}})
+		ev("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "text", "text": ""}})
+		deltas(index, "text_delta", "text", text)
 	}
-	ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
 	ev("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop}, "usage": map[string]int{"output_tokens": 5}})
 	ev("message_stop", map[string]any{"type": "message_stop"})
+}
+
+// pieces splits text into about n parts on rune boundaries.
+func pieces(text string, n int) []string {
+	r := []rune(text)
+	size := (len(r) + n - 1) / n
+	if size == 0 {
+		return []string{text}
+	}
+	var out []string
+	for i := 0; i < len(r); i += size {
+		out = append(out, string(r[i:min(i+size, len(r))]))
+	}
+	return out
 }
 
 // SetScript replaces the script for later requests.

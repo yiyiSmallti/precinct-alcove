@@ -65,6 +65,7 @@ var Providers = []Provider{
 	{ID: "xiaomi", Name: "小米 MiMo", KeyEnv: "XIAOMI_API_KEY", Models: []string{"mimo-v2.6-pro", "mimo-v2.6-flash"}, Base: "https://api.xiaomimimo.com/v1", Listing: ListOpenAI},
 	{ID: "mistral", Name: "Mistral", KeyEnv: "MISTRAL_API_KEY", Models: []string{"mistral-large-latest", "devstral-latest"}, Base: "https://api.mistral.ai/v1", Listing: ListOpenAI},
 	{ID: "groq", Name: "Groq", KeyEnv: "GROQ_API_KEY", Models: []string{"openai/gpt-oss-120b", "qwen/qwen3.8-27b"}, Base: "https://api.groq.com/openai/v1", Listing: ListOpenAI},
+	{ID: "opencode-go", Name: "OpenCode Go", KeyEnv: "OPENCODE_API_KEY", Models: []string{"deepseek-v4.1-flash", "kimi-k3", "glm-5.3"}, Base: "https://opencode.ai/inference/go/v1", Listing: ListOpenAI},
 	{ID: Custom, Name: "自定义（兼容接口）", KeyEnv: "ALCOVE_CUSTOM_API_KEY", BaseEnv: "ALCOVE_CUSTOM_BASE_URL"},
 }
 

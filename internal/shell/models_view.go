@@ -28,7 +28,7 @@ var providerGroups = []struct {
 }{
 	{"国内", []string{"deepseek-official", "moonshotai-cn", "zai-coding-cn", "qwen-token-plan-cn", "minimax-cn", "xiaomi"}},
 	{"国际", []string{"openai", "anthropic", "google", "xai", "mistral", "groq"}},
-	{"聚合与自定义", []string{"openrouter", credentials.Custom}},
+	{"聚合与自定义", []string{"openrouter", "opencode-go", credentials.Custom}},
 }
 
 // effortNames are the composer's words for catalog.Efforts.
