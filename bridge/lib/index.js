@@ -22,7 +22,8 @@
 //                    kind "abandon" { turn, step, attempt }: that reply attempt was dropped;
 //                    kind "tool-output" { callId, text, lossy? }: text a call's running command
 //                    printed since the last one (lossy: bytes before it were dropped);
-//                    kind "compaction" { text }: text of the summary a compaction is writing
+//                    kind "compaction" { compactionId, call, text }: text of the summary a
+//                    compaction is writing (call: the summary call, which a retry starts over)
 //   host → bridge  session.cancel { sessionId } → { cancelled }   cancels the session's running turn and
 //                    drops its queued messages (plugin sessions, Alcove session.cancel)
 import net from 'node:net'
@@ -538,19 +539,44 @@ function planEffort (ctx) {
 // call: `cd /app && make</｜DSML｜ parameter>\n<parameter name="description">…`.
 // The command then fails on syntax the model never meant. Before the tool
 // runs, cut such a value at the first DSML tag and restore the parameters
-// that followed it. Only strings containing the fullwidth `｜DSML｜` marker
-// are touched, which ordinary content does not carry.
+// that followed it. Only strings where the markup is out of place are
+// touched (leakedDsml): DSML written on purpose, such as a parser fixture or
+// protocol notes, is a value like any other.
 const DSML = '｜DSML｜'
 // Any tag that opens with the marker, however mangled (`</｜DSML｜ parameter`
 // with no `>`, `parameter_placeholder>`, `parameter file_path=`).
 const DSML_TAG = /<\/?\s*｜DSML｜/
+// A tag's opening, its slash and its name (`parameter_placeholder` is a
+// mangled `parameter`).
+const DSML_TAGS = /<(\/?)\s*｜DSML｜\s*([A-Za-z_]*)/g
+
+// leakedDsml reports whether a value carries the rest of its own call: a
+// closing tag with nothing open before it (the value's parameter ending), or
+// a parameter opening outside any invoke (the call's next parameter). Markup
+// written as content nests parameter in invoke in function_calls and closes
+// what it opens.
+export function leakedDsml (value) {
+  const open = []
+  for (const [, close, raw] of value.matchAll(DSML_TAGS)) {
+    const name = raw.startsWith('parameter') ? 'parameter' : raw
+    if (close) {
+      if (open.at(-1) !== name) return true
+      open.pop()
+    } else {
+      if (name === 'parameter' && !open.includes('invoke')) return true
+      open.push(name)
+    }
+  }
+  return false
+}
+
 const DSML_PARAM = /<\s*(?:｜DSML｜\s*)?parameter\s+name="([^"]+)"([^>]*)>([\s\S]*?)(?=<\/?\s*(?:｜DSML｜\s*)?(?:parameter|invoke|function_calls)\b|$)/g
 
 export function repairDsmlArguments (args) {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined
   let out
   for (const [key, value] of Object.entries(args)) {
-    if (typeof value !== 'string' || !value.includes(DSML)) continue
+    if (typeof value !== 'string' || !value.includes(DSML) || !leakedDsml(value)) continue
     const cut = value.search(DSML_TAG)
     if (cut < 0) continue
     out ??= { ...args }
@@ -687,7 +713,15 @@ function liveOutput (ctx, peerP) {
     }
   }, { global: true })
   const jobs = new Map() // job id -> { sessionId, callId, owner, next }
+  // dsh records compaction/start just before it calls the model for the
+  // summary, and the call does not carry the compaction's id: each summary
+  // delta is sent with the session's open compaction, so the host can drop
+  // one that trails the compaction's end without dropping the next one's.
+  const compacting = new Map() // session id -> open compaction id
+  let calls = 0
   ctx.on('session/event', (session, event) => {
+    if (event?.type === 'compaction/start') compacting.set(String(session.id), event.data?.compactionId)
+    else if (event?.type === 'compaction/end') compacting.delete(String(session.id))
     if (event?.type !== 'job/registered') return
     const d = event.data
     const callId = d?.toolCall?.callId
@@ -718,13 +752,16 @@ function liveOutput (ctx, peerP) {
   ctx.on('llm/stream', (options, next) => {
     const stream = next()
     if (options?.purpose !== 'compaction' || options.sessionId === undefined) return stream
-    return teeCompaction(stream, String(options.sessionId), send)
+    const sessionId = String(options.sessionId)
+    const compactionId = compacting.get(sessionId)
+    if (typeof compactionId !== 'string') return stream
+    return teeCompaction(stream, { sessionId, kind: 'compaction', compactionId, call: ++calls }, send)
   }, { global: true })
 }
 
-async function * teeCompaction (stream, sessionId, send) {
+async function * teeCompaction (stream, at, send) {
   for await (const chunk of await stream) {
-    if (chunk?.type === 'text-delta' && chunk.text) send({ sessionId, kind: 'compaction', text: chunk.text })
+    if (chunk?.type === 'text-delta' && chunk.text) send({ ...at, text: chunk.text })
     yield chunk
   }
 }

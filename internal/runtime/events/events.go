@@ -96,9 +96,14 @@ type Session struct {
 	// a chunk still on its way after it is late.
 	attempts map[string]string
 	settled  map[string]bool
-	// compact is the compaction under way, from its start (or its first
-	// summary text, which may come first) to its end.
-	compact *Entry
+	// compactions are the compactions seen, by id, from their start (or
+	// their first summary delta, which may come first). closed holds those
+	// whose summary or end came: a delta still on its way after that is
+	// late. compactCall is the summary call an open compaction's deltas
+	// come from: a retried call writes the summary over.
+	compactions map[string]*Entry
+	closed      map[string]bool
+	compactCall map[string]int
 	seq     int // last durable seq applied; -1 before any
 	next    int
 
@@ -128,7 +133,8 @@ func NewSession(id string) *Session {
 func (s *Session) reset() {
 	s.Entries, s.next, s.seq = nil, 0, -1
 	s.tools, s.live, s.think, s.calls = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
-	s.attempts, s.settled, s.compact = map[string]string{}, map[string]bool{}, nil
+	s.attempts, s.settled = map[string]string{}, map[string]bool{}
+	s.compactions, s.closed, s.compactCall = map[string]*Entry{}, map[string]bool{}, map[string]int{}
 	s.agents, s.agentCalls = map[string]*Entry{}, map[string]bool{}
 }
 
@@ -388,9 +394,10 @@ func (s *Session) applyEvent(e event) bool {
 			delete(s.calls, k)
 			s.dropCall(en) // never made: the turn ended while it was written
 		}
-		if s.compact != nil {
-			s.compact.Streaming = false
-			s.compact = nil
+		for id, en := range s.compactions {
+			if !s.closed[id] {
+				en.Streaming, s.closed[id] = false, true
+			}
 		}
 		if d.Reason.Kind == "" || d.Reason.Kind == "completed" {
 			return true
@@ -402,24 +409,31 @@ func (s *Session) applyEvent(e event) bool {
 		s.add(&Entry{Kind: Notice, Text: text})
 		return true
 	case "compaction/start":
-		s.compacting()
+		var d struct {
+			ID string `json:"compactionId"`
+		}
+		json.Unmarshal(e.Data, &d)
+		s.compaction(d.ID)
 		return true
 	case "compaction/summary":
 		var d struct {
+			ID      string  `json:"compactionId"`
 			Summary []block `json:"summary"`
 		}
 		if json.Unmarshal(e.Data, &d) != nil {
 			return false
 		}
-		s.compacting().Text = textOf(d.Summary)
+		s.compaction(d.ID).Text = textOf(d.Summary)
+		s.closed[d.ID] = true
 		return true
 	case "compaction/end":
 		var d struct {
+			ID    string          `json:"compactionId"`
 			Error json.RawMessage `json:"error"`
 		}
 		json.Unmarshal(e.Data, &d)
-		en := s.compacting()
-		en.Streaming, s.compact = false, nil
+		en := s.compaction(d.ID)
+		en.Streaming, s.closed[d.ID] = false, true
 		if len(d.Error) > 0 && string(d.Error) != "null" {
 			en.IsError = true
 			var v any
@@ -600,13 +614,15 @@ func (s *Session) dropCall(en *Entry) {
 	s.remove(en)
 }
 
-// compacting returns the compaction under way, starting one if none is.
-func (s *Session) compacting() *Entry {
-	if s.compact == nil {
-		s.compact = &Entry{Kind: Compaction, Streaming: true}
-		s.add(s.compact)
+// compaction returns the compaction id, starting one if it is not seen yet.
+func (s *Session) compaction(id string) *Entry {
+	en := s.compactions[id]
+	if en == nil {
+		en = &Entry{Kind: Compaction, Streaming: true}
+		s.add(en)
+		s.compactions[id] = en
 	}
-	return s.compact
+	return en
 }
 
 // outputMax bounds the live output a tool entry keeps: its tail is shown.
@@ -617,7 +633,9 @@ const outputMax = 32 << 10
 // writing ("compaction"). They come on another connection than the session
 // events, so either may arrive before the event it belongs to: output for a
 // call not seen yet makes its entry (the final message names it), and a
-// summary delta before compaction/start opens the compaction.
+// summary delta before compaction/start opens the compaction. Either may
+// also arrive after: output once the call's result came, or a summary delta
+// once the compaction's summary or end came, is dropped.
 func (s *Session) applyLive(params json.RawMessage) bool {
 	var d struct {
 		SessionID  string `json:"sessionId"`
@@ -626,6 +644,8 @@ func (s *Session) applyLive(params json.RawMessage) bool {
 		Attempt    string `json:"attempt"`
 		Chunk      chunk  `json:"chunk"`
 		CallID     string `json:"callId"`
+		Compaction string `json:"compactionId"`
+		Call       int    `json:"call"`
 		Text       string `json:"text"`
 	}
 	if json.Unmarshal(params, &d) != nil || d.SessionID != s.ID {
@@ -665,7 +685,15 @@ func (s *Session) applyLive(params json.RawMessage) bool {
 		t.Output = tail(t.Output+d.Text, outputMax)
 		return true
 	case "compaction":
-		s.compacting().Text += d.Text
+		if d.Compaction == "" || s.closed[d.Compaction] {
+			return false
+		}
+		en := s.compaction(d.Compaction)
+		if c, ok := s.compactCall[d.Compaction]; ok && c != d.Call {
+			en.Text = "" // the summary call was retried
+		}
+		s.compactCall[d.Compaction] = d.Call
+		en.Text += d.Text
 		return true
 	}
 	return false

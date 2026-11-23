@@ -63,7 +63,7 @@ func TestLiveScreens(t *testing.T) {
 		r.emit(s, "tool/call", map[string]string{"callId": "c1", "name": "bash", "arguments": `{"command":"python3 scripts/count_errors.py logs/","description":"统计报错"}`})
 		live(map[string]any{"kind": "tool-output", "callId": "c1", "text": "\x1b[32mscanning\x1b[0m logs/2026-11-17.jsonl\nscanning logs/2026-11-18.jsonl\nscanning logs/2026-11-19.jsonl\nprogress  10%\rprogress  40%\rprogress  70%"})
 		r.emit(s, "compaction/start", map[string]any{"compactionId": "k1", "turn": 1})
-		live(map[string]any{"kind": "compaction", "text": "## 目标\n- 按模块汇总本周 logs/ 的报错，写入 report/errors.md\n## 进展\n- 已确认日志为 JSON 行，含 module、level"})
+		live(map[string]any{"kind": "compaction", "compactionId": "k1", "call": 1, "text": "## 目标\n- 按模块汇总本周 logs/ 的报错，写入 report/errors.md\n## 进展\n- 已确认日志为 JSON 行，含 module、level"})
 		chunk(2, 0, map[string]any{"type": "reasoning-delta", "text": "统计脚本还在跑。\n趁这时候先把报告的骨架写出来，"})
 		chunk(2, 0, map[string]any{"type": "reasoning-delta", "text": "表头是模块、报错数、最常见的消息。"})
 		chunk(2, 1, map[string]any{"type": "tool-call-delta", "id": "c2", "name": "write", "argumentsDelta": `{"file_path":"report/errors.md","content":"# 本周报错汇总\n\n| 模块 | 报错数 | 最常见的消息 |\n| --- | --- | --- |\n| gateway | `})
