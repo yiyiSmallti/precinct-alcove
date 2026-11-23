@@ -104,8 +104,8 @@ type Session struct {
 	compactions map[string]*Entry
 	closed      map[string]bool
 	compactCall map[string]int
-	seq     int // last durable seq applied; -1 before any
-	next    int
+	seq         int // last durable seq applied; -1 before any
+	next        int
 
 	// agents maps the sessions of subagents (and of their own subagents)
 	// to the call that started them. Until the call's result names a
