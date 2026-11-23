@@ -148,6 +148,14 @@ func main() {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出诊断包", DefaultPath: name,
 				Filters: []mygo.FileFilter{{Name: "Zip", Extensions: []string{"zip"}}}})
 		}
+		s.PickImage = func() (string, error) {
+			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择壁纸图片",
+				Filters: []mygo.FileFilter{{Name: "图片", Extensions: []string{"jpg", "jpeg", "png", "webp", "gif"}}}})
+			if err != nil || len(files) == 0 {
+				return "", err
+			}
+			return files[0], nil
+		}
 		s.PickFile = func() (string, error) {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择插件包",
 				Filters: []mygo.FileFilter{{Name: "Alcove 插件包", Extensions: []string{"tgz"}}}})

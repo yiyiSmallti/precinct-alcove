@@ -104,7 +104,37 @@ func (s *Shell) appearanceSettings(c *ui.Context, pal *palette) {
 	s.listFonts()
 
 	settingsGroup(c, pal, "主题", func() {
-		prefRow(c, pal, "模式", "跟随系统时，Mac 侧栏使用系统半透明材质。", func() {
+		hint := "一幅画配一套色调和主题色。每幅画有白天和夜晚两版，跟着浅色或深色切换。"
+		if s.PickImage != nil {
+			hint += "自定义用你自己的图片，色调和主题色不变；选中后再点一次换一张。"
+		}
+		prefRow(c, pal, "壁纸", hint, func() {
+			ui.Row(c).Gap(12).Wrap().Grow(1).MinWidth(0).Children(func() {
+				cur, _ := sceneFor(ap)
+				if sceneCard(c, pal, ap, scene{name: "无"}, ap.Wallpaper == noWallpaper, nil) {
+					ap.Wallpaper = noWallpaper
+					s.setAppearance(ap)
+				}
+				for _, sc := range scenes {
+					if sceneCard(c, pal, ap, sc, cur.id == sc.id, thumbOf(sc.id, t.Dark)) {
+						s.setAppearance(withScene(ap, sc))
+					}
+				}
+				if s.PickImage != nil {
+					thumb := customThumb(s.customWallpaper())
+					sel := cur.id == customScene.id
+					if sceneCard(c, pal, ap, customScene, sel, thumb) {
+						if sel || thumb == nil {
+							s.pickWallpaper()
+						} else {
+							ap.Wallpaper = customScene.id
+							s.setAppearance(ap)
+						}
+					}
+				}
+			})
+		})
+		prefRow(c, pal, "模式", "跟随系统且没有壁纸时，Mac 侧栏使用系统半透明材质。", func() {
 			ui.Row(c).Gap(12).Children(func() {
 				for _, m := range []struct{ id, label string }{{"", "跟随系统"}, {"light", "浅色"}, {"dark", "深色"}} {
 					if modeCard(c, pal, ap, m.id, m.label, ap.Mode == m.id) {

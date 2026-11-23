@@ -31,8 +31,20 @@ type palette struct {
 	shadow   ui.Color // under floating cards and the composer
 	avatar   ui.Color // the workspace's letter tile
 
-	mono    string // the code font
-	vibrant bool   // the side columns show the window's material
+	mono    string     // the code font
+	vibrant bool       // the side columns show the window's material
+	wall    *wallpaper // the theme's painting behind the window, or nil
+	win     ui.Rect    // where the painting lies, in window coordinates
+}
+
+// ground is the middle column's ground: the content color, or that color
+// as a veil over the frosted painting, thin enough to keep its light and
+// thick enough that text reads as on paper.
+func (p *palette) ground() ui.Color {
+	if p.wall != nil {
+		return p.content.Alpha(0.82)
+	}
+	return p.content
 }
 
 // tone is one set of neutrals, for light and for dark, and the accent it
@@ -69,6 +81,9 @@ var tones = []tone{
 	{"cool", "冷灰",
 		neutrals{"#fbfcfe", "#e9eef6", "#dfe6f0", "#d3dce9", "#d9e1ec", "#18202e", "#5d6a80", "#edf1f7", "#93a0b4", "#f3f6fa", "#dce4f0", "#e6edf7"},
 		neutrals{"#141922", "#212836", "#29313f", "#323b4b", "#2e3646", "#e4e9f2", "#93a0b6", "#1a202b", "#6c788c", "#1b212c", "#323b4c", "#232b39"}, "graphite"},
+	{"forest", "青苔",
+		neutrals{"#fcfcf8", "#eef0e7", "#e6e9de", "#dce0d3", "#e0e4d8", "#1b231d", "#636d5f", "#f3f5ee", "#9aa292", "#f6f7f1", "#e2e8da", "#eef1e6"},
+		neutrals{"#121915", "#1d2620", "#252f29", "#2d3831", "#28332c", "#e8ede5", "#99a596", "#0d130f", "#6c786a", "#171f1a", "#2a362e", "#1f2a23"}, "burgundy"},
 }
 
 // accent is a preset accent color, for light and for dark.
@@ -87,6 +102,9 @@ var accents = []accent{
 	{"amber", "琥珀", "#c9620c", "#f0913a"},
 	{"rose", "玫红", "#c2416b", "#ef6f96"},
 	{"terracotta", "赤陶", "#c4532d", "#e07a55"},
+	{"cyan", "海青", "#0e7490", "#38c9e6"},
+	{"burgundy", "酒红", "#9b2c45", "#e0758c"},
+	{"lime", "荧绿", "#4f7a12", "#a6e23c"},
 }
 
 func toneOf(id string) tone {
@@ -235,7 +253,7 @@ func isDark(ap app.Appearance, system bool) bool {
 // Over a window material (macOS vibrancy) the root stays clear, so the
 // sidebar shows it, while the look's mode is the system's (the material
 // follows the system).
-func useTheme(c *ui.Context, ap app.Appearance) *palette {
+func useTheme(c *ui.Context, ap app.Appearance, custom string) *palette {
 	system := c.Theme().Dark
 	dark := isDark(ap, system)
 	l := lookFor(ap, dark)
@@ -248,7 +266,9 @@ func useTheme(c *ui.Context, ap app.Appearance) *palette {
 		c.SetZoom(z)
 	}
 	pal := l.pal
-	pal.vibrant = c.Vibrancy() && dark == system
+	// A painting takes the place of the window's material.
+	pal.wall = wallpaperFor(ap, dark, custom)
+	pal.vibrant = c.Vibrancy() && dark == system && pal.wall == nil
 	if pal.vibrant {
 		c.Root().Background(ui.Transparent)
 	}

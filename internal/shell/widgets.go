@@ -15,6 +15,10 @@ var fade = ui.ElementTransition{Duration: 140 * time.Millisecond, Colors: true}
 // sideGround paints a side column: the window's material where there is
 // one (macOS), else the sidebar color.
 func sideGround(c *ui.Context, pal *palette, col ui.Element) ui.Element {
+	if pal.wall != nil {
+		// Frosted glass over the painting, tinted toward the sidebar.
+		return col.Background(pal.sidebar.Alpha(0.6))
+	}
 	if pal.vibrant {
 		// The material, tinted toward the tone's sidebar.
 		return col.Background(pal.sidebar.Alpha(0.55))

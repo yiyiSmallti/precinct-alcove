@@ -126,8 +126,14 @@ type Appearance struct {
 	// Mode is "light" or "dark"; "" follows the system.
 	Mode string `json:"mode,omitempty"`
 	// Tone tints the neutrals: "zinc" (""), "slate", "linen", "warm",
-	// "neutral" or "cool".
+	// "neutral", "cool" or "forest".
 	Tone string `json:"tone,omitempty"`
+	// Wallpaper is the scene painted behind the window: "" (the clean
+	// default), "afternoon", "harbor", "library", "circuit" or "summer", in
+	// its day or night painting as the mode is light or dark; "custom" is
+	// the user's own picture (paths.Layout.Wallpaper), and "none" no
+	// painting.
+	Wallpaper string `json:"wallpaper,omitempty"`
 	// Accent colors primary buttons, the chosen row and running tasks: a
 	// preset name ("" is the tone's own) or a #rrggbb color.
 	Accent string `json:"accent,omitempty"`

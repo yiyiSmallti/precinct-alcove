@@ -69,6 +69,10 @@ func (l Layout) TaskGrants() string { return filepath.Join(l.Root, "plugins", "t
 func (l Layout) Logs() string    { return filepath.Join(l.Root, "logs") }
 func (l Layout) DSHHome() string { return filepath.Join(l.Root, "dsh") }
 
+// Wallpaper is the user's own picture behind the window, a copy made when
+// they pick it, with its thumbnail beside it (wallpaper-thumb.jpg).
+func (l Layout) Wallpaper() string { return filepath.Join(l.Root, "wallpaper.jpg") }
+
 // PersonalHome is the user's personal context: AGENTS.md (what the agent
 // should know about them) and skills/, which only personal workspaces read.
 func (l Layout) PersonalHome() string { return filepath.Join(l.Root, "personal") }
