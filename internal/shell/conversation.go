@@ -3,6 +3,7 @@ package shell
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -288,9 +289,11 @@ func (s *Shell) entries(c *ui.Context, pal *palette, tk *taskView) {
 				}
 			})
 		case events.Reasoning:
-			ui.Text(c, e.Text).Key(e.Key).FontSize(12.5).TextColor(t.TextMuted).Selectable().MaxLines(3).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(pal.hairline)
+			s.reasoningStep(c, pal, tk, e)
 		case events.Tool:
 			s.toolStep(c, pal, tk, e)
+		case events.Compaction:
+			s.compactionStep(c, pal, tk, e)
 		case events.Notice:
 			ui.Row(c).Key(e.Key).Gap(6).AlignItems(ui.Center).Children(func() {
 				dot(c, pal.waiting)
@@ -334,11 +337,28 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 		if r.Clicked() {
 			tk.open[e.Key] = !open
 		}
+		// While the call runs, what its command prints (or, while the model
+		// still writes it, the long argument it is writing) scrolls under
+		// its line.
+		if !open && e.Busy() {
+			if live := liveText(e); live != "" {
+				liveBox(c, pal, live, true)
+			}
+		}
 		if open {
 			ui.Column(c).Gap(6).Padding(10, 12).Radius(8).Background(pal.code).Border(1, pal.hairline).Margin(0, 8, 6, 31).Children(func() {
 				if e.Args != "" {
 					ui.Text(c, "参数").FontSize(11).FontWeight(500).TextColor(pal.subtle)
-					ui.Text(c, clip(prettyArgs(e.Args), 2000)).FontSize(12).Font(pal.mono).Selectable()
+					if e.Streaming {
+						ui.Text(c, "…"+tailText(e.Args, 2000)).FontSize(12).Font(pal.mono).Selectable()
+					} else {
+						ui.Text(c, clip(prettyArgs(e.Args), 2000)).FontSize(12).Font(pal.mono).Selectable()
+					}
+				}
+				switch {
+				case e.Result == "" && e.Output != "":
+					ui.Text(c, "输出（运行中）").FontSize(11).FontWeight(500).TextColor(pal.subtle)
+					ui.Text(c, tailLines(e.Output, 40)).FontSize(12).Font(pal.mono).Selectable()
 				}
 				switch {
 				case e.Agent != "":
@@ -357,6 +377,260 @@ func (s *Shell) toolStep(c *ui.Context, pal *palette, tk *taskView, e *events.En
 			})
 		}
 	})
+}
+
+// reasoningStep is the model's reasoning. While it streams, its latest lines
+// follow the text under a "思考中" line; once done, its first lines show,
+// and a long one opens in full from its "思考" line.
+func (s *Shell) reasoningStep(c *ui.Context, pal *palette, tk *taskView, e *events.Entry) {
+	t := c.Theme()
+	quote := func(text string) ui.Element {
+		return ui.Text(c, text).FontSize(12.5).TextColor(t.TextMuted).Selectable().Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(pal.hairline)
+	}
+	ui.Column(c).Key(e.Key).Gap(4).Children(func() {
+		if e.Streaming {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Spinner(c).Size(11, 11).TextColor(pal.subtle)
+				ui.Text(c, "思考中").FontSize(12).TextColor(pal.subtle)
+			})
+			quote(tailLines(e.Text, 4))
+			return
+		}
+		long := strings.Count(strings.TrimSpace(e.Text), "\n") >= 3 || len([]rune(e.Text)) > 240
+		open := tk.open[e.Key]
+		if long {
+			r := ui.Row(c).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).Focusable().Label("思考")
+			r.Children(func() {
+				ui.Text(c, "思考").FontSize(12).TextColor(pal.subtle)
+				arrow := ui.Icon(c, icChevron).Size(12, 12).TextColor(pal.subtle)
+				if !open {
+					arrow.Rotate(-90)
+				}
+			})
+			if r.Clicked() {
+				tk.open[e.Key] = !open
+			}
+		}
+		q := quote(e.Text)
+		if !open {
+			q.MaxLines(3)
+		}
+	})
+}
+
+// compactionStep is a compaction of the conversation's context, one line
+// like a tool call's: the summary scrolls under it while it is written, and
+// opens in full on a click.
+func (s *Shell) compactionStep(c *ui.Context, pal *palette, tk *taskView, e *events.Entry) {
+	t := c.Theme()
+	open := tk.open[e.Key]
+	ui.Column(c).Key(e.Key).Gap(4).Margin(-6, -8).Children(func() {
+		r := ui.Row(c).Height(30).Gap(9).AlignItems(ui.Center).Padding(0, 8).Radius(6).Cursor(ui.CursorPointer).Focusable().Label("压缩上下文")
+		if r.Hovered() {
+			r.Background(pal.hover)
+		}
+		r.Children(func() {
+			verb := "已压缩上下文"
+			ui.Row(c).Width(14).Justify(ui.Center).Shrink(0).Children(func() {
+				switch {
+				case e.Streaming:
+					verb = "正在压缩上下文"
+					ui.Spinner(c).Size(12, 12).TextColor(pal.running)
+				case e.IsError:
+					verb = "压缩上下文失败"
+					ui.Icon(c, icX).Size(13, 13).TextColor(t.Danger)
+				default:
+					ui.Icon(c, icCheck).Size(13, 13).TextColor(pal.subtle)
+				}
+			})
+			ui.Text(c, verb).FontSize(13).FontWeight(500).Shrink(0)
+			// While it is written, the summary scrolls under the line instead.
+			line := oneLine(e.Text)
+			if e.Streaming && !open {
+				line = ""
+			}
+			ui.Text(c, line).FontSize(12).TextColor(t.TextMuted).SingleLine().Grow(1).MinWidth(0)
+			arrow := ui.Icon(c, icChevron).Size(13, 13).TextColor(pal.subtle)
+			if !open {
+				arrow.Rotate(-90)
+			}
+		})
+		if r.Clicked() {
+			tk.open[e.Key] = !open
+		}
+		if !open && e.Streaming && e.Text != "" {
+			liveBox(c, pal, tailLines(e.Text, 6), false)
+		}
+		if open && (e.Text != "" || e.Result != "") {
+			ui.Column(c).Gap(6).Padding(10, 12).Radius(8).Background(pal.code).Border(1, pal.hairline).Margin(0, 8, 6, 31).Children(func() {
+				if e.Text != "" {
+					ui.Text(c, "摘要").FontSize(11).FontWeight(500).TextColor(pal.subtle)
+					ui.Text(c, clip(e.Text, 8000)).FontSize(12.5).Selectable()
+				}
+				if e.Result != "" {
+					ui.Text(c, e.Result).FontSize(12).TextColor(t.Danger).Selectable()
+				}
+			})
+		}
+	})
+}
+
+// liveBox shows text that is still growing, under a step's line.
+func liveBox(c *ui.Context, pal *palette, text string, mono bool) {
+	t := c.Theme()
+	ui.Column(c).Padding(8, 10).Radius(8).Background(pal.code).Border(1, pal.hairline).Margin(0, 8, 6, 31).Children(func() {
+		txt := ui.Text(c, text).FontSize(12).TextColor(t.TextMuted)
+		if mono {
+			txt.Font(pal.mono)
+		}
+	})
+}
+
+// liveText is what a running call shows under its line: the tail of what
+// its command printed, or, while the model still writes the call, the tail
+// of the long argument it is writing (a file's content, a patch); "" when
+// there is neither.
+func liveText(e *events.Entry) string {
+	if e.Output != "" {
+		return tailLines(e.Output, 8)
+	}
+	if !e.Streaming {
+		return ""
+	}
+	long := ""
+	for _, v := range partialStrings(e.Args) {
+		if len(v) > len(long) {
+			long = v
+		}
+	}
+	if !strings.Contains(long, "\n") && len(long) < 160 {
+		return "" // short ones are on the line already
+	}
+	return tailLines(long, 8)
+}
+
+var ansi = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+// tailLines is the last n lines of text as a terminal would leave them:
+// colors dropped, and a line rewritten with carriage returns (a progress
+// bar) shown as its last state.
+func tailLines(text string, n int) string {
+	text = ansi.ReplaceAllString(tailText(text, 8<<10), "")
+	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(text, "\r\n", "\n"), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	for i, l := range lines {
+		if j := strings.LastIndexByte(strings.TrimRight(l, "\r"), '\r'); j >= 0 {
+			lines[i] = l[j+1:]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// tailText is the last max bytes of text, cut on a rune boundary.
+func tailText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	i := len(text) - max
+	for i < len(text) && text[i]&0xC0 == 0x80 {
+		i++
+	}
+	return text[i:]
+}
+
+// partialStrings reads the string fields of a JSON object that may be cut
+// off, as a call's arguments are while the model writes them: the last value
+// may be unterminated. Other values are skipped.
+func partialStrings(raw string) map[string]string {
+	out := map[string]string{}
+	i := strings.IndexByte(raw, '{')
+	if i < 0 {
+		return out
+	}
+	space := func(i int) int {
+		for i < len(raw) && strings.IndexByte(" \t\r\n", raw[i]) >= 0 {
+			i++
+		}
+		return i
+	}
+	for i++; ; i++ {
+		i = space(i)
+		if i >= len(raw) || raw[i] != '"' {
+			return out
+		}
+		key, j, closed := jsonStringAt(raw, i)
+		if !closed {
+			return out
+		}
+		if i = space(j); i >= len(raw) || raw[i] != ':' {
+			return out
+		}
+		if i = space(i + 1); i >= len(raw) {
+			return out
+		}
+		if raw[i] == '"' {
+			v, j, closed := jsonStringAt(raw, i)
+			out[key] = v
+			if !closed {
+				return out
+			}
+			i = j
+		} else {
+			// A number, literal, array or object: up to the comma that ends it.
+			depth, str := 0, false
+			for ; i < len(raw); i++ {
+				ch := raw[i]
+				switch {
+				case str && ch == '\\':
+					i++
+				case ch == '"':
+					str = !str
+				case str:
+				case ch == '{' || ch == '[':
+					depth++
+				case ch == '}' || ch == ']':
+					depth--
+				}
+				if !str && depth <= 0 && (ch == ',' || depth < 0) {
+					break
+				}
+			}
+		}
+		if i = space(i); i >= len(raw) || raw[i] != ',' {
+			return out
+		}
+	}
+}
+
+// jsonStringAt decodes the JSON string starting at raw[i] (a quote) and
+// returns the offset after it; closed is false when raw ends inside it, and
+// the string is then what it holds so far.
+func jsonStringAt(raw string, i int) (string, int, bool) {
+	for j := i + 1; j < len(raw); j++ {
+		switch raw[j] {
+		case '\\':
+			j++
+		case '"':
+			var v string
+			if json.Unmarshal([]byte(raw[i:j+1]), &v) != nil {
+				v = raw[i+1 : j]
+			}
+			return v, j + 1, true
+		}
+	}
+	body := raw[i:]
+	// An escape cut short (\, \u00) cannot be decoded: leave it for the next
+	// delta.
+	if k := strings.LastIndexByte(body, '\\'); k > 0 && len(body)-k < 6 {
+		body = body[:k]
+	}
+	var v string
+	if json.Unmarshal([]byte(body+`"`), &v) != nil {
+		v = body[1:]
+	}
+	return v, len(raw), false
 }
 
 // toolVerb names a tool call the way a person would.
@@ -465,13 +739,24 @@ func entrySummary(e events.Entry) string {
 // toolSummary is the one argument that says what a call does: the command,
 // the path, the pattern; else the arguments squeezed onto one line.
 func toolSummary(args string) string {
+	keys := []string{"command", "cmd", "file_path", "path", "pattern", "url", "query", "description"}
 	var m map[string]any
 	if json.Unmarshal([]byte(args), &m) == nil {
-		for _, k := range []string{"command", "cmd", "file_path", "path", "pattern", "url", "query", "description"} {
+		for _, k := range keys {
 			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
 				return oneLine(v)
 			}
 		}
+		return oneLine(args)
+	}
+	// Arguments the model is still writing.
+	if p := partialStrings(args); len(p) > 0 {
+		for _, k := range keys {
+			if v := p[k]; strings.TrimSpace(v) != "" {
+				return oneLine(v)
+			}
+		}
+		return ""
 	}
 	return oneLine(args)
 }

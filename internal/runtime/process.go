@@ -66,7 +66,7 @@ type LaunchSpec struct {
 
 // Event is one notification from the runtime.
 type Event struct {
-	Method string          // session.event, session.status, subagent.started, subagent.finished
+	Method string          // session.event, session.status, subagent.started, subagent.finished; session.live from the bridge
 	Params json.RawMessage // raw payload
 }
 

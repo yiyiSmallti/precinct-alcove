@@ -16,6 +16,13 @@
 //   bridge → host  questions.ask { requestId, sessionId, callId?, questions[] }
 //                    → { answers: [{ id, selected[], custom? }] }
 //   bridge → host  request.cancel { requestId }   (notification: dsh withdrew the request)
+//   bridge → host  session.live { sessionId, kind, … }   (notification)
+//                    kind "chunk" { turn, step, attempt, chunk }: one chunk of the model's reply
+//                    as it streams (text-delta, reasoning-delta, tool-call-delta);
+//                    kind "abandon" { turn, step, attempt }: that reply attempt was dropped;
+//                    kind "tool-output" { callId, text, lossy? }: text a call's running command
+//                    printed since the last one (lossy: bytes before it were dropped);
+//                    kind "compaction" { text }: text of the summary a compaction is writing
 //   host → bridge  session.cancel { sessionId } → { cancelled }   cancels the session's running turn and
 //                    drops its queued messages (plugin sessions, Alcove session.cancel)
 import net from 'node:net'
@@ -642,6 +649,86 @@ function emptyWriteGuard (ctx) {
   })
 }
 
+// Live output for the conversation view. dsh's SDK server sends only durable
+// session events: the model's reply arrives whole in assistant/message (the
+// reply's chunks go to agent/assistant-stream, which only dsh's own web
+// server forwards), what a running command prints not at all (bash and pwsh
+// register each call as a job, and the job's output ring is read only by
+// the tool when it returns), and a compaction's summary whole in
+// compaction/summary (one llm.stream call). All three go to the host as
+// session.live deltas, best effort: the session events stay the record, and
+// a delta the host misses only shows later. A job is tied to its call by the
+// job/registered event dsh records for it; its output events say only that
+// the ring grew, so each one reads from where the last stopped.
+const LIVE_MAX = 16 << 10 // a delta larger than this is sent as its tail
+const LIVE_CHUNKS = new Set(['text-delta', 'reasoning-delta', 'tool-call-delta'])
+
+function liveOutput (ctx, peerP) {
+  let peer
+  peerP.then((p) => { peer = p })
+  const send = (params) => {
+    if (peer && !peer.closed) peer.notify('session.live', params)
+  }
+  const attempts = new Map() // reply attempt id -> { sessionId, turn, step }
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    if (frame?.type === 'start') {
+      const sessionId = agent?.session?.id
+      if (sessionId !== undefined) attempts.set(frame.attemptId, { sessionId: String(sessionId), turn: frame.turn, step: frame.step })
+      return
+    }
+    const a = attempts.get(frame?.attemptId)
+    if (!a) return
+    const at = { sessionId: a.sessionId, turn: a.turn, step: a.step, attempt: frame.attemptId }
+    if (frame.type === 'end') {
+      attempts.delete(frame.attemptId)
+      if (frame.outcome?.kind === 'abandoned') send({ kind: 'abandon', ...at })
+    } else if (frame.type === 'chunk' && LIVE_CHUNKS.has(frame.chunk?.type)) {
+      send({ kind: 'chunk', ...at, chunk: frame.chunk })
+    }
+  }, { global: true })
+  const jobs = new Map() // job id -> { sessionId, callId, owner, next }
+  ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'job/registered') return
+    const d = event.data
+    const callId = d?.toolCall?.callId
+    if (typeof d?.jobId !== 'string' || typeof callId !== 'string' || d.owner === undefined) return
+    jobs.set(d.jobId, { sessionId: String(session.id), callId, owner: d.owner, next: 0 })
+  })
+  ctx.inject(['jobs'], (ctx) => {
+    const drain = (id) => {
+      const job = jobs.get(id)
+      if (!job) return
+      let read
+      try { read = ctx.jobs.readAt(id, job.next, job.owner) } catch { jobs.delete(id); return }
+      job.next = read.next
+      let text = read.chunks.map((c) => c.text).join('')
+      let lossy = read.lossy || read.chunks.some((c) => c.gapBefore)
+      if (text.length > LIVE_MAX) { text = text.slice(-LIVE_MAX); lossy = true }
+      if (text) send({ sessionId: job.sessionId, kind: 'tool-output', callId: job.callId, text, ...(lossy ? { lossy } : {}) })
+    }
+    ctx.jobs.events.subscribe({}, (event) => {
+      if (event.type === 'output') drain(event.id)
+      else if (event.type === 'settled' || event.type === 'removed') {
+        const id = event.job?.id ?? event.id
+        drain(id)
+        jobs.delete(id)
+      }
+    })
+  })
+  ctx.on('llm/stream', (options, next) => {
+    const stream = next()
+    if (options?.purpose !== 'compaction' || options.sessionId === undefined) return stream
+    return teeCompaction(stream, String(options.sessionId), send)
+  }, { global: true })
+}
+
+async function * teeCompaction (stream, sessionId, send) {
+  for await (const chunk of await stream) {
+    if (chunk?.type === 'text-delta' && chunk.text) send({ sessionId, kind: 'compaction', text: chunk.text })
+    yield chunk
+  }
+}
+
 export function apply (ctx) {
   personalProfile(ctx)
   scopeGuard(ctx)
@@ -666,6 +753,7 @@ export function apply (ctx) {
     }
     throw Object.assign(new Error(`unsupported: ${method}`), { code: -32021 })
   })
+  liveOutput(ctx, peerP)
 
   ctx.on('approval/request', async (request, next) => {
     let res

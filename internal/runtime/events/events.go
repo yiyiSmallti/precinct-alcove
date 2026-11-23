@@ -1,8 +1,14 @@
 // Package events folds a dsh runtime's session notifications into the model
 // the conversation view draws (SPEC 2, internal/runtime/events): the user's
-// messages, the assistant's replies (streamed in through live chunks, then
-// replaced by the final message), tool calls with their results, and how
-// each turn ended.
+// messages, the assistant's replies and reasoning (streamed in through live
+// chunks, then replaced by the final message), tool calls (shown while the
+// model still writes their arguments, with what a running command prints)
+// and their results, context compactions with their summaries, and how each
+// turn ended.
+//
+// What a command prints and the summary a compaction is writing do not come
+// with dsh's session events: the alcove-bridge bundle sends them as
+// "session.live" notifications on its own connection (bridge/lib/index.js).
 //
 // It knows nothing about the UI toolkit, so it is tested on recorded event
 // streams. A Session is not safe for concurrent use; the UI applies events
@@ -24,6 +30,10 @@ const (
 	Reasoning Kind = "reasoning"
 	Tool      Kind = "tool"
 	Notice    Kind = "notice" // a turn that ended other than completed, errors
+	// Compaction is a compaction of the conversation's context: Text is its
+	// summary, streamed in while it is written; IsError and Result tell a
+	// compaction that failed.
+	Compaction Kind = "compaction"
 )
 
 // Entry is one item of the conversation.
@@ -31,8 +41,10 @@ type Entry struct {
 	Key  string `json:"-"` // stable across updates, for list keys
 	Kind Kind   `json:"kind"`
 	Text string `json:"text,omitempty"`
-	// Streaming is set while an assistant entry is still built from live
-	// chunks; the final assistant/message replaces it.
+	// Streaming is set while an entry is still built from live chunks: an
+	// assistant reply or reasoning (the final assistant/message replaces
+	// it), a tool call whose arguments the model is still writing, or a
+	// compaction still under way.
 	Streaming bool `json:"-"`
 	// Tool calls only.
 	ToolName string `json:"toolName,omitempty"`
@@ -40,6 +52,9 @@ type Entry struct {
 	Result   string `json:"result,omitempty"`
 	IsError  bool   `json:"isError,omitempty"`
 	Done     bool   `json:"done,omitempty"`
+	// Output is the tail of what the call's command has printed so far,
+	// while it runs; the result replaces it.
+	Output string `json:"-"`
 	// Subagent calls only. dsh's subagent tool returns as soon as the
 	// subagent starts; these follow the subagent itself: its id, how it is
 	// doing (running, ok, error, stopped), how many tool calls it and its
@@ -75,8 +90,17 @@ type Session struct {
 	tools map[string]*Entry // by call id
 	live  map[string]*Entry // assistant text being streamed, by turn/step/index
 	think map[string]*Entry // reasoning being streamed
-	seq   int               // last durable seq applied; -1 before any
-	next  int
+	calls map[string]*Entry // tool calls whose arguments are being streamed
+	// attempts is the reply attempt each turn/step streams from: a retry
+	// starts over. settled holds the turn/steps whose final message came:
+	// a chunk still on its way after it is late.
+	attempts map[string]string
+	settled  map[string]bool
+	// compact is the compaction under way, from its start (or its first
+	// summary text, which may come first) to its end.
+	compact *Entry
+	seq     int // last durable seq applied; -1 before any
+	next    int
 
 	// agents maps the sessions of subagents (and of their own subagents)
 	// to the call that started them. Until the call's result names a
@@ -103,7 +127,8 @@ func NewSession(id string) *Session {
 
 func (s *Session) reset() {
 	s.Entries, s.next, s.seq = nil, 0, -1
-	s.tools, s.live, s.think = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
+	s.tools, s.live, s.think, s.calls = map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}, map[string]*Entry{}
+	s.attempts, s.settled, s.compact = map[string]string{}, map[string]bool{}, nil
 	s.agents, s.agentCalls = map[string]*Entry{}, map[string]bool{}
 }
 
@@ -189,6 +214,8 @@ func (s *Session) Apply(method string, params json.RawMessage) bool {
 		return false
 	}
 	switch method {
+	case "session.live":
+		return s.applyLive(params)
 	case "session.status":
 		if env.Status == s.Status {
 			return false
@@ -228,25 +255,12 @@ func (s *Session) applyEvent(e event) bool {
 	case "assistant/live-chunk":
 		var d struct {
 			Turn, Step int
-			Chunk      struct {
-				Type  string `json:"type"`
-				Index int    `json:"index"`
-				Text  string `json:"text"`
-			} `json:"chunk"`
+			Chunk      chunk `json:"chunk"`
 		}
 		if json.Unmarshal(e.Data, &d) != nil {
 			return false
 		}
-		key := fmt.Sprintf("%d/%d/%d", d.Turn, d.Step, d.Chunk.Index)
-		switch d.Chunk.Type {
-		case "text-delta":
-			s.stream(s.live, key, Assistant, d.Chunk.Text)
-		case "reasoning-delta":
-			s.stream(s.think, key, Reasoning, d.Chunk.Text)
-		default:
-			return false
-		}
-		return true
+		return s.liveChunk(d.Turn, d.Step, d.Chunk)
 	case "assistant/message":
 		var d struct {
 			Turn, Step int
@@ -260,8 +274,11 @@ func (s *Session) applyEvent(e event) bool {
 			s.Context, s.Usage = u.Input+u.CacheRead+u.CacheWrite+u.Output, *u
 		}
 		prefix := fmt.Sprintf("%d/%d/", d.Turn, d.Step)
-		s.dropStreamed(s.think, prefix)
+		s.settled[prefix] = true
+		delete(s.attempts, prefix)
+		thinks := s.dropStreamed(s.think, prefix)
 		live := s.dropStreamed(s.live, prefix)
+		calls := s.dropStreamed(s.calls, prefix)
 		// Entries follow the final message's block order: streamed text
 		// keeps its place, and every other block goes right after the
 		// previous one (or before the first remaining streamed text).
@@ -292,13 +309,39 @@ func (s *Session) applyEvent(e event) bool {
 				en := &Entry{Kind: Assistant, Text: b.Text}
 				s.add(en)
 				place(en)
+			case "reasoning":
+				if strings.TrimSpace(b.Text) == "" {
+					continue
+				}
+				if len(thinks) > 0 {
+					en := thinks[0]
+					thinks = thinks[1:]
+					en.Text = b.Text
+					prev = en
+					continue
+				}
+				en := &Entry{Kind: Reasoning, Text: b.Text}
+				s.add(en)
+				place(en)
 			case "tool-call":
-				place(s.tool(b.ID, b.Name, b.Arguments))
+				t := s.tool(b.ID, b.Name, b.Arguments)
+				t.Streaming = false
+				for i, c := range calls {
+					if c == t {
+						calls = append(calls[:i], calls[i+1:]...)
+						break
+					}
+				}
+				place(t)
 			}
 		}
 		for _, en := range live {
 			s.remove(en) // streamed text the final message no longer has
 		}
+		for _, en := range calls {
+			s.dropCall(en) // a call the final message does not make
+		}
+		// Streamed reasoning the final message does not repeat stays.
 		return true
 	case "tool/call":
 		var d struct {
@@ -341,6 +384,14 @@ func (s *Session) applyEvent(e event) bool {
 			en.Streaming = false
 			delete(s.think, k)
 		}
+		for k, en := range s.calls {
+			delete(s.calls, k)
+			s.dropCall(en) // never made: the turn ended while it was written
+		}
+		if s.compact != nil {
+			s.compact.Streaming = false
+			s.compact = nil
+		}
 		if d.Reason.Kind == "" || d.Reason.Kind == "completed" {
 			return true
 		}
@@ -349,6 +400,34 @@ func (s *Session) applyEvent(e event) bool {
 			text += "（" + d.Reason.Message + "）"
 		}
 		s.add(&Entry{Kind: Notice, Text: text})
+		return true
+	case "compaction/start":
+		s.compacting()
+		return true
+	case "compaction/summary":
+		var d struct {
+			Summary []block `json:"summary"`
+		}
+		if json.Unmarshal(e.Data, &d) != nil {
+			return false
+		}
+		s.compacting().Text = textOf(d.Summary)
+		return true
+	case "compaction/end":
+		var d struct {
+			Error json.RawMessage `json:"error"`
+		}
+		json.Unmarshal(e.Data, &d)
+		en := s.compacting()
+		en.Streaming, s.compact = false, nil
+		if len(d.Error) > 0 && string(d.Error) != "null" {
+			en.IsError = true
+			var v any
+			json.Unmarshal(d.Error, &v)
+			if en.Result = firstMessage(v); en.Result == "" {
+				en.Result = string(d.Error)
+			}
+		}
 		return true
 	case "session/title":
 		var d struct {
@@ -439,6 +518,193 @@ func (s *Session) dropStreamed(m map[string]*Entry, prefix string) []*Entry {
 		}
 	}
 	return ordered
+}
+
+// chunk is one chunk of a reply as it streams.
+type chunk struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Text  string `json:"text"`
+	// tool-call-delta
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ArgumentsDelta string `json:"argumentsDelta"`
+}
+
+// liveChunk folds one streamed chunk of turn/step's reply.
+func (s *Session) liveChunk(turn, step int, c chunk) bool {
+	prefix := fmt.Sprintf("%d/%d/", turn, step)
+	if s.settled[prefix] {
+		return false
+	}
+	key := fmt.Sprintf("%s%d", prefix, c.Index)
+	switch c.Type {
+	case "text-delta":
+		s.stream(s.live, key, Assistant, c.Text)
+	case "reasoning-delta":
+		s.stream(s.think, key, Reasoning, c.Text)
+	case "tool-call-delta":
+		s.streamCall(key, c.ID, c.Name, c.ArgumentsDelta)
+	default:
+		return false
+	}
+	return true
+}
+
+// dropAttempt forgets what turn/step's reply has streamed so far: the
+// attempt was dropped, or a retry starts over.
+func (s *Session) dropAttempt(prefix string) bool {
+	changed := false
+	for _, m := range []map[string]*Entry{s.live, s.think} {
+		for _, en := range s.dropStreamed(m, prefix) {
+			s.remove(en)
+			changed = true
+		}
+	}
+	for _, en := range s.dropStreamed(s.calls, prefix) {
+		s.dropCall(en)
+		changed = true
+	}
+	return changed
+}
+
+// streamCall grows the tool call the model is writing at key. Its id may
+// come only with a later chunk; once known, the final message's tool-call
+// block and the call's result find the same entry by it.
+func (s *Session) streamCall(key, id, name, delta string) {
+	en := s.calls[key]
+	if en == nil {
+		if id != "" && s.tools[id] != nil {
+			return // already settled
+		}
+		en = &Entry{Kind: Tool, Streaming: true}
+		s.add(en)
+		s.calls[key] = en
+	}
+	if id != "" && s.tools[id] == nil {
+		s.tools[id] = en
+	}
+	if name != "" {
+		en.ToolName = name
+	}
+	en.Args += delta
+}
+
+// dropCall removes a streamed tool call that was never made.
+func (s *Session) dropCall(en *Entry) {
+	for id, t := range s.tools {
+		if t == en {
+			delete(s.tools, id)
+		}
+	}
+	s.remove(en)
+}
+
+// compacting returns the compaction under way, starting one if none is.
+func (s *Session) compacting() *Entry {
+	if s.compact == nil {
+		s.compact = &Entry{Kind: Compaction, Streaming: true}
+		s.add(s.compact)
+	}
+	return s.compact
+}
+
+// outputMax bounds the live output a tool entry keeps: its tail is shown.
+const outputMax = 32 << 10
+
+// applyLive folds the bridge's session.live notification: a delta of what a
+// call's command printed ("tool-output") or of the summary a compaction is
+// writing ("compaction"). They come on another connection than the session
+// events, so either may arrive before the event it belongs to: output for a
+// call not seen yet makes its entry (the final message names it), and a
+// summary delta before compaction/start opens the compaction.
+func (s *Session) applyLive(params json.RawMessage) bool {
+	var d struct {
+		SessionID  string `json:"sessionId"`
+		Kind       string `json:"kind"`
+		Turn, Step int
+		Attempt    string `json:"attempt"`
+		Chunk      chunk  `json:"chunk"`
+		CallID     string `json:"callId"`
+		Text       string `json:"text"`
+	}
+	if json.Unmarshal(params, &d) != nil || d.SessionID != s.ID {
+		return false
+	}
+	prefix := fmt.Sprintf("%d/%d/", d.Turn, d.Step)
+	switch d.Kind {
+	case "chunk":
+		if s.settled[prefix] {
+			return false
+		}
+		changed := false
+		if a, ok := s.attempts[prefix]; ok && a != d.Attempt {
+			changed = s.dropAttempt(prefix) // a retry starts over
+		}
+		s.attempts[prefix] = d.Attempt
+		return s.liveChunk(d.Turn, d.Step, d.Chunk) || changed
+	case "abandon":
+		if s.settled[prefix] || s.attempts[prefix] != d.Attempt {
+			return false
+		}
+		delete(s.attempts, prefix)
+		return s.dropAttempt(prefix)
+	}
+	if d.Text == "" {
+		return false
+	}
+	switch d.Kind {
+	case "tool-output":
+		if d.CallID == "" {
+			return false
+		}
+		t := s.tool(d.CallID, "", "")
+		if t.Done {
+			return false // the result has it all
+		}
+		t.Output = tail(t.Output+d.Text, outputMax)
+		return true
+	case "compaction":
+		s.compacting().Text += d.Text
+		return true
+	}
+	return false
+}
+
+// tail is the last max bytes of text, cut on a rune boundary.
+func tail(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	i := len(text) - max
+	for i < len(text) && text[i]&0xC0 == 0x80 {
+		i++
+	}
+	return text[i:]
+}
+
+// firstMessage finds the first "message" string in a decoded error chain.
+func firstMessage(v any) string {
+	switch x := v.(type) {
+	case map[string]any:
+		if m, ok := x["message"].(string); ok && m != "" {
+			return m
+		}
+		for _, y := range x {
+			if m := firstMessage(y); m != "" {
+				return m
+			}
+		}
+	case []any:
+		for _, y := range x {
+			if m := firstMessage(y); m != "" {
+				return m
+			}
+		}
+	case string:
+		return x
+	}
+	return ""
 }
 
 func (s *Session) tool(id, name, args string) *Entry {

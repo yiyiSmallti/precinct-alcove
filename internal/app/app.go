@@ -232,6 +232,7 @@ func New(cfg Config) (*App, error) {
 			a.OnEvent(id, e)
 		}
 	}
+	a.Bridge.OnLive = a.Runtimes.OnEvent
 	a.Sidecars = &sidecar.Manager{
 		AlcoveVersion: cfg.AlcoveVersion,
 		Settings:      &sidecar.Settings{Dir: l.PluginSettings()},
