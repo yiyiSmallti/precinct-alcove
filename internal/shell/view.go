@@ -14,14 +14,31 @@ import (
 func (s *Shell) View(c *ui.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pal := useTheme(c, s.settings.Appearance)
+	pal := useTheme(c, s.settings.Appearance, s.customWallpaper())
 	t := c.Theme()
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	window := ui.Row(c).Fill().AlignItems(ui.Stretch)
+	if pal.wall != nil {
+		// Absolute children paint after those in flow, in order: the
+		// frosted painting first, then the window over it.
+		ground := ui.Box(c).Fill()
+		pal.win = ground.LayoutBounds()
+		ground.Children(func() {
+			paint(c, pal.wall.frost)
+			s.window(c, pal, t, window.Absolute().Top(0).Left(0).Right(0).Bottom(0))
+		})
+		return
+	}
+	s.window(c, pal, t, window)
+}
+
+// window is the sidebar and the chosen page side by side.
+func (s *Shell) window(c *ui.Context, pal *palette, t *ui.Theme, row ui.Element) {
+	row.Children(func() {
 		side := ui.Column(c).Width(248).BorderWidth(0, 1, 0, 0).BorderColor(pal.hairline).Shrink(0)
 		sideGround(c, pal, side).Children(func() {
 			s.sidebar(c, pal)
 		})
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Background(pal.content).Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Background(pal.ground()).Children(func() {
 			if s.notice != "" {
 				ui.Row(c).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
 					ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Danger)

@@ -19,13 +19,14 @@ func (s *Shell) workspaceView(c *ui.Context, pal *palette, v *wsView) {
 		v.current = ""
 	}
 	ui.Row(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-			if tk == nil {
-				s.newTaskView(c, pal, v)
-			} else {
-				s.taskView(c, pal, v, tk)
-			}
-		})
+		main := ui.Column(c).Grow(1).Basis(0).MinWidth(0)
+		// The new-task page and a task's lie on the same glass, so that
+		// sending the first message changes what is on it, not the glass.
+		if tk == nil {
+			main.Children(func() { s.newTaskView(c, pal, v) })
+		} else {
+			main.Children(func() { s.taskView(c, pal, v, tk) })
+		}
 		switch {
 		case v.browsing:
 			s.browserPane(c, pal, v)
@@ -127,7 +128,9 @@ func (s *Shell) newTaskView(c *ui.Context, pal *palette, v *wsView) {
 // credentialHint asks for a model credential before the first task.
 func (s *Shell) credentialHint(c *ui.Context, pal *palette) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).Padding(12, 14).Radius(12).AlignItems(ui.Center).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.2)).Children(func() {
+	// Tinted over the content color, not see-through: it may sit on a
+	// painting.
+	ui.Row(c).Gap(12).Padding(12, 14).Radius(12).AlignItems(ui.Center).Background(t.Accent.Alpha(0.08).Over(pal.content)).Border(1, t.Accent.Alpha(0.2)).Children(func() {
 		ui.Icon(c, icAlert).Size(16, 16).TextColor(t.Accent)
 		ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, "还没有模型凭据").FontSize(13).FontWeight(600)
@@ -154,6 +157,8 @@ func (s *Shell) taskView(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 		switch {
 		case v.waiting(tk):
 			status(c, pal.waiting, "等你确认")
+		case tk.err != "":
+			status(c, c.Theme().Danger, "出错")
 		case running:
 			status(c, pal.running, "运行中")
 		case sess.AgentsRunning() > 0:

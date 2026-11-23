@@ -40,7 +40,7 @@ type dirListing struct {
 
 func (s *Shell) panel(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	col := ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 0, 0, 1).BorderColor(pal.hairline)
-	sideGround(c, pal, col).Children(func() {
+	s.stagePanel(c, pal, col, v, tk, func() {
 		r := ui.Row(c).Height(52).Shrink(0).Padding(0, 12).Gap(2).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline)
 		if c.TitleBar().Height > 0 {
 			r.DragWindow()
@@ -156,6 +156,8 @@ func (s *Shell) progressTab(c *ui.Context, pal *palette, v *wsView, tk *taskView
 			switch {
 			case len(as)+len(qs) > 0:
 				status(c, pal.waiting, "等你确认")
+			case tk.err != "":
+				status(c, c.Theme().Danger, "出错")
 			case tk.session.Running() || tk.starting:
 				status(c, pal.running, "运行中")
 			case tk.session.AgentsRunning() > 0:

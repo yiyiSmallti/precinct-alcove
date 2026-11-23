@@ -90,7 +90,7 @@ func TestScreens(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		shot("settings")
 		s.mu.Lock()
-		s.settings.Appearance = app.Appearance{Tone: "cool", Accent: "violet"}
+		s.settings.Appearance = app.Appearance{Tone: "cool", Accent: "violet", Wallpaper: noWallpaper}
 		s.mu.Unlock()
 		shot("settings-violet")
 		s.mu.Lock()
@@ -98,15 +98,79 @@ func TestScreens(t *testing.T) {
 		s.mu.Unlock()
 		shot("task-violet")
 		s.mu.Lock()
-		s.settings.Appearance = app.Appearance{Accent: "amber"}
+		s.settings.Appearance = app.Appearance{Accent: "amber", Wallpaper: noWallpaper}
 		s.mu.Unlock()
 		shot("task-amber")
-		for _, tn := range []string{"zinc", "slate", "linen", "warm", "neutral", "cool"} {
+		for _, tn := range []string{"zinc", "slate", "linen", "warm", "neutral", "cool", "forest"} {
 			s.mu.Lock()
-			s.settings.Appearance = app.Appearance{Tone: tn}
+			s.settings.Appearance = app.Appearance{Tone: tn, Wallpaper: noWallpaper}
 			s.mu.Unlock()
 			shot("tone-" + tn)
 		}
+		// Each theme's painting on the new-task page, under a task and
+		// behind its own settings.
+		for _, sc := range scenes {
+			s.mu.Lock()
+			s.settings.Appearance = withScene(app.Appearance{}, sc)
+			s.page, v.current = pageWS+v.ws.ID, ""
+			s.mu.Unlock()
+			shot("theme-" + sc.id + "-new")
+			s.mu.Lock()
+			v.current = "chat-report"
+			s.mu.Unlock()
+			shot("theme-" + sc.id + "-task")
+			s.mu.Lock()
+			s.page, s.prefs.tab = PageSettings, tabLook
+			s.mu.Unlock()
+			shot("theme-" + sc.id + "-settings")
+		}
+		// The user's own picture, kept as a copy the size the window needs.
+		photo := filepath.Join(t.TempDir(), "photo.jpg")
+		if data, err := paintings.ReadFile("wallpapers/summer-day.jpg"); err != nil {
+			t.Fatal(err)
+		} else if err := os.WriteFile(photo, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveWallpaper(photo, s.customWallpaper()); err != nil {
+			t.Fatal(err)
+		}
+		wallpapers.Delete(customKey)
+		thumbs.Delete(customKey)
+		s.mu.Lock()
+		s.PickImage = func() (string, error) { return "", nil }
+		s.settings.Appearance = app.Appearance{Wallpaper: customScene.id}
+		s.page, v.current = pageWS+v.ws.ID, "chat-report"
+		s.mu.Unlock()
+		shot("theme-custom-task")
+		s.mu.Lock()
+		s.page, s.prefs.tab = PageSettings, tabLook
+		s.mu.Unlock()
+		shot("theme-custom-settings")
+		// Index in the panel, in each mood: ready on the new-task page, at
+		// work, waiting on the user, done, and stuck.
+		s.mu.Lock()
+		s.settings.Appearance = withScene(app.Appearance{}, scenes[0])
+		s.page, v.current = pageWS+v.ws.ID, ""
+		s.mu.Unlock()
+		for _, m := range []struct{ name, task, err string }{
+			{"idle", "", ""}, {"working", "task-c", ""}, {"asking", "chat-report", ""},
+			{"done", "chat-today", ""}, {"oops", "chat-today", "运行时断开了"},
+		} {
+			s.mu.Lock()
+			v.current = m.task
+			if tk := v.tasks[m.task]; tk != nil {
+				if got := s.moodOf(v, tk); m.err == "" && string(got) != m.name {
+					t.Errorf("%s shows %s", m.task, got)
+				}
+				tk.err = m.err
+			}
+			s.mu.Unlock()
+			shot("mood-" + m.name)
+		}
+		s.mu.Lock()
+		v.tasks["chat-today"].err = ""
+		s.page, v.current = pageWS+v.ws.ID, "chat-report"
+		s.mu.Unlock()
 		s.mu.Lock()
 		s.page, s.prefs.tab, s.prefs.picking = PageSettings, tabLook, true
 		s.prefs.custom = ui.Hex("#7c3aed")
@@ -415,6 +479,10 @@ func demo(t *testing.T, s *Shell) *wsView {
 	b := &ev{sid: "task-c"}
 	b.status(s, "running")
 	b.user(s, "慢慢分析 README.md，等我补充要求")
+
+	d := &ev{sid: "chat-today"}
+	d.user(s, "把会议纪要整理成待办清单")
+	d.say(s, 1, 1, "整理好了：5 条待办，写在 notes/todo.md。")
 
 	go s.Approve(context.Background(), "rt1", alrt.ApprovalRequest{RequestID: "r1", SessionID: "chat-report", ToolName: "bash",
 		Reason: "write outside", DisplayReason: alrt.LocalText{"zh": "命令要写工作区外的 ~/Desktop/Q3.docx"}})

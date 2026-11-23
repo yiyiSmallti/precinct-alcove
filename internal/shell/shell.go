@@ -46,6 +46,9 @@ type Shell struct {
 	PickFolder func() (string, error)
 	// PickFile asks the user for a plugin package (.tgz); "" means cancelled.
 	PickFile func() (string, error)
+	// PickImage asks the user for a picture for the wallpaper; "" means
+	// cancelled. Nil hides the custom wallpaper.
+	PickImage func() (string, error)
 	// SaveFile asks where to save a file named name; "" means cancelled.
 	SaveFile func(name string) (string, error)
 	// OpenPath opens a file with its default application; Reveal shows it
