@@ -2,11 +2,15 @@
   "name": "Alcove",
   "slug": "alcove",
   "identifier": "com.precinct.alcove",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "copyright": "© 2026 Precinct",
   "main": "./cmd/alcove",
   "out": "build",
   "urlSchemes": ["alcove"],
+  "updates": {
+    "publicKey": "FCP9MQiqlsoVRrTUToEOlzaXRcdxfUT46kISENaGaL0=",
+    "github": "yiyiSmallti/alcove-releases"
+  },
   "macos": {
     "minimumSystemVersion": "13.0",
     "helperEntitlements": { "runtime/node": "installer/node.entitlements.plist" },
