@@ -9,6 +9,15 @@
 #   ALCOVE_MARKET=0 installer/build.sh       # keep the staged plugin market
 #   ALCOVE_SIGN="Apple Development: …" installer/build.sh
 #                                            # sign with a fixed identity, not ad hoc
+#   ALCOVE_UPLOAD=1 installer/build.sh darwin-arm64 darwin-amd64
+#                                            # also upload to a draft release of
+#                                            # yiyiSmallti/alcove-releases (publish it
+#                                            # to ship the update)
+#
+# Updates are signed with the key of `go tool mygo keygen`: the
+# MYGO_UPDATER_PRIVATE_KEY environment variable, else the key file keygen
+# wrote on this Mac. Without either the build makes no update files, and an
+# upload stops before building.
 #
 # An ad hoc signature names the app by its hash, so every build is a new
 # app to the Keychain and asks for the login password again; signed with a
@@ -42,4 +51,15 @@ if [ "${ALCOVE_MARKET:-1}" != 0 ]; then
 fi
 sign=()
 [ -n "${ALCOVE_SIGN:-}" ] && sign=(-sign "$ALCOVE_SIGN")
-go tool mygo build -platform "$(IFS=,; echo "${targets[*]}")" ${sign[@]+"${sign[@]}"}
+key="$HOME/Library/Application Support/mygo/update-keys/mygo-update.key"
+if [ -z "${MYGO_UPDATER_PRIVATE_KEY:-}" ] && [ -f "$key" ]; then
+  MYGO_UPDATER_PRIVATE_KEY=$(cat "$key")
+  export MYGO_UPDATER_PRIVATE_KEY
+fi
+upload=()
+if [ "${ALCOVE_UPLOAD:-0}" != 0 ]; then
+  upload=(-upload)
+  # mygo finds the newest published release through the GitHub API.
+  if [ -z "${GH_TOKEN:-}" ]; then GH_TOKEN=$(gh auth token); export GH_TOKEN; fi
+fi
+go tool mygo build -platform "$(IFS=,; echo "${targets[*]}")" ${sign[@]+"${sign[@]}"} ${upload[@]+"${upload[@]}"}

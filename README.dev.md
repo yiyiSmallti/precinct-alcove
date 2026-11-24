@@ -47,6 +47,15 @@ ALCOVE_SIGN="Apple Development: …" installer/build.sh   # 用固定证书签�
 
 - macOS 签名公证：`macos.signingIdentity` 填 `Developer ID Application: … (QHNTJ2FBJY)`，`macos.notarize.keychainProfile` 填 `xcrun notarytool store-credentials` 存的配置名。没有时为临时签名，只能在构建它的 Mac 上运行。
 - Windows 代码签名：`windows.certificate`（.pfx，口令在 `MYGO_WINDOWS_CERTIFICATE_PASSWORD`）。
-- 自动更新：`go tool mygo keygen` 生成密钥对，公钥与发布位置写进 `updates`（`publicKey` 与 `url`），私钥只放发布机或 CI 密钥（`MYGO_UPDATER_PRIVATE_KEY`）。没有 `updates` 的构建不检查更新，设置页显示"不能自动更新"。
+- 自动更新已配置：`updates` 指向公开仓库 `yiyiSmallti/alcove-releases`，公钥写在 `mygo.json`。私钥是 `go tool mygo keygen` 在发布机上生成的 `~/Library/Application Support/mygo/update-keys/mygo-update.key`，不进仓库，另存一份到密码管理器；丢了它，已装的应用就再也收不到更新。`installer/build.sh` 自动读这个文件（或 `MYGO_UPDATER_PRIVATE_KEY`）。
+
+发一个版本：改 `mygo.json` 的 `version`，在 `CHANGELOG.md` 加同名的 `## <版本>` 一节（即更新窗口里的说明），然后
+
+```sh
+ALCOVE_SIGN="Apple Development: …" ALCOVE_UPLOAD=1 installer/build.sh darwin-arm64 darwin-amd64
+gh release edit v<版本> --repo yiyiSmallti/alcove-releases --draft=false
+```
+
+上传的是草稿，发布后成为 latest，已装的应用下次检查就能看到。Windows 安装包走 `installer/build-windows.sh`，还没接上传。
 
 应用内更新（A5）：启动时与每 24 小时检查一次，设置页"更新"可手动检查、看更新说明、下载安装（有差量包时只下差量）并重启。"更新源"填企业镜像的 https 目录（放一份发布文件的拷贝）后，清单与文件都从镜像取，但仍须是同一把密钥签的包。
