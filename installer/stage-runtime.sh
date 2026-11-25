@@ -75,6 +75,28 @@ JSON
   rm -rf "$3/package-lock.json" "$3/node_modules/.bin" "$3/node_modules/.package-lock.json"
   unhide "$3/node_modules"
   prune "$1" "$2" "$3/node_modules"
+  untelemetry "$3/node_modules"
+}
+
+# untelemetry <node_modules>: dsh's telemetry, beyond the rows the bridge
+# bundle disables. llm-deepseek sends a persistent anonymous user id
+# ($DSH_HOME/.anonymous-user-id) with every official DeepSeek request and has
+# no switch for it, so that header goes; then the packages whose only job is
+# telemetry, feedback upload or extra request fields: OTLP export and
+# OpenTelemetry, product analytics, message and session feedback, Session
+# logs on model requests, the plugin package list. A dsh upgrade that moves
+# the header fails the build here rather than shipping it.
+untelemetry() {
+  local nm=$1 f=$1/@deepseek-ai/dsh-llm-deepseek/lib/index.js
+  local hdr='"x-deepseek-harness-user-id": this.dependencies.resolveUserId(),'
+  [ "$(grep -cF "$hdr" "$f")" = 1 ] || { echo "untelemetry: user id header not found once in $f" >&2; exit 1; }
+  grep -vF "$hdr" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  grep -q 'x-deepseek-harness-user-id' "$f" && { echo "untelemetry: user id header left in $f" >&2; exit 1; }
+  rm -rf "$nm/@opentelemetry" "$nm"/@deepseek-ai/dsh-otel "$nm"/@deepseek-ai/dsh-session-telemetry \
+    "$nm"/@deepseek-ai/dsh-session-telemetry-otel "$nm"/@deepseek-ai/dsh-host-product-telemetry-otel \
+    "$nm"/@deepseek-ai/dsh-client-product-analytics "$nm"/@deepseek-ai/dsh-command-feedback \
+    "$nm"/@deepseek-ai/dsh-message-feedback "$nm"/@deepseek-ai/dsh-client-ui-message-feedback \
+    "$nm"/@deepseek-ai/dsh-session-log-deepseek "$nm"/@deepseek-ai/dsh-plugin-package-inventory-deepseek
 }
 
 # prune <os> <cpu> <node_modules>: what the runtime never loads. Source maps,

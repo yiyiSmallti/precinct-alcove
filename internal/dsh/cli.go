@@ -162,6 +162,9 @@ func (c *CLI) Environ() []string {
 	}
 	env = setEnv(env, "PATH", path)
 	env = setEnv(env, "DSH_HOME", c.Home)
+	// dsh's own telemetry opt-out, for a profile whose bridge (which disables
+	// the telemetry rows) is not installed yet or is older.
+	env = setEnv(env, "DSH_TELEMETRY_DISABLED", "1")
 	// pnpm's update notice is noise in captured output.
 	env = setEnv(env, "NO_UPDATE_NOTIFIER", "1")
 	env = setEnv(env, "npm_config_update_notifier", "false")

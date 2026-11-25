@@ -2,7 +2,7 @@
   "name": "Alcove",
   "slug": "alcove",
   "identifier": "com.precinct.alcove",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "copyright": "© 2026 Precinct",
   "main": "./cmd/alcove",
   "out": "build",

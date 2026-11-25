@@ -3,7 +3,21 @@
 #   both through the Alcove client over the host-callback connection.
 # - The SDK profile has no ask_user_question tool; add it.
 # - Session logs must not ride along on model requests.
+# - No telemetry: dsh-base mounts an OTLP exporter to DeepSeek's collector
+#   (otel, session-telemetry-otel; sends Session logs once the user gives
+#   feedback), the /feedback command that triggers it, and a list of the
+#   profile's plugin packages added to every official DeepSeek request
+#   (dsh_plugin_packages). installer/stage-runtime.sh also drops the
+#   packages and the anonymous user id header of llm-deepseek.
 - id: session-log-deepseek
+  disabled: true
+- id: otel
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: command-feedback
+  disabled: true
+- id: plugin-package-inventory-deepseek
   disabled: true
 - insert:
     - id: tool-ask-user

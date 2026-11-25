@@ -39,6 +39,7 @@ ALCOVE_SIGN="Apple Development: …" installer/build.sh   # 用固定证书签�
 - macOS 不打通用版，arm64 与 amd64 各一个包，各自只带本 CPU 的 node 与原生包。
 - dsh 的子包把 zod 锁死在一个版本，npm `overrides` 让全树共用这一份，否则每个子包各装一份（约 310 MB）；升级 dsh 时跟着改 `ZOD_VERSION`。
 - `prune` 删掉运行时不加载的东西：sourcemap、类型声明、README 与 CHANGELOG、别的平台的预编译文件，以及 sdk profile 之外的实验插件用的语音识别引擎（sherpa-onnx）与 inspector。
+- `untelemetry` 去掉 dsh 的遥测：删掉 llm-deepseek 每次请求带的匿名用户 ID 头（`x-deepseek-harness-user-id`，dsh 没有开关），以及 OTLP 上报与 OpenTelemetry、产品分析、消息与会话反馈、模型请求附带会话日志、插件包清单这些包。升级 dsh 后头部位置变了会让构建失败。bridge 的 `cordis.patch.yml` 同时把这几行插件关掉，Alcove 启动 dsh 时还设了 `DSH_TELEMETRY_DISABLED=1`。
 - 不带 LibreOffice Kit 的引擎（单个 CPU 约 150 MB）。dsh 的 Office skill 在任务第一次要转换 Office 文档时问用户，同意后用随包的 node 与 pnpm 把引擎装进任务目录（约 20 秒）。没有网络或 npm 源时这项不可用，内网要配 npm 镜像。
 
 配置在 `mygo.json`：`alcove://` 链接注册（`urlSchemes`）、macOS 13+、随包 node 的 JIT entitlement（`installer/node.entitlements.plist`）。
