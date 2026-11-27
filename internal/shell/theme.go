@@ -6,19 +6,22 @@ import (
 	"sync"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 )
 
-// palette is the window's look beyond what ui.Theme names. The default
-// look is quiet, like a native Mac app: clean neutrals, hairlines instead
-// of boxes, one accent for primary actions, and color kept for state
-// (running, waiting on you, done, failed). Settings → 外观 changes the
-// light or dark mode, the neutrals' tone, the accent, the fonts and the
+// palette is the window's look beyond what ui.Theme names. The window is a
+// desk by a window: the theme's painting fills it, the sidebar is glass
+// over the painting, and the page is a sheet of paper laid on it, opaque so
+// that reading is easy. Color is kept for state (running, waiting on you,
+// done, failed) and one accent for primary actions. Settings → 外观 changes
+// the light or dark mode, the neutrals' tone, the accent, the fonts and the
 // window's zoom.
 type palette struct {
-	content  ui.Color // the middle column's ground
-	sidebar  ui.Color // the side columns' ground where there is no vibrancy
+	content  ui.Color // the sheet's paper
+	canvas   ui.Color // the window's ground where there is no painting
+	sidebar  ui.Color // the sidebar's ground where there is no glass
 	selected ui.Color // the chosen row in a list
 	hover    ui.Color // a row under the pointer
 	userMsg  ui.Color // the user's message bubble
@@ -30,22 +33,27 @@ type palette struct {
 	done     ui.Color // a finished task
 	shadow   ui.Color // under floating cards and the composer
 	avatar   ui.Color // the workspace's letter tile
+	rim      ui.Color // the lit edge of glass and of the alcove's arch
+	term     ui.Color // a command's output, as a terminal shows it
+	termText ui.Color
+	link     ui.Color // links in replies: the accent, or ink blue when the accent is the ink
+
+	// inkAccent is an accent that is the tone's ink (石墨): black on paper,
+	// white in the dark. What the accent would light (a link, the agent at
+	// work in the browser, a glow under a button) takes another color then.
+	inkAccent bool
+	md        *markdown.Options // how replies render: their links in link
 
 	mono    string     // the code font
+	display string     // the serif of titles and the wordmark
 	vibrant bool       // the side columns show the window's material
 	wall    *wallpaper // the theme's painting behind the window, or nil
 	win     ui.Rect    // where the painting lies, in window coordinates
 }
 
-// ground is the middle column's ground: the content color, or that color
-// as a veil over the frosted painting, thin enough to keep its light and
-// thick enough that text reads as on paper.
-func (p *palette) ground() ui.Color {
-	if p.wall != nil {
-		return p.content.Alpha(0.82)
-	}
-	return p.content
-}
+// displayFont is the serif of page titles, the new-task question, empty
+// states and the wordmark: Latin from Georgia, Chinese from Songti.
+const displayFont = "Georgia, Songti SC, STSong, Source Han Serif SC, Noto Serif CJK SC, Noto Serif SC, SimSun, serif"
 
 // tone is one set of neutrals, for light and for dark, and the accent it
 // comes with until the user picks another.
@@ -63,9 +71,14 @@ type neutrals struct {
 // bubbles, controls and the muted text; the middle column stays near white
 // (or near black) so reading is easy. The first is the default.
 var tones = []tone{
-	{"zinc", "雪白",
-		neutrals{"#ffffff", "#f4f4f5", "#ececee", "#e4e4e7", "#e4e4e7", "#18181b", "#71717a", "#f8f8f9", "#a1a1aa", "#f8f8f9", "#ececef", "#f4f4f5"},
-		neutrals{"#131316", "#1f1f23", "#27272a", "#2f2f33", "#2a2a2e", "#f4f4f5", "#a1a1aa", "#0e0e10", "#71717a", "#18181b", "#2a2a2e", "#232327"}, "indigo"},
+	// Paper and ink, the default: white paper, black ink, and the grays
+	// between them with the least chill of zinc, so they read as black and
+	// white rather than blue. Its accent is the ink itself, so color is
+	// left to what means something: running, waiting on you, done, failed,
+	// and links. By night the paper is ink-dark on a near-black desk.
+	{"zinc", "纸墨",
+		neutrals{"#ffffff", "#f4f4f5", "#ececee", "#e4e4e7", "#e4e4e7", "#18181b", "#6b6b74", "#f3f3f4", "#9d9da6", "#f6f6f7", "#ebebed", "#f0f0f2"},
+		neutrals{"#161618", "#1f1f22", "#27272a", "#2f2f33", "#2a2a2e", "#ececee", "#a1a1aa", "#0c0c0d", "#77777f", "#111113", "#28282c", "#232326"}, "graphite"},
 	{"slate", "石板",
 		neutrals{"#ffffff", "#f1f5f9", "#e9eef4", "#e2e8f0", "#e2e8f0", "#0f172a", "#64748b", "#f6f8fb", "#94a3b8", "#f8fafc", "#e2e8f0", "#eef3fa"},
 		neutrals{"#0d1424", "#172136", "#1d2940", "#24314b", "#1f2a3f", "#e2e8f0", "#94a3b8", "#090f1c", "#64748b", "#111a2c", "#1f2a3f", "#18243c"}, "blue"},
@@ -94,6 +107,7 @@ type accent struct {
 
 var accents = []accent{
 	{"graphite", "石墨", "", ""},
+	{"ink", "墨蓝", "#2c4fc0", "#8ea6ff"},
 	{"indigo", "靛蓝", "#4f46e5", "#818cf8"},
 	{"blue", "海蓝", "#2563eb", "#60a5fa"},
 	{"violet", "紫藤", "#6e56cf", "#9d8bf0"},
@@ -198,39 +212,67 @@ func lookFor(ap app.Appearance, dark bool) *look {
 	t.Border, t.Text, t.TextMuted = hx(n.border), hx(n.text), hx(n.muted)
 	acc, ink := accentColor(ap, dark)
 	t.Accent, t.AccentText = acc, onAccent(acc)
+	// State colors: 藤黄 for what waits on the user, pine for done,
+	// vermilion for failures.
+	white, black := ui.RGB(255, 255, 255), ui.RGB(0, 0, 0)
 	if dark {
-		t.AccentHover, t.AccentPressed = acc.Mix(ui.RGB(255, 255, 255), 0.12), acc.Mix(ui.RGB(0, 0, 0), 0.1)
-		t.Warning, t.Success, t.Danger = hx("#e5a54b"), hx("#5fbf86"), hx("#f17a72")
+		t.AccentHover, t.AccentPressed = acc.Mix(white, 0.12), acc.Mix(black, 0.1)
+		t.Warning, t.Success, t.Danger = hx("#e8a94e"), hx("#62c08a"), hx("#f2806f")
 	} else {
-		t.AccentHover, t.AccentPressed = acc.Mix(ui.RGB(255, 255, 255), 0.14), acc.Mix(ui.RGB(0, 0, 0), 0.15)
-		t.Warning, t.Success, t.Danger = hx("#b5680f"), hx("#2f8a57"), hx("#c4433b")
+		t.AccentHover, t.AccentPressed = acc.Mix(white, 0.14), acc.Mix(black, 0.15)
+		t.Warning, t.Success, t.Danger = hx("#b86e00"), hx("#2e7d55"), hx("#c4382b")
 	}
-	focus := acc
-	if ink {
-		focus = hx("#3874ff")
+	// Ink can go no blacker, nor white whiter: a black button lightens
+	// under the pointer and a white one dims, and pressing comes back
+	// part of the way.
+	switch {
+	case ink && dark:
+		t.AccentHover, t.AccentPressed = acc.Mix(black, 0.08), acc.Mix(black, 0.16)
+	case ink:
+		t.AccentHover, t.AccentPressed = acc.Mix(white, 0.14), acc.Mix(white, 0.06)
 	}
-	t.Selection, t.Focus = focus.Alpha(0.25), focus.Alpha(0.5)
 	t.Radius, t.FontSize, t.Font = 8, 13.5, ap.Font
 
+	// Shadows are the tone's ink, faint, and a command's output is set in
+	// a terminal of the same ink: warm under 米白, black under 纸墨.
 	text := hx(n.text)
+	tone := toneOf(ap.Tone)
 	p := palette{
-		content: hx(n.bg), sidebar: hx(n.sidebar),
-		selected: text.Alpha(0.07), hover: text.Alpha(0.04),
-		userMsg: hx(n.userMsg), code: hx(n.code), hairline: text.Alpha(0.08),
+		content: hx(n.bg), canvas: hx(n.sidebar), sidebar: hx(n.sidebar),
+		selected: text.Alpha(0.075), hover: text.Alpha(0.045),
+		userMsg: hx(n.userMsg), code: hx(n.code), hairline: text.Alpha(0.09),
 		subtle: hx(n.subtle), avatar: hx(n.avatar),
-		running: hx("#2f6fe4"), waiting: hx("#c47812"), done: hx("#2f8a57"),
-		shadow: text.Alpha(0.07), mono: ap.CodeFont,
+		running: hx("#2f6fe4"), waiting: t.Warning, done: t.Success,
+		shadow: text.Alpha(0.09), rim: ui.RGBA(255, 255, 255, 0.55),
+		term: hx(tone.light.text).Mix(ui.RGB(255, 255, 255), 0.04), termText: hx(tone.dark.text),
+		link: acc, inkAccent: ink,
+		mono: ap.CodeFont, display: displayFont,
 	}
 	if dark {
-		p.selected, p.hover, p.hairline = text.Alpha(0.09), text.Alpha(0.05), text.Alpha(0.08)
-		p.running, p.waiting, p.done, p.shadow = hx("#6ea2ff"), hx("#e5a54b"), hx("#5fbf86"), ui.RGBA(0, 0, 0, 0.35)
+		p.selected, p.hover, p.hairline = text.Alpha(0.09), text.Alpha(0.05), text.Alpha(0.1)
+		p.running, p.shadow, p.rim = hx("#6ea2ff"), ui.RGBA(0, 0, 0, 0.42), ui.RGBA(255, 255, 255, 0.14)
+		p.term = hx(n.bg).Mix(ui.RGB(0, 0, 0), 0.38)
 	}
-	if !ink {
+	if ink {
+		// Black (or white) links would be lost among the words: they take
+		// 墨蓝, and the focus ring the blue of what runs.
+		for _, a := range accents {
+			if a.id == "ink" {
+				p.link = hx(a.light)
+				if dark {
+					p.link = hx(a.dark)
+				}
+			}
+		}
+	} else {
 		// A colored accent tints what is chosen and what runs.
-		p.selected, p.running = acc.Alpha(0.14), acc
-		p.userMsg = acc.Alpha(0.1).Over(hx(n.bg))
-		p.avatar = acc.Alpha(0.18).Over(hx(n.bg))
+		p.selected, p.running = acc.Alpha(0.13), acc
+		p.userMsg = acc.Alpha(0.09).Over(hx(n.bg))
+		p.avatar = acc.Alpha(0.16).Over(hx(n.bg))
 	}
+	focus := p.running
+	t.Selection, t.Focus = focus.Alpha(0.25), focus.Alpha(0.5)
+	p.md = &markdown.Options{Theme: &markdown.Theme{Link: p.link}}
 	if p.mono == "" {
 		p.mono = "monospace"
 	}
@@ -305,4 +347,48 @@ var (
 	icHide     = icon(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M8 10l2 2-2 2"/>`)
 	icClose    = icon(`<path d="M6 6l12 12M18 6 6 18"/>`)
 	icAlert    = icon(`<path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17h.01"/>`)
+
+	// The kinds of a task's steps, on the thread of its work.
+	icRead    = icon(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>`)
+	icPencil  = icon(`<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>`)
+	icNewFile = icon(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/>`)
+	icSearch  = icon(`<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>`)
+	icAgent   = icon(`<circle cx="12" cy="5.5" r="2.5"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/><path d="M12 8v3.5M12 11.5 6.8 16.3M12 11.5l5.2 4.8"/>`)
+	icPointer = icon(`<path d="m5 3 14 7-6 2-2 6z"/>`)
+	icBulb    = icon(`<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/>`)
+	icFold    = icon(`<path d="M4 12h16M9 4l3 3 3-3M9 20l3-3 3 3"/>`)
+
+	// The window's own.
+	icCompose = icon(`<path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M18.4 2.6a2 2 0 0 1 3 3L12 15l-4 1 1-4z"/>`)
+	icArch    = icon(`<path d="M5 21V11a7 7 0 0 1 14 0v10"/><circle cx="12" cy="12" r="2.25"/><path d="M8.5 21a3.5 3.5 0 0 1 7 0"/>`)
+	icOpen    = icon(`<path d="M7 17 17 7M9 7h8v8"/>`)
+	icTrash   = icon(`<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>`)
+	icHome    = icon(`<path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/>`)
+	icSparkle = icon(`<path d="M12 3c.6 4.4 2.6 6.4 7 7-4.4.6-6.4 2.6-7 7-.6-4.4-2.6-6.4-7-7 4.4-.6 6.4-2.6 7-7z"/>`)
 )
+
+// stepIcon is the mark of a tool call on the thread of a task's work.
+func stepIcon(tool string) *ui.SVG {
+	switch toolVerb(tool) {
+	case "运行命令":
+		return icTerminal
+	case "读取文件":
+		return icRead
+	case "写入文件":
+		return icNewFile
+	case "修改文件":
+		return icPencil
+	case "查看目录":
+		return icFolder
+	case "搜索":
+		return icSearch
+	case "子代理":
+		return icAgent
+	case "点击", "输入", "按键", "滚动页面":
+		return icPointer
+	}
+	if strings.HasPrefix(strings.ToLower(tool), "browser_") || toolVerb(tool) == "访问网页" {
+		return icGlobe
+	}
+	return icSparkle
+}

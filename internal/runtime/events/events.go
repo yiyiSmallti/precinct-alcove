@@ -141,6 +141,15 @@ func (s *Session) reset() {
 // Running reports whether a turn is in progress.
 func (s *Session) Running() bool { return s.Status == "running" }
 
+// Call is the entry of tool call id, or nil when the session has none: an
+// approval names the call it is about.
+func (s *Session) Call(id string) *Entry {
+	if id == "" {
+		return nil
+	}
+	return s.tools[id]
+}
+
 // Exited marks the subagents still running as stopped: their runtime is
 // gone. It reports whether there were any.
 func (s *Session) Exited() bool {
@@ -375,10 +384,7 @@ func (s *Session) applyEvent(e event) bool {
 		return true
 	case "turn/end":
 		var d struct {
-			Reason struct {
-				Kind    string `json:"kind"`
-				Message string `json:"message"`
-			} `json:"reason"`
+			Reason turnEnd `json:"reason"`
 		}
 		json.Unmarshal(e.Data, &d)
 		// Anything still streaming is as final as it gets.
@@ -402,11 +408,7 @@ func (s *Session) applyEvent(e event) bool {
 		if d.Reason.Kind == "" || d.Reason.Kind == "completed" {
 			return true
 		}
-		text := "回合结束：" + d.Reason.Kind
-		if d.Reason.Message != "" {
-			text += "（" + d.Reason.Message + "）"
-		}
-		s.add(&Entry{Kind: Notice, Text: text})
+		s.add(&Entry{Kind: Notice, Text: d.Reason.notice(), IsError: d.Reason.Kind == "error"})
 		return true
 	case "compaction/start":
 		var d struct {
@@ -915,4 +917,57 @@ func (s *Session) Restore(snap Snapshot) {
 		}
 		s.add(&e)
 	}
+}
+
+// turnEnd is why a turn ended, as dsh's turn/end gives it: completed;
+// error, with the failure; or aborted, with who stopped it (the user, the
+// parent task, the session closing, or a hook, with why). Older dsh gave a
+// message beside the kind.
+type turnEnd struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+	Error   struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	} `json:"error"`
+	By json.RawMessage `json:"reason"`
+}
+
+// notice is what a turn that ended other than completed says: what
+// happened and, in "（…）", why, when dsh says. The conversation shows the
+// why under what happened; a plugin's session gets the whole line as its
+// error.
+func (r turnEnd) notice() string {
+	head, why := "回合结束："+r.Kind, r.Message
+	switch r.Kind {
+	case "error":
+		head = "这一轮出错了"
+		for _, w := range []string{r.Error.Message, r.Error.Code} {
+			if why == "" {
+				why = w
+			}
+		}
+	case "aborted":
+		var by struct {
+			Kind   string `json:"kind"`
+			Reason string `json:"reason"`
+		}
+		json.Unmarshal(r.By, &by)
+		switch by.Kind {
+		case "user":
+			head = "你停下了这一轮"
+		case "parent":
+			head = "上级任务停下了这一轮"
+		case "disposed":
+			head = "会话关闭，这一轮停了"
+		case "hook":
+			head, why = "插件拦下了这一轮", by.Reason
+		default:
+			head = "这一轮中途停了"
+		}
+	}
+	if why = strings.TrimSpace(why); why != "" {
+		return head + "（" + why + "）"
+	}
+	return head
 }

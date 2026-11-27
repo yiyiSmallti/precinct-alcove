@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"github.com/yiyiSmallti/precinct-alcove/internal/core/credentials"
@@ -78,14 +79,16 @@ type Shell struct {
 	mu          sync.Mutex
 	page        string
 	curWS       string                  // the workspace a new task goes to
-	curProj     string                  // the project the sidebar's switcher shows
+	curProj     string                  // the project last shown, open in the sidebar's tree
 	scratchID   string                  // the workspace of tasks outside a project (最近会话)
-	wsMenu      bool                    // the workspace switcher is open
+	wsOpen      map[string]bool         // workspaces opened or folded in the sidebar's tree, by id
+	wsAll       map[string]bool         // workspaces listing all their tasks, by id
+	moods       moodTrack               // how Index's mood last changed, for her hop
 	runMenu     bool                    // the run panel (model, effort, context) is open
 	ctxMenu     bool                    // the context panel (what the task's context holds) is open
-	effortPos   float64                 // the effort slider's position
-	effortAnim  float32                 // where its fill is drawn, gliding to the position
-	effortAt    time.Time               // when the fill was last drawn
+	filesMenu   bool                    // the list of the files the shown task changed is open
+	effortPos   float64                 // the effort control's position
+	effortClock effortClock             // how far its particles have gone
 	index       map[string][]tasks.Task // tasks by workspace, as last read
 	workspaces  []workspace.Workspace
 	views       map[string]*wsView // by workspace id
@@ -97,7 +100,6 @@ type Shell struct {
 	notice      string                // one line shown at the top, e.g. an error
 	startErr    string                // why Alcove could not start; tasks are refused
 	preparing   bool                  // 最近会话's workspace is being added on first start
-	newTaskH    float32               // the new task page's height in the last frame
 	scratchBusy bool                  // 最近会话 is moving to another folder
 	diagBusy    bool
 	diagStatus  string
@@ -140,6 +142,9 @@ type taskView struct {
 	err      string
 	open     map[string]bool // tool entries shown in full, by entry key
 	legacy   bool            // the conversation from before tasks; no transcript
+	// scroll is where the conversation is scrolled; it follows the end
+	// while it is there, and starts there.
+	scroll ui.ScrollState
 }
 
 type approval struct {

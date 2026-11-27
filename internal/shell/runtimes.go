@@ -78,7 +78,7 @@ func (s *Shell) runtimeRow(c *ui.Context, pal *palette, info alrt.Info) {
 			ui.Text(c, sub).FontSize(11).TextColor(pal.subtle).SingleLine()
 		})
 		pinned := info.Pinned
-		if ui.Switch(c, &pinned).Label("钉住").Disabled(stopping).Changed() && !stopping {
+		if toggle(c, &pinned).Label("钉住").Disabled(stopping).Changed() && !stopping {
 			s.App.PinRuntime(info.Key, pinned)
 		}
 		var b ui.Element

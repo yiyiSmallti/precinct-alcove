@@ -174,7 +174,7 @@ func (s *Shell) updatesView(c *ui.Context, pal *palette) {
 				}
 				ui.Text(c, title).FontWeight(600)
 				if strings.TrimSpace(r.Notes) != "" {
-					markdown.View(c, r.Notes, nil)
+					markdown.View(c, r.Notes, pal.md)
 				}
 				switch {
 				case u.installed == r.Version:

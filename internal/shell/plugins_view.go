@@ -87,6 +87,7 @@ func errorNote(c *ui.Context, text string) {
 // pluginsView is the plugin list with the install flow.
 func (s *Shell) pluginsView(c *ui.Context, pal *palette) {
 	topBar(c, pal, func() {
+		ui.Icon(c, icPuzzle).Size(15, 15).TextColor(c.Theme().TextMuted)
 		ui.Text(c, "插件").FontSize(14).Bold().Grow(1)
 		if s.planBusy {
 			ui.Spinner(c)
@@ -95,23 +96,25 @@ func (s *Shell) pluginsView(c *ui.Context, pal *palette) {
 			s.pickPlugin()
 		}
 	})
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(28, 40, 40).Gap(16).MaxWidth(720).Children(func() {
-			if s.planErr != "" {
-				errorNote(c, s.planErr)
+	title := "插件"
+	if n := len(s.plugins); n > 0 {
+		title = fmt.Sprintf("已安装 %d 个插件", n)
+	}
+	pageColumn(c, pal, title, "安装、更新和管理插件；安装前会列出插件要用到的能力。", func() {
+		if s.planErr != "" {
+			errorNote(c, s.planErr)
+		}
+		if s.plan != nil {
+			s.planCard(c, pal, s.plan)
+		}
+		if len(s.plugins) == 0 {
+			emptyState(c, icPuzzle, c.Theme().Accent, "还没有安装插件", "插件包是 .tgz 文件，旁边带同名 .sig 签名文件。", nil)
+			return
+		}
+		settingsGroup(c, pal, "已安装", func() {
+			for _, r := range s.plugins {
+				s.pluginRow(c, pal, r)
 			}
-			if s.plan != nil {
-				s.planCard(c, pal, s.plan)
-			}
-			if len(s.plugins) == 0 {
-				emptyState(c, icPuzzle, c.Theme().Accent, "还没有安装插件", "插件包是 .tgz 文件，旁边带同名 .sig 签名文件。", nil)
-				return
-			}
-			settingsGroup(c, pal, "已安装", func() {
-				for _, r := range s.plugins {
-					s.pluginRow(c, pal, r)
-				}
-			})
 		})
 	})
 }
@@ -655,7 +658,7 @@ func (s *Shell) fieldView(c *ui.Context, pal *palette, f *settingsForm, fd setti
 				changed = ui.TextInput(c, &v.text).Password().Placeholder(ph).Disabled(f.busy).Grow(1).Changed()
 			case "toggle":
 				ui.Row(c).Grow(1).Justify(ui.End).Padding(4, 0, 0).Children(func() {
-					changed = ui.Switch(c, &v.on).Label(label).Disabled(f.busy).Changed()
+					changed = toggle(c, &v.on).Label(label).Disabled(f.busy).Changed()
 				})
 			case "select":
 				sel := ui.Select(c, &v.text, optionLabels(fd.Options)).Disabled(f.busy)
@@ -715,7 +718,7 @@ func (s *Shell) inboxView(c *ui.Context, pal *palette, name string) {
 						s.cardView(c, pal, name, e.item, i)
 					default:
 						ui.Column(c).Key(i).Children(func() {
-							markdown.View(c, e.item.Text, nil)
+							markdown.View(c, e.item.Text, pal.md)
 						})
 					}
 				}
@@ -750,7 +753,7 @@ func (s *Shell) inboxView(c *ui.Context, pal *palette, name string) {
 			}
 			messageBox(c, pal, &ch.input, "给"+s.pluginTitle(name)+"发消息…", 1, false, func(text string) {
 				s.sendInbox(name, ch, text)
-			}, nil)
+			}, nil, nil)
 		})
 	})
 }
@@ -857,7 +860,7 @@ func (s *Shell) introView(c *ui.Context, pal *palette, name string, in *inboxInt
 		}
 		ui.Text(c, title).FontSize(22).FontWeight(650).Padding(4, 0, 0)
 		if in.Body != "" {
-			ui.Column(c).Children(func() { markdown.View(c, in.Body, nil) })
+			ui.Column(c).Children(func() { markdown.View(c, in.Body, pal.md) })
 		}
 		if len(in.Suggestions) == 0 {
 			return
@@ -906,7 +909,7 @@ func (s *Shell) cardView(c *ui.Context, pal *palette, plugin string, it *inboxIt
 			ui.Text(c, it.Card.Title).FontSize(13.5).Bold()
 		}
 		if it.Card.Body != "" {
-			markdown.View(c, it.Card.Body, nil)
+			markdown.View(c, it.Card.Body, pal.md)
 		}
 		if len(it.Card.Actions) > 0 {
 			ui.Row(c).Gap(8).Padding(4, 0, 0).AlignItems(ui.Center).Children(func() {

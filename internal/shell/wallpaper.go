@@ -406,14 +406,18 @@ func sceneCard(c *ui.Context, pal *palette, ap app.Appearance, sc scene, sel boo
 			if thumb != nil {
 				paint(c, thumb)
 			}
-			ui.Column(c).Absolute().Top(0).Left(0).Bottom(0).Width(30).Padding(8, 5).Gap(4).Background(l.pal.sidebar.Alpha(0.6)).Children(func() {
-				ui.Box(c).Height(4).Radius(2).Background(l.theme.TextMuted.Alpha(0.6))
-				ui.Box(c).Height(6).Radius(2).Background(l.pal.selected)
-				ui.Box(c).Height(4).Radius(2).Background(l.theme.TextMuted.Alpha(0.45))
-			})
-			ui.Row(c).Absolute().Right(6).Bottom(6).Left(38).Height(12).Radius(4).Background(l.pal.content.Alpha(0.9)).Justify(ui.End).AlignItems(ui.Center).Padding(0, 2).Children(func() {
-				ui.Box(c).Size(7, 7).Radius(3.5).Background(l.theme.Accent)
-			})
+			// The window over its painting: the glass sidebar, the page on
+			// its sheet, and the alcove's arch where she has pictures.
+			alcove := stillOf(sc.outfit, moodIdle) != nil
+			miniSidebar(c, l, ui.Column(c).Absolute().Top(4).Left(4).Bottom(4).Width(24).Radius(4).Background(l.pal.sidebar.Alpha(0.55)))
+			right := float32(4)
+			if alcove {
+				right = 28
+				ui.Column(c).Absolute().Top(4).Right(4).Bottom(4).Width(20).Radius(4).Background(l.pal.sidebar.Alpha(0.45)).Padding(14, 3, 3).Children(func() {
+					ui.Box(c).Grow(1).Radius(7, 7, 2, 2).Border(1, l.pal.rim)
+				})
+			}
+			miniSheet(c, l, ui.Column(c).Absolute().Top(4).Left(32).Right(right).Bottom(4))
 		})
 		txt := ui.Text(c, sc.name).FontSize(12)
 		if !sel {

@@ -2,7 +2,6 @@ package shell
 
 import (
 	"fmt"
-	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -484,7 +483,7 @@ func (s *Shell) compactionSettings(c *ui.Context, pal *palette) {
 	settingsGroup(c, pal, "上下文与压缩", func() {
 		prefRow(c, pal, "自动压缩", "对话接近上下文上限时，把较早的内容总结成摘要，腾出空间继续。关掉后上下文满了这一轮会失败。", func() {
 			on := !cp.Off
-			if ui.Switch(c, &on).Label("自动压缩").Changed() {
+			if toggle(c, &on).Label("自动压缩").Changed() {
 				st := s.settings
 				st.Compaction.Off = !on
 				s.saveSettings(st)
@@ -537,11 +536,11 @@ func menuChip(c *ui.Context, pal *palette, text, label string) ui.Element {
 	return chip
 }
 
-// runBar sits over the composer's right corner: how full the task's
-// context is, and the model it runs with at which thinking effort, both
-// switched in one panel (runPanel). A workspace not on the personal
-// credentials shows only the context it took.
-func (s *Shell) runBar(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
+// runControls lead the composer's foot: the model the task runs with at
+// which thinking effort, switched in one panel (runPanel), and how full its
+// context is. A workspace not on the personal credentials shows only the
+// context it took. The panels open over the composer.
+func (s *Shell) runControls(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	used := 0
 	if tk != nil {
 		used = tk.session.Context
@@ -549,9 +548,6 @@ func (s *Shell) runBar(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 	var def *credentials.Credential
 	if v.ws.OwnerName() == workspace.Personal {
 		def = s.defaultCred()
-	}
-	if def == nil && used == 0 {
-		return
 	}
 	// The meter opens what the context holds.
 	meter := func(limit int) {
@@ -565,32 +561,31 @@ func (s *Shell) runBar(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
 		}
 		ui.PopoverBase(c, m, &s.ctxMenu, func(panel ui.Element) {
 			t := c.Theme()
-			panel.AttachTo(m, ui.AnchorBottomRight, ui.AnchorTopRight).Margin(6, 0, 0, 0).Width(280).Padding(12, 14).Radius(12).
+			panel.AttachTo(m, ui.AnchorBottomLeft, ui.AnchorTopLeft).Margin(6, 0, 0, 0).Width(280).Padding(12, 14).Radius(12).
 				Background(t.Background).Border(1, t.Border).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.2))
 			contextPanel(c, pal, used, limit, u, s.settings.Compaction)
 		})
 	}
-	ui.Row(c).Gap(4).AlignItems(ui.Center).Margin(0, 0, -4, 0).Children(func() {
-		ui.Spacer(c)
-		if def == nil {
-			meter(0)
-			return
-		}
-		m, limit := s.runModel(*def)
+	if def == nil {
 		if used > 0 {
-			meter(limit)
+			meter(0)
 		}
-		chip := s.runChip(c, pal, m)
-		if chip.Clicked() {
-			s.runMenu = !s.runMenu
-		}
-		ui.PopoverBase(c, chip, &s.runMenu, func(panel ui.Element) {
-			t := c.Theme()
-			panel.AttachTo(chip, ui.AnchorBottomRight, ui.AnchorTopRight).Margin(6, 0, 0, 0).Width(312).Padding(6).Radius(12).
-				Background(t.Background).Border(1, t.Border).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.2))
-			s.runPanel(c, pal, *def, m, used, limit)
-		})
+		return
+	}
+	m, limit := s.runModel(*def)
+	chip := s.runChip(c, pal, m)
+	if chip.Clicked() {
+		s.runMenu = !s.runMenu
+	}
+	ui.PopoverBase(c, chip, &s.runMenu, func(panel ui.Element) {
+		t := c.Theme()
+		panel.AttachTo(chip, ui.AnchorBottomLeft, ui.AnchorTopLeft).Margin(6, 0, 0, 0).Width(312).Padding(6).Radius(12).
+			Background(t.Background).Border(1, t.Border).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.2))
+		s.runPanel(c, pal, *def, m, used, limit)
 	})
+	if used > 0 {
+		meter(limit)
+	}
 }
 
 // runModel is what the runtime knows of cr's current model and the context
@@ -707,20 +702,8 @@ func (s *Shell) runPanel(c *ui.Context, pal *palette, def credentials.Credential
 	stops := effortStops(m)
 	cur := indexOf(stops, s.runEffort(m))
 	ui.Column(c).Padding(2, 8, 6).Gap(6).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "思考强度").FontSize(12.5).FontWeight(600).Grow(1)
-			if len(m.Efforts) == 0 {
-				return
-			}
-			// The stop under the slider, as it is dragged.
-			at := min(max(int(math.Round(s.effortPos)), 0), len(stops)-1)
-			if at == 0 {
-				ui.Text(c, "服务商默认").FontSize(12).TextColor(t.TextMuted)
-			} else {
-				ui.Text(c, effortName(stops[at])).FontSize(12.5).FontWeight(600).TextColor(t.Accent)
-			}
-		})
 		if len(m.Efforts) == 0 {
+			ui.Text(c, "思考强度").FontSize(12.5).FontWeight(600)
 			ui.Text(c, "这个模型不能调思考强度，按服务商默认运行。").FontSize(12).TextColor(pal.subtle)
 			return
 		}
@@ -758,75 +741,6 @@ func (s *Shell) runPanel(c *ui.Context, pal *palette, def credentials.Credential
 		s.runMenu = false
 		s.page, s.prefs.tab = PageSettings, tabModel
 	}
-}
-
-// effortSlider slides among stops, the service's default first: a capsule
-// filled in the accent up to the chosen stop, which glides there, with a
-// glowing knob at its end. A stop reached saves at once; the next send
-// restarts an idle runtime with it.
-func (s *Shell) effortSlider(c *ui.Context, pal *palette, stops []string, cur int) {
-	t := c.Theme()
-	n := len(stops)
-	const pad = 9
-	sl := ui.SliderBase(c, &s.effortPos, 0, float64(n-1)).Step(1).Height(24).PaddingX(pad).Label("调整思考强度").Cursor(ui.CursorPointer)
-	if sl.Changed() {
-		if i := int(math.Round(s.effortPos)); i >= 0 && i < n && i != cur {
-			s.setEffort(stops[i])
-			cur = i
-		}
-	}
-	// Past the slider's own change, the position follows the setting
-	// (another model, or a save come back) unless a drag holds it.
-	held := sl.Pressed()
-	if !held {
-		s.effortPos = float64(cur)
-	}
-	target := float32(s.effortPos / float64(n-1))
-	hot := held || sl.Hovered() || sl.Focused()
-	sl.Draw(func(p *ui.Painter, r ui.Rect) {
-		// The fill glides to the stop, easing out over about 0.1s.
-		now := p.Now()
-		if dt := now.Sub(s.effortAt).Seconds(); dt < 1 {
-			s.effortAnim += (target - s.effortAnim) * float32(1-math.Exp(-dt/0.05))
-		} else {
-			s.effortAnim = target
-		}
-		s.effortAt = now
-		if d := target - s.effortAnim; d > 0.001 || d < -0.001 {
-			p.AnimationFrame()
-		} else {
-			s.effortAnim = target
-		}
-		h := float32(6)
-		if hot {
-			h = 8
-		}
-		x0, w, cy := r.X+pad, r.W-2*pad, r.Y+r.H/2
-		track := ui.Rect{X: x0 - h/2, Y: cy - h/2, W: w + h, H: h}
-		p.Fill(track, pal.hairline, h/2)
-		x := x0 + w*s.effortAnim
-		if x > x0 {
-			p.FillGradient(ui.Rect{X: track.X, Y: track.Y, W: x - track.X + h/2, H: h},
-				ui.LinearGradient{Angle: 90, From: t.Accent.Alpha(0.45), To: t.Accent, Oklab: true}, h/2)
-		}
-		// Faint notches mark the stops past the fill.
-		for i := 1; i < n-1; i++ {
-			xi := x0 + w*float32(i)/float32(n-1)
-			if xi > x+6 {
-				p.Fill(ui.Rect{X: xi - 1, Y: cy - 1, W: 2, H: 2}, t.TextMuted.Alpha(0.5), 1)
-			}
-		}
-		k := float32(14)
-		if held {
-			k = 17
-		} else if hot {
-			k = 16
-		}
-		knob := ui.Rect{X: x - k/2, Y: cy - k/2, W: k, H: k}
-		p.Shadow(knob, k/2, 0, 0, 10, 1, t.Accent.Alpha(0.45))
-		p.Shadow(knob, k/2, 0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.25))
-		p.Fill(knob, ui.RGBA(255, 255, 255, 1), k/2)
-	})
 }
 
 // threshold is how full the context gets before it is compacted, in

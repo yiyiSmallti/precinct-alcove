@@ -292,15 +292,23 @@ func (s *Shell) browserToggle(c *ui.Context, pal *palette, v *wsView) {
 	}
 }
 
-// browserPane is the workspace's page under its toolbar: back, forward,
-// reload, the address, and while a plugin acts on the page, a note that
-// the Agent is at work, which the page's accent ring repeats.
+// browserPane is the workspace's page, on a sheet of its own beside the
+// conversation's, under its toolbar: back, forward, reload, the address,
+// and while a plugin acts on the page, a note that the Agent is at work,
+// which the page's accent ring repeats.
 func (s *Shell) browserPane(c *ui.Context, pal *palette, v *wsView) {
 	t := c.Theme()
 	tab := s.browsers[v.ws.ID]
 	agent := tab != nil && time.Since(tab.agentAt) < agentShown
 	lately := tab != nil && time.Since(tab.agentAt) < agentLately
-	ui.Column(c).Grow(1.3).Basis(0).MinWidth(420).BorderWidth(0, 0, 0, 1).BorderColor(pal.hairline).Children(func() {
+	// The agent's hand on the page is the accent, or the blue of work in
+	// progress when the accent is the ink: a black ring would read as a
+	// frame, not as someone at work.
+	hand := t.Accent
+	if pal.inkAccent {
+		hand = pal.running
+	}
+	sheet(pal, ui.Column(c).Grow(1.3).Basis(0).MinWidth(420)).Children(func() {
 		r := ui.Row(c).Height(52).Shrink(0).Padding(0, 10).Gap(4).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline)
 		if c.TitleBar().Height > 0 {
 			r.DragWindow()
@@ -344,9 +352,9 @@ func (s *Shell) browserPane(c *ui.Context, pal *palette, v *wsView) {
 				}
 			case lately:
 				if agent {
-					ui.Row(c).Height(24).Padding(0, 10).Gap(6).AlignItems(ui.Center).Radius(12).Background(t.Accent.Alpha(0.14)).Shrink(0).Children(func() {
-						ui.Row(c).Size(7, 7).Radius(4).Background(t.Accent)
-						ui.Text(c, "Agent 正在操作").FontSize(12).FontWeight(600).TextColor(t.Accent)
+					ui.Row(c).Height(24).Padding(0, 10).Gap(6).AlignItems(ui.Center).Radius(12).Background(hand.Alpha(0.14)).Shrink(0).Children(func() {
+						ui.Row(c).Size(7, 7).Radius(4).Background(hand)
+						ui.Text(c, "Agent 正在操作").FontSize(12).FontWeight(600).TextColor(hand)
 					})
 				}
 				if pill(c, "接手", t.AccentText, t.Accent, "暂停 Agent 使用浏览器，由你来操作").Clicked() {
@@ -371,15 +379,19 @@ func (s *Shell) browserPane(c *ui.Context, pal *palette, v *wsView) {
 		// A thin bar under the toolbar while the page loads.
 		bar := ui.Row(c).Height(2).Shrink(0)
 		if tab != nil && tab.view.Page().IsLoading() {
-			bar.Background(t.Accent.Alpha(0.8))
+			bar.Background(hand.Alpha(0.8))
 		}
-		body := ui.Column(c).Grow(1).Padding(0)
+		// The page is a hole through the window, rounded only as it says:
+		// its foot as round as the sheet's, inside the ring.
+		body := ui.Column(c).Grow(1).Radius(0, 0, sheetR, sheetR)
+		inner := float32(sheetR)
 		if agent {
-			body.Border(2, t.Accent.Alpha(0.7))
+			body.Border(2, hand.Alpha(0.7))
+			inner = sheetR - 2
 		}
 		body.Children(func() {
 			if tab != nil {
-				ui.WebView(c, tab.view).Grow(1)
+				ui.WebView(c, tab.view).Grow(1).Radius(0, 0, inner, inner)
 			}
 		})
 	})

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"github.com/yiyiSmallti/precinct-alcove/internal/core/workspace"
 )
 
 //go:embed logo.png
@@ -21,35 +23,42 @@ var logo = func() *ui.Bitmap {
 	return b
 }()
 
-// sidebar is the left column: the app's name, a new task, what waits on
+// maxTreeTasks is how many tasks a workspace lists before 显示更多; tasks
+// that run or wait on the user, and the one shown, are always listed.
+const maxTreeTasks = 5
+
+// sidebar is the left pane: the wordmark and a new task, what waits on
 // you, the plugins' own entries (the market, their conversations) and the
-// assistants (plugins with a picture and a conversation view), the
-// project switcher over the project's tasks by when they last moved, 最近会话
-// (the tasks outside a project), and the way to plugins and settings.
+// assistants (plugins with a picture and a conversation view), every
+// workspace with its tasks as a tree, 最近会话 (the tasks outside a
+// project), and the way to plugins and settings.
 func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	t := c.Theme()
 	v := s.view(s.curWS)
-	top := float32(10)
-	if bar := c.TitleBar(); bar.Height > 0 {
-		ui.Row(c).Height(bar.Height).Shrink(0).DragWindow()
-		top = 2
+	if bar := c.TitleBar(); bar.Height > gutter {
+		// The window's buttons sit here.
+		ui.Row(c).Height(bar.Height - gutter).Shrink(0).DragWindow()
+	} else {
+		ui.Box(c).Height(6)
 	}
-	ui.Column(c).Padding(top, 10, 4).Gap(1).Children(func() {
-		ui.Row(c).Height(36).Padding(0, 6).Gap(9).AlignItems(ui.Center).DragWindow().Children(func() {
-			ui.Image(c, logo).Size(22, 22).Shrink(0)
-			ui.Text(c, "Alcove").FontSize(15).FontWeight(650).LetterSpacing(-0.2)
+	ui.Column(c).Padding(0, 10, 4).Gap(1).Children(func() {
+		ui.Row(c).Height(40).Padding(0, 6).Gap(10).AlignItems(ui.Center).DragWindow().Children(func() {
+			ui.Image(c, logo).Size(24, 24).Shrink(0)
+			ui.Text(c, "Alcove").Font(pal.display).FontSize(20).FontWeight(600).LetterSpacing(0.2)
 		})
-		ui.Box(c).Height(8)
-		if v != nil && navRow(c, pal, "new", icPlus, "新任务", s.page == pageWS+v.ws.ID && v.current == "") {
+		ui.Box(c).Height(4)
+		if v != nil && s.newTaskButton(c, pal) {
 			s.newTask(v.ws.ID)
 		}
+		ui.Box(c).Height(8)
 		n := s.waitingTotal()
 		if listRow(c, pal, "waiting", "等你处理", s.page == PageWaiting, func() {
-			ui.Icon(c, icInbox).Size(15, 15).TextColor(t.TextMuted)
-			ui.Text(c, "等你处理").FontSize(13).Grow(1)
+			ic := ui.Icon(c, icInbox).Size(15, 15).TextColor(t.TextMuted)
 			if n > 0 {
-				ui.Text(c, fmt.Sprint(n)).FontSize(11).Bold().TextColor(t.AccentText).Background(pal.waiting).Padding(0, 6).Radius(8)
+				ic.TextColor(pal.waiting)
 			}
+			ui.Text(c, "等你处理").FontSize(13).Grow(1)
+			countBadge(c, pal.waiting, n)
 		}) {
 			s.page = PageWaiting
 		}
@@ -83,27 +92,11 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, 10, 12).Gap(1).Children(func() {
-			pv := s.view(s.curProj)
-			s.workspaceSwitcher(c, pal, pv)
-			if pv != nil {
-				s.taskList(c, pal, pv)
-			}
-			if sv := s.view(s.scratchID); sv != nil {
-				ui.Box(c).Height(14)
-				sectionLabel(c, "最近会话")
-				recent := ordered(sv)
-				// With a project selected, 新任务 goes there: this is the way
-				// back to the default folder before it has a conversation.
-				if len(recent) == 0 && navRow(c, pal, "new-scratch", icPlus, "新会话", s.page == pageWS+s.scratchID && sv.current == "") {
-					s.newTask(s.scratchID)
-				}
-				for _, tk := range recent {
-					s.taskRow(c, pal, sv, tk)
-				}
-			}
+			s.workspaceTree(c, pal)
+			s.recentList(c, pal)
 		})
 	})
-	ui.Column(c).Padding(6, 10, 10).Gap(1).Children(func() {
+	ui.Column(c).Padding(6, 10, 10).Gap(1).BorderWidth(1, 0, 0, 0).BorderColor(pal.hairline).Children(func() {
 		plugins := s.page == PagePlugins || strings.HasPrefix(s.page, pagePlugin)
 		if navRow(c, pal, "plugins", icPuzzle, "插件", plugins) {
 			s.page = PagePlugins
@@ -114,161 +107,271 @@ func (s *Shell) sidebar(c *ui.Context, pal *palette) {
 	})
 }
 
-// workspaceSwitcher shows the project the sidebar lists the tasks of; a
-// click lists the others, adding one and removing this one. 最近会话's
-// workspace is not among them.
-func (s *Shell) workspaceSwitcher(c *ui.Context, pal *palette, v *wsView) {
+// newTaskButton is the sidebar's 新任务: a raised card, in the workspace
+// new tasks go to.
+func (s *Shell) newTaskButton(c *ui.Context, pal *palette) bool {
 	t := c.Theme()
-	name := "添加工作区"
-	if v != nil {
-		name = v.ws.Name
+	b := ui.Row(c).Key("new").Height(36).Padding(0, 10).Gap(9).AlignItems(ui.Center).Radius(10).Cursor(ui.CursorPointer).Focusable().Label("新任务").Transition(fade)
+	b.Background(pal.content.Alpha(0.72)).Border(1, pal.hairline).Shadow(0, 1, 2, 0, pal.shadow)
+	if b.Hovered() {
+		b.Background(pal.content).Shadow(0, 4, 12, -2, pal.shadow.Alpha(1.6))
 	}
-	anchor := ui.Row(c).Height(36).Padding(0, 6).Gap(9).AlignItems(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label("切换工作区")
-	if anchor.Hovered() || s.wsMenu {
-		anchor.Background(pal.hover)
+	b.Children(func() {
+		ui.Icon(c, icCompose).Size(15, 15).TextColor(t.Accent)
+		ui.Text(c, "新任务").FontSize(13).FontWeight(600).Grow(1)
+	})
+	return b.Clicked()
+}
+
+// workspaceTree lists the projects, each with its tasks under it while it
+// is open: a project opens on its own while it is the one tasks go to, or
+// while one of its tasks runs or waits on the user.
+func (s *Shell) workspaceTree(c *ui.Context, pal *palette) {
+	if sectionHead(c, pal, "工作区", icPlus, "添加工作区…") {
+		s.createWorkspace()
 	}
-	anchor.Children(func() {
-		ui.Column(c).Size(22, 22).Radius(6).Background(pal.avatar).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
-			if v == nil {
-				ui.Icon(c, icPlus).Size(13, 13).TextColor(t.TextMuted)
-			} else {
-				ui.Text(c, initial(name)).FontSize(11.5).Bold()
-			}
-		})
-		ui.Text(c, name).FontSize(13.5).Bold().SingleLine().Shrink(1).MinWidth(0)
-		if v != nil && v.ws.OwnerName() != "personal" {
+	ps := s.projects()
+	if len(ps) == 0 {
+		if navRow(c, pal, "add-ws", icFolder, "添加工作区…", false) {
+			s.createWorkspace()
+		}
+		return
+	}
+	for _, w := range ps {
+		if v := s.view(w.ID); v != nil {
+			s.workspaceRow(c, pal, v)
+		}
+	}
+}
+
+// activity counts a workspace's tasks at work and those waiting on the
+// user.
+func activity(v *wsView) (running, waiting int) {
+	for _, tk := range v.tasks {
+		switch {
+		case v.waiting(tk):
+			waiting++
+		case tk.session.Running() || tk.starting:
+			running++
+		}
+	}
+	return running, waiting
+}
+
+// treeOpen reports whether a workspace lists its tasks.
+func (s *Shell) treeOpen(v *wsView) bool {
+	if open, ok := s.wsOpen[v.ws.ID]; ok {
+		return open
+	}
+	running, waiting := activity(v)
+	return v.ws.ID == s.curProj || running+waiting > 0
+}
+
+// workspaceRow is one project and, open, its tasks. A click opens its home;
+// on its home, a click folds it.
+func (s *Shell) workspaceRow(c *ui.Context, pal *palette, v *wsView) {
+	t := c.Theme()
+	open := s.treeOpen(v)
+	home := s.page == pageWS+v.ws.ID && v.current == ""
+	running, waiting := activity(v)
+	if listRow(c, pal, "ws:"+v.ws.ID, v.ws.Name, home, func() {
+		archTile(c, pal, initial(v.ws.Name), 20, pal.avatar)
+		ui.Text(c, v.ws.Name).FontSize(13).FontWeight(550).SingleLine().Shrink(1).MinWidth(0)
+		if v.ws.OwnerName() != workspace.Personal {
 			tag(c, pal, "组织")
 		}
 		ui.Spacer(c)
-		ui.Icon(c, icUpDown).Size(14, 14).TextColor(t.TextMuted)
-	})
-	if anchor.Clicked() {
-		if v == nil {
-			s.createWorkspace()
-		} else {
-			s.wsMenu = !s.wsMenu
-		}
-	}
-	ui.Popover(c, anchor, &s.wsMenu, func() {
-		ui.Column(c).Width(240).Padding(4).Gap(1).Children(func() {
-			for _, w := range s.projects() {
-				w := w
-				sel := v != nil && w.ID == v.ws.ID
-				if listRow(c, pal, "ws:"+w.ID, w.Name, sel, func() {
-					ui.Column(c).Size(20, 20).Radius(5).Background(pal.avatar).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
-						ui.Text(c, initial(w.Name)).FontSize(10.5).Bold()
-					})
-					ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-						ui.Text(c, w.Name).FontSize(13).SingleLine()
-						sub := shortDir(w.Dir)
-						if w.Missing() {
-							sub = "文件夹不在了"
-						}
-						ui.Text(c, sub).FontSize(11).TextColor(pal.subtle).SingleLine()
-					})
-					if sel {
-						ui.Icon(c, icCheck).Size(14, 14).TextColor(t.TextMuted)
-					}
-				}) {
-					s.wsMenu = false
-					if vv := s.view(w.ID); vv != nil {
-						s.focus(w.ID)
-					}
-				}
-			}
-			ui.Box(c).Height(1).Background(pal.hairline).Margin(4, 6)
-			if navRow(c, pal, "add", icPlus, "添加工作区…", false) {
-				s.wsMenu = false
-				s.createWorkspace()
-			}
-			if v != nil {
-				label := "移除这个工作区"
-				if v.confirmRemove {
-					label = "再点一次确认移除（文件保留）"
-				}
-				if listRow(c, pal, "remove", label, false, func() {
-					ui.Icon(c, icX).Size(15, 15).TextColor(t.Danger)
-					ui.Text(c, label).FontSize(13).TextColor(t.Danger).SingleLine()
-				}) {
-					if v.confirmRemove {
-						v.confirmRemove, s.wsMenu = false, false
-						s.removeWorkspace(v.ws.ID)
-					} else {
-						v.confirmRemove = true
-					}
-				}
-			}
-		})
-	})
-	if !s.wsMenu && v != nil {
-		v.confirmRemove = false
-	}
-}
-
-// taskList lists the workspace's tasks: running or waiting first, then
-// today's, then older ones.
-func (s *Shell) taskList(c *ui.Context, pal *palette, v *wsView) {
-	var active, today, older []*taskView
-	start := startOfDay(time.Now())
-	for _, tk := range ordered(v) {
 		switch {
-		case tk.session.Running() || tk.starting || v.waiting(tk):
-			active = append(active, tk)
-		case tk.meta.UpdatedAt.After(start):
-			today = append(today, tk)
-		default:
-			older = append(older, tk)
+		case v.ws.Missing():
+			ui.Icon(c, icAlert).Size(13, 13).TextColor(t.Danger)
+		case waiting > 0:
+			countBadge(c, pal.waiting, waiting)
+		case running > 0 && !open:
+			ui.Spinner(c).Size(11, 11).TextColor(pal.running)
+		}
+		arrow := ui.Icon(c, icChevron).Size(12, 12).TextColor(pal.subtle)
+		target := float32(0)
+		if !open {
+			target = -90
+		}
+		arrow.Rotate(arrow.AnimateTo("turn", target, ui.Snappy))
+	}) {
+		if s.wsOpen == nil {
+			s.wsOpen = map[string]bool{}
+		}
+		if home {
+			s.wsOpen[v.ws.ID] = !open
+		} else {
+			s.wsOpen[v.ws.ID] = true
+			s.newTask(v.ws.ID)
 		}
 	}
-	if len(active)+len(today)+len(older) == 0 {
-		sectionLabel(c, "任务")
-		ui.Text(c, "还没有任务").FontSize(12.5).TextColor(pal.subtle).Padding(4, 8)
+	if !open {
 		return
 	}
-	group := func(title string, list []*taskView) {
+	ui.Column(c).Key("tasks:"+v.ws.ID).Gap(1).Padding(0, 0, 4).Children(func() {
+		if v.ws.Missing() {
+			ui.Text(c, "文件夹不在了："+shortDir(v.ws.Dir)).FontSize(12).TextColor(t.Danger).Padding(4, 8, 4, 38)
+		}
+		list := ordered(v)
 		if len(list) == 0 {
+			ui.Text(c, "还没有任务").FontSize(12).TextColor(pal.subtle).Padding(4, 8, 6, 38)
 			return
 		}
-		sectionLabel(c, title)
-		for _, tk := range list {
+		shown, more := s.treeTasks(v, list)
+		for _, tk := range shown {
 			s.taskRow(c, pal, v, tk)
 		}
-	}
-	group("进行中", active)
-	group("今天", today)
-	group("更早", older)
+		switch {
+		case more > 0:
+			if moreRow(c, pal, "more:"+v.ws.ID, fmt.Sprintf("显示更多（%d）", more)) {
+				s.showAll(v.ws.ID, true)
+			}
+		case s.wsAll[v.ws.ID] && len(list) > maxTreeTasks:
+			if moreRow(c, pal, "less:"+v.ws.ID, "收起") {
+				s.showAll(v.ws.ID, false)
+			}
+		}
+	})
 }
 
+func (s *Shell) showAll(id string, all bool) {
+	if s.wsAll == nil {
+		s.wsAll = map[string]bool{}
+	}
+	s.wsAll[id] = all
+}
+
+// treeTasks picks the tasks a workspace lists: those at work or waiting on
+// the user first, then the most recent, up to maxTreeTasks unless all are
+// asked for; the task shown is always among them. more is how many are
+// left out.
+func (s *Shell) treeTasks(v *wsView, list []*taskView) (shown []*taskView, more int) {
+	var active, rest []*taskView
+	for _, tk := range list {
+		if tk.session.Running() || tk.starting || v.waiting(tk) {
+			active = append(active, tk)
+		} else {
+			rest = append(rest, tk)
+		}
+	}
+	shown = active
+	for _, tk := range rest {
+		if s.wsAll[v.ws.ID] || len(shown) < maxTreeTasks || tk.meta.ID == v.current && s.page == pageWS+v.ws.ID {
+			shown = append(shown, tk)
+		} else {
+			more++
+		}
+	}
+	return shown, more
+}
+
+// moreRow is a quiet row that unfolds or folds a list.
+func moreRow(c *ui.Context, pal *palette, key, label string) bool {
+	r := ui.Row(c).Key(key).Height(26).Padding(0, 8, 0, 38).AlignItems(ui.Center).Radius(8).Cursor(ui.CursorPointer).Focusable().Label(label).Transition(fade)
+	col := pal.subtle
+	if r.Hovered() {
+		r.Background(pal.hover)
+		col = c.Theme().TextMuted
+	}
+	r.Children(func() { ui.Text(c, label).FontSize(12).TextColor(col) })
+	return r.Clicked()
+}
+
+// recentList is 最近会话: the conversations outside a project, in the
+// default folder.
+func (s *Shell) recentList(c *ui.Context, pal *palette) {
+	sv := s.view(s.scratchID)
+	if sv == nil {
+		return
+	}
+	recent := ordered(sv)
+	ui.Box(c).Height(8)
+	action := ""
+	if len(recent) > 0 {
+		action = "新会话"
+	}
+	if sectionHead(c, pal, "最近会话", icCompose, action) {
+		s.newTask(s.scratchID)
+	}
+	// With a project chosen, 新任务 goes there: this is the way back to the
+	// default folder before it has a conversation.
+	if len(recent) == 0 {
+		if navRow(c, pal, "new-scratch", icCompose, "新会话", s.page == pageWS+s.scratchID && sv.current == "") {
+			s.newTask(s.scratchID)
+		}
+		return
+	}
+	shown, more := s.treeTasks(sv, recent)
+	for _, tk := range shown {
+		s.taskRow(c, pal, sv, tk)
+	}
+	switch {
+	case more > 0:
+		if moreRow(c, pal, "more:"+sv.ws.ID, fmt.Sprintf("显示更多（%d）", more)) {
+			s.showAll(sv.ws.ID, true)
+		}
+	case s.wsAll[sv.ws.ID] && len(recent) > maxTreeTasks:
+		if moreRow(c, pal, "less:"+sv.ws.ID, "收起") {
+			s.showAll(sv.ws.ID, false)
+		}
+	}
+}
+
+// taskRow is one task in the tree: how it is going, its title, and when it
+// last moved (or that it waits on the user).
 func (s *Shell) taskRow(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
+	t := c.Theme()
 	sel := s.page == pageWS+v.ws.ID && v.current == tk.meta.ID
 	title := taskTitle(tk)
 	waiting := v.waiting(tk)
 	running := tk.session.Running() || tk.starting
-	if listRow(c, pal, tk.meta.ID, title, sel, func() {
-		ui.Row(c).Width(14).Justify(ui.Center).Shrink(0).Children(func() {
-			switch {
-			case waiting:
-				dot(c, pal.waiting)
-			case running:
-				ui.Spinner(c).Size(12, 12).TextColor(pal.running)
-			case tk.meta.Source != "" && s.avatars[tk.meta.Source] != nil && tk.meta.Source != v.ws.OwnerName():
-				avatar(c, s.avatars[tk.meta.Source], 14)
-			case tk.meta.Source != "":
-				ui.Icon(c, icCloud).Size(13, 13).TextColor(pal.subtle)
-			default:
-				ui.Icon(c, icChat).Size(13, 13).TextColor(pal.subtle)
-			}
-		})
-		ui.Text(c, title).FontSize(13).SingleLine().Grow(1).Shrink(1).MinWidth(0)
+	r := ui.Row(c).Key(tk.meta.ID).Height(30).Padding(0, 8, 0, 18).Gap(8).AlignItems(ui.Center).Radius(8).Cursor(ui.CursorPointer).Focusable().Label(title).Transition(fade)
+	switch {
+	case sel:
+		r.Background(pal.selected)
+	case r.Hovered():
+		r.Background(pal.hover)
+	}
+	r.Children(func() {
+		s.taskGlyph(c, pal, v, tk)
+		txt := ui.Text(c, title).FontSize(13).SingleLine().Grow(1).Shrink(1).MinWidth(0)
+		if !sel {
+			txt.TextColor(t.Text.Alpha(0.86))
+		}
 		switch {
 		case waiting:
-			ui.Text(c, "待确认").FontSize(11).TextColor(pal.waiting).Shrink(0)
+			ui.Text(c, "待"+v.waitWord(tk)).FontSize(11).FontWeight(500).TextColor(pal.waiting).Shrink(0)
+		case running:
 		default:
-			ui.Text(c, when(tk.meta.UpdatedAt)).FontSize(11).TextColor(pal.subtle).Shrink(0)
+			ui.Text(c, when(tk.meta.UpdatedAt)).FontSize(11).FontFeatures("tnum").TextColor(pal.subtle).Shrink(0)
 		}
-	}) {
+	})
+	if r.Clicked() {
 		s.openTask(v, tk.meta.ID)
 	}
+}
+
+// taskGlyph is a task's state before its title: waiting on the user,
+// running, failed, started by a plugin or the cloud bot, or at rest.
+func (s *Shell) taskGlyph(c *ui.Context, pal *palette, v *wsView, tk *taskView) {
+	short := endedShort(tk.session)
+	ui.Row(c).Width(12).Justify(ui.Center).Shrink(0).Children(func() {
+		switch {
+		case v.waiting(tk):
+			dot(c, pal.waiting)
+		case tk.session.Running() || tk.starting:
+			ui.Spinner(c).Size(11, 11).TextColor(pal.running)
+		case tk.err != "" || short != nil && short.IsError:
+			dot(c, c.Theme().Danger)
+		case tk.meta.Source != "" && s.avatars[tk.meta.Source] != nil && tk.meta.Source != v.ws.OwnerName():
+			avatar(c, s.avatars[tk.meta.Source], 14)
+		case tk.meta.Source != "":
+			ui.Icon(c, icCloud).Size(12, 12).TextColor(pal.subtle)
+		default:
+			ui.Box(c).Size(5, 5).Radius(2.5).Background(pal.subtle.Alpha(0.6))
+		}
+	})
 }
 
 func initial(name string) string {

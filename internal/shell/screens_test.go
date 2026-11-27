@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,32 +59,70 @@ func TestScreens(t *testing.T) {
 		v.current = "chat-report"
 		s.mu.Unlock()
 		shot("task")
+		// The commands that finished, the file read and the edit, opened; then
+		// the top of the conversation, where they are.
 		s.mu.Lock()
-		v.tasks["chat-report"].open[v.tasks["chat-report"].session.Entries[3].Key] = true
+		tk := v.tasks["chat-report"]
+		for _, e := range tk.session.Entries {
+			if e.ToolName == "edit" || e.ToolName == "read" || e.ToolName == "bash" && !e.Busy() {
+				tk.open[e.Key] = true
+			}
+		}
 		s.mu.Unlock()
 		shot("task-open")
 		s.mu.Lock()
-		s.panels.tab = tabFiles
-		s.panels.open = map[string]bool{filepath.Join(v.ws.Dir, "data"): true}
+		tk.scroll.Y = 0
 		s.mu.Unlock()
-		shot("files")
-		time.Sleep(100 * time.Millisecond)
-		shot("files")
+		shot("task-open-top")
 		s.mu.Lock()
-		s.panels.tab = tabWorkspace
+		tk.scroll.Y = math.MaxFloat32
+		tk.open = map[string]bool{}
+		s.filesMenu = true
 		s.mu.Unlock()
-		shot("workspace")
+		shot("task-files")
+		// The browser on its own sheet, in place of the alcove.
 		s.mu.Lock()
-		s.panels.tab = tabProgress
+		s.filesMenu = false
+		v.browsing = true
+		s.mu.Unlock()
+		shot("task-browser")
+		s.mu.Lock()
+		v.browsing = false
 		v.current = ""
 		s.mu.Unlock()
-		shot("new")
+		shot("home")
 		s.mu.Lock()
-		s.wsMenu = true
+		s.panels.open = map[string]bool{filepath.Join(v.ws.Dir, "data"): true}
 		s.mu.Unlock()
-		shot("switcher")
+		shot("home-files")
+		time.Sleep(100 * time.Millisecond)
+		shot("home-files")
 		s.mu.Lock()
-		s.wsMenu = false
+		s.panels.hidden = true
+		s.mu.Unlock()
+		shot("home-band-hidden")
+		// A narrow window: the alcove steps aside for the sheet.
+		s.mu.Lock()
+		s.panels.hidden = false
+		v.current = "chat-report"
+		s.mu.Unlock()
+		tt.SetSize(1000, 720)
+		shot("narrow-task")
+		tt.SetSize(1280, 800)
+		// A turn that ended in an error: the notice and why, in full.
+		s.mu.Lock()
+		v.current = "chat-old2"
+		s.mu.Unlock()
+		shot("task-notice")
+		s.mu.Lock()
+		v.current = "chat-old1"
+		s.mu.Unlock()
+		shot("task-stopped")
+		s.mu.Lock()
+		v.current = ""
+		s.mu.Unlock()
+		s.mu.Lock()
+		s.panels.hidden = false
 		s.page = PageSettings
 		s.mu.Unlock()
 		shot("settings")
@@ -107,6 +146,42 @@ func TestScreens(t *testing.T) {
 			s.mu.Unlock()
 			shot("tone-" + tn)
 		}
+		// The default tone and accent without a painting: the window in
+		// black and white, on each kind of page.
+		s.mu.Lock()
+		s.settings.Appearance = app.Appearance{Wallpaper: noWallpaper}
+		for _, e := range tk.session.Entries {
+			if e.ToolName == "edit" || e.ToolName == "read" {
+				tk.open[e.Key] = true
+			}
+		}
+		tk.scroll.Y = 0
+		s.mu.Unlock()
+		shot("bw-task-open")
+		s.mu.Lock()
+		tk.open, tk.scroll.Y = map[string]bool{}, math.MaxFloat32
+		v.current = "chat-today"
+		s.mu.Unlock()
+		shot("bw-done")
+		s.mu.Lock()
+		v.current = ""
+		s.mu.Unlock()
+		shot("bw-home")
+		s.mu.Lock()
+		s.page = PageWaiting
+		s.mu.Unlock()
+		shot("bw-waiting")
+		s.mu.Lock()
+		s.page, s.prefs.tab = PageSettings, tabLook
+		s.mu.Unlock()
+		shot("bw-settings")
+		s.mu.Lock()
+		s.prefs.tab = tabModel
+		s.mu.Unlock()
+		shot("bw-model")
+		s.mu.Lock()
+		s.page, v.current = pageWS+v.ws.ID, "chat-report"
+		s.mu.Unlock()
 		// Each theme's painting on the new-task page, under a task and
 		// behind its own settings.
 		for _, sc := range scenes {
@@ -171,6 +246,26 @@ func TestScreens(t *testing.T) {
 		v.tasks["chat-today"].err = ""
 		s.page, v.current = pageWS+v.ws.ID, "chat-report"
 		s.mu.Unlock()
+		// The agent's questions, on the task at work.
+		var asks []alrt.Question
+		if err := json.Unmarshal([]byte(`[
+			{"id":"scope","header":"范围","question":"README 里的哪些部分要分析？","options":[
+				{"label":"全部","description":"从头到尾通读，给出整体评价"},
+				{"label":"只看安装和使用","description":"跳过背景介绍和贡献指南"}]},
+			{"id":"out","question":"结果写到哪里？","multiSelect":true,"options":[
+				{"label":"对话里"},{"label":"notes/readme-review.md","description":"新建这个文件"}]}]`), &asks); err != nil {
+			t.Fatal(err)
+		}
+		qctx, cancelQ := context.WithCancel(context.Background())
+		go s.AnswerQuestions(qctx, "rt1", alrt.QuestionRequest{RequestID: "q1", SessionID: "task-c", Questions: asks})
+		until(t, tt, s, func() bool { return len(v.questions) == 1 })
+		s.mu.Lock()
+		v.current = "task-c"
+		v.questions[0].multi[1][0] = true
+		s.mu.Unlock()
+		shot("question")
+		cancelQ()
+		until(t, tt, s, func() bool { return len(v.questions) == 0 })
 		s.mu.Lock()
 		s.page, s.prefs.tab, s.prefs.picking = PageSettings, tabLook, true
 		s.prefs.custom = ui.Hex("#7c3aed")
@@ -181,6 +276,10 @@ func TestScreens(t *testing.T) {
 		s.prefs.picking = false
 		s.mu.Unlock()
 		shot("settings-look")
+		// The looks of the effort control, at the foot of 外观.
+		tt.Scroll(700, 500, 0, 4000)
+		shot("settings-look-effort")
+		tt.Scroll(700, 500, 0, -4000)
 		s.mu.Lock()
 		s.prefs.tab = tabOther
 		s.mu.Unlock()
@@ -222,8 +321,24 @@ func TestScreens(t *testing.T) {
 		s.runMenu = true
 		s.mu.Unlock()
 		shot("new-run")
+		// DeepSeek's own route takes a reasoning effort: the slider.
+		s.mu.Lock()
+		s.settings.DefaultCredential = "c1"
+		s.mu.Unlock()
+		shot("new-run-effort")
+		// The control's other looks (外观 › 思考强度).
+		for _, look := range []string{"stream", "embers"} {
+			s.mu.Lock()
+			s.settings.Appearance.EffortStyle = look
+			s.mu.Unlock()
+			shot("new-run-effort-" + look)
+		}
+		s.mu.Lock()
+		s.settings.Appearance.EffortStyle = ""
+		s.mu.Unlock()
 		// A task on the personal credentials that took some context.
 		s.mu.Lock()
+		s.settings.DefaultCredential = "c2"
 		s.runMenu = false
 		s.page = pageWS + v.ws.ID
 		owner := v.ws.Owner
@@ -482,9 +597,23 @@ func demo(t *testing.T, s *Shell) *wsView {
 
 	d := &ev{sid: "chat-today"}
 	d.user(s, "把会议纪要整理成待办清单")
-	d.say(s, 1, 1, "整理好了：5 条待办，写在 notes/todo.md。")
+	d.tool(s, "d1", "read", `{"file_path":"notes/meeting.md"}`, "# 周会纪要\n- 周五前交 Q3 报告\n- 下周一评审报销流程", true)
+	d.tool(s, "d2", "write", `{"file_path":"notes/todo.md","content":"- [ ] 周五前交 Q3 报告\n- [ ] 下周一评审报销流程"}`, "Created file", true)
+	d.say(s, 1, 1, "整理好了：5 条待办，写在 [notes/todo.md](notes/todo.md)。")
 
-	go s.Approve(context.Background(), "rt1", alrt.ApprovalRequest{RequestID: "r1", SessionID: "chat-report", ToolName: "bash",
+	f := &ev{sid: "chat-old2"}
+	f.user(s, "修一下 build.sh：在 macOS 上找不到 dist 目录")
+	f.tool(s, "f1", "bash", `{"command":"./build.sh"}`, "readlink: illegal option -- f\nusage: readlink [-n] [file ...]\nexit status 1", true)
+	// As dsh gives them: a failure, and a stop of the user's.
+	f.emit(s, "turn/end", map[string]any{"turn": 1, "reason": map[string]any{"kind": "error",
+		"error": map[string]any{"message": "529 overloaded: the model provider is busy, retried 3 times", "code": "OVERLOADED", "status": 529}}})
+	o := &ev{sid: "chat-old1"}
+	o.user(s, "把 9 月的发票按部门汇总")
+	o.tool(s, "o1", "glob", `{"pattern":"invoices/2026-09/*.pdf"}`, "42 files", true)
+	o.say(s, 1, 1, "找到 42 张发票，先逐张读出金额和部门。")
+	o.emit(s, "turn/end", map[string]any{"turn": 1, "reason": map[string]any{"kind": "aborted", "reason": map[string]string{"kind": "user"}}})
+
+	go s.Approve(context.Background(), "rt1", alrt.ApprovalRequest{RequestID: "r1", SessionID: "chat-report", ToolName: "bash", CallID: "c4",
 		Reason: "write outside", DisplayReason: alrt.LocalText{"zh": "命令要写工作区外的 ~/Desktop/Q3.docx"}})
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		s.mu.Lock()

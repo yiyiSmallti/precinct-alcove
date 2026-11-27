@@ -39,32 +39,67 @@ var zooms = []struct {
 	z     float32
 }{{"小", 0.9}, {"标准", 1}, {"大", 1.1}, {"特大", 1.25}}
 
+// prefTabs are the settings page's tabs, with the line under each one's
+// title.
+var prefTabs = []struct{ label, about string }{
+	{"外观", "画、色调、主题色、字体、缩放，以及思考强度控件的样式。"},
+	{"模型", "模型服务与密钥、任务用的模型，以及上下文压缩。"},
+	{"运行时", "正在运行的运行时，以及它们在做什么。"},
+	{"通用", "默认文件夹、更新与诊断。"},
+}
+
 func (s *Shell) settingsView(c *ui.Context, pal *palette) {
 	topBar(c, pal, func() {
+		ui.Icon(c, icGear).Size(15, 15).TextColor(c.Theme().TextMuted)
 		ui.Text(c, "设置").FontSize(14).Bold().Shrink(0)
-		ui.Row(c).Gap(2).AlignItems(ui.Center).Padding(0, 0, 0, 16).Children(func() {
-			for i, label := range []string{"外观", "模型", "运行时", "通用"} {
-				if tabButton(c, pal, label, s.prefs.tab == i) {
+		ui.Spacer(c)
+		// The tabs as one segmented control: a track, the chosen one raised
+		// on it.
+		ui.Row(c).Padding(3).Gap(2).Radius(10).Background(pal.code).Border(1, pal.hairline).Children(func() {
+			for i, tab := range prefTabs {
+				if tabButton(c, pal, tab.label, s.prefs.tab == i) {
 					s.prefs.tab = i
 				}
 			}
 		})
 		ui.Spacer(c)
+		ui.Box(c).Width(60)
 	})
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(28, 40, 40).Gap(16).MaxWidth(720).Children(func() {
-			switch s.prefs.tab {
-			case tabLook:
-				s.appearanceSettings(c, pal)
-			case tabModel:
-				s.modelSettings(c, pal)
-			case tabRuntimes:
-				s.runtimeSettings(c, pal)
-			default:
-				s.otherSettings(c, pal)
-			}
-		})
+	tab := prefTabs[min(max(s.prefs.tab, 0), len(prefTabs)-1)]
+	pageColumn(c, pal, tab.label, tab.about, func() {
+		switch s.prefs.tab {
+		case tabLook:
+			s.appearanceSettings(c, pal)
+		case tabModel:
+			s.modelSettings(c, pal)
+		case tabRuntimes:
+			s.runtimeSettings(c, pal)
+		default:
+			s.otherSettings(c, pal)
+		}
 	})
+}
+
+// tabButton is one segment of a segmented control: raised on the track
+// when chosen. It reports a click.
+func tabButton(c *ui.Context, pal *palette, label string, sel bool) bool {
+	t := c.Theme()
+	r := ui.Row(c).Key("tab:"+label).Height(26).Padding(0, 14).AlignItems(ui.Center).Radius(7).Cursor(ui.CursorPointer).Focusable().Label(label).Transition(fade)
+	switch {
+	case sel:
+		r.Background(pal.content).Shadow(0, 1, 3, 0, pal.shadow.Alpha(2.5)).Shadow(0, 0, 0, 0.5, pal.shadow.Alpha(2))
+	case r.Hovered():
+		r.Background(pal.hover)
+	}
+	r.Children(func() {
+		txt := ui.Text(c, label).FontSize(12.5)
+		if sel {
+			txt.FontWeight(600)
+		} else {
+			txt.TextColor(t.TextMuted)
+		}
+	})
+	return r.Clicked()
 }
 
 // setAppearance shows a new look at once and saves it.
@@ -227,6 +262,26 @@ func (s *Shell) appearanceSettings(c *ui.Context, pal *palette) {
 		})
 	})
 
+	settingsGroup(c, pal, "思考强度", func() {
+		// The looks side by side and at work, wider than a row's control
+		// leaves room for.
+		ui.Column(c).Padding(14, 16).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
+			ui.Column(c).Gap(3).Children(func() {
+				ui.Text(c, "样式").FontSize(13)
+				ui.Text(c, "点开输入框上的模型按钮后，调思考强度用的控件。档位越高粒子越多、动得越快；系统打开「减少动态效果」时粒子静止。").FontSize(11.5).TextColor(t.TextMuted)
+			})
+			ui.Row(c).Gap(12).Wrap().Children(func() {
+				cur := effortStyleOf(ap)
+				for _, st := range effortStyles {
+					if effortStyleCard(c, pal, st, cur == st.id) && cur != st.id {
+						ap.EffortStyle = st.id
+						s.setAppearance(ap)
+					}
+				}
+			})
+		})
+	})
+
 	if ap != (app.Appearance{}) {
 		ui.Row(c).Children(func() {
 			if ui.Button(c, "恢复默认外观").Clicked() {
@@ -271,7 +326,7 @@ func settingsGroup(c *ui.Context, pal *palette, title string, rows func()) {
 		}
 		// The rows' bottom hairlines would double the box's own at the
 		// end: the last one is pushed under the clipped edge.
-		ui.Column(c).Radius(10).Border(1, pal.hairline).Background(pal.content).Clip().Children(func() {
+		ui.Column(c).Radius(12).Border(1, pal.hairline).Background(pal.content).Clip().Children(func() {
 			ui.Column(c).Margin(0, 0, -1, 0).Children(rows)
 		})
 	})
@@ -324,27 +379,41 @@ func modeCard(c *ui.Context, pal *palette, ap app.Appearance, mode, label string
 	return col.Clicked()
 }
 
-// miniWindow draws a window of the look in w×66: a sidebar with rows, a
-// message, and the composer.
+// miniWindow draws a window of the look in w×66 without a painting: the
+// sidebar's rows on the window's ground, and the page on its sheet.
 func miniWindow(c *ui.Context, l *look, w float32) {
+	p := &l.pal
+	ui.Row(c).Size(w, 66).Shrink(0).Background(p.canvas).Padding(4).Gap(4).Children(func() {
+		miniSidebar(c, l, ui.Column(c).Width(24))
+		miniSheet(c, l, ui.Column(c).Grow(1).Border(0.5, p.hairline))
+	})
+}
+
+// miniSidebar is a window picture's sidebar in col: its rows, the chosen
+// one lit.
+func miniSidebar(c *ui.Context, l *look, col ui.Element) {
+	th := l.theme
+	col.Padding(6, 3).Gap(4).Children(func() {
+		ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.55))
+		ui.Box(c).Height(6).Radius(2).Background(l.pal.selected)
+		ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.35))
+		ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.35))
+	})
+}
+
+// miniSheet is a window picture's page in col, on paper: the user's
+// message, a reply, and the composer with its accent.
+func miniSheet(c *ui.Context, l *look, col ui.Element) {
 	p, th := &l.pal, l.theme
-	ui.Row(c).Size(w, 66).Shrink(0).Background(p.content).Children(func() {
-		ui.Column(c).Width(30).Padding(8, 5).Gap(4).Background(p.sidebar).Children(func() {
-			ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.5))
-			ui.Box(c).Height(6).Radius(2).Background(p.selected)
-			ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.35))
-			ui.Box(c).Height(4).Radius(2).Background(th.TextMuted.Alpha(0.35))
+	col.Radius(4).Background(p.content).Shadow(0, 1, 3, 0, p.shadow.Alpha(2)).Padding(6, 5).Gap(4).Children(func() {
+		ui.Row(c).Justify(ui.End).Children(func() {
+			ui.Box(c).Size(26, 6).Radius(3).Background(p.userMsg)
 		})
-		ui.Column(c).Grow(1).Padding(8, 7).Gap(4).Children(func() {
-			ui.Row(c).Justify(ui.End).Children(func() {
-				ui.Box(c).Size(36, 7).Radius(3.5).Background(p.userMsg)
-			})
-			ui.Box(c).Size(52, 4).Radius(2).Background(th.Text.Alpha(0.55))
-			ui.Box(c).Size(40, 4).Radius(2).Background(th.Text.Alpha(0.35))
-			ui.Spacer(c)
-			ui.Row(c).Height(12).Radius(4).Border(1, th.Border).Background(th.Background).Justify(ui.End).AlignItems(ui.Center).Padding(0, 2).Children(func() {
-				ui.Box(c).Size(7, 7).Radius(3.5).Background(th.Accent)
-			})
+		ui.Box(c).Width(34).Height(3.5).Radius(1.75).Background(th.Text.Alpha(0.5))
+		ui.Box(c).Width(26).Height(3.5).Radius(1.75).Background(th.Text.Alpha(0.3))
+		ui.Spacer(c)
+		ui.Row(c).Height(10).Radius(4).Border(0.5, th.Border).Background(p.content).Justify(ui.End).AlignItems(ui.Center).Padding(0, 2).Children(func() {
+			ui.Box(c).Size(6, 6).Radius(3).Background(th.Accent)
 		})
 	})
 }

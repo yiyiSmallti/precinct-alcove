@@ -1,75 +1,101 @@
 package shell
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-
-	alrt "github.com/yiyiSmallti/precinct-alcove/internal/runtime"
 )
 
-// View builds the window: the sidebar of the workspace's tasks, and the
-// page it chose (a task, the new-task page, plugins or settings).
+// View builds the window: the theme's painting filling it, the sidebar on
+// glass over the painting, the page chosen there laid on a sheet of paper,
+// and beside it the alcove where Index stands (a task, a workspace's home,
+// what waits on the user, a conversation). Without a painting the window's
+// ground (or its material) takes its place.
 func (s *Shell) View(c *ui.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pal := useTheme(c, s.settings.Appearance, s.customWallpaper())
-	t := c.Theme()
-	window := ui.Row(c).Fill().AlignItems(ui.Stretch)
-	if pal.wall != nil {
-		// Absolute children paint after those in flow, in order: the
-		// frosted painting first, then the window over it.
-		ground := ui.Box(c).Fill()
-		pal.win = ground.LayoutBounds()
-		ground.Children(func() {
-			paint(c, pal.wall.frost)
-			s.window(c, pal, t, window.Absolute().Top(0).Left(0).Right(0).Bottom(0))
-		})
-		return
+	root := ui.Box(c).Fill()
+	pal.win = root.LayoutBounds()
+	if pal.win.W == 0 {
+		// The panes size themselves from the window: draw again once known.
+		c.Invalidate()
 	}
-	s.window(c, pal, t, window)
+	if pal.wall == nil && !pal.vibrant {
+		root.Background(pal.canvas)
+	}
+	// Absolute children paint after those in flow, in order: the painting
+	// first, then the window over it.
+	root.Children(func() {
+		if pal.wall != nil {
+			paint(c, pal.wall.sharp)
+		}
+		s.window(c, pal, ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0))
+	})
 }
 
-// window is the sidebar and the chosen page side by side.
-func (s *Shell) window(c *ui.Context, pal *palette, t *ui.Theme, row ui.Element) {
-	row.Children(func() {
-		side := ui.Column(c).Width(248).BorderWidth(0, 1, 0, 0).BorderColor(pal.hairline).Shrink(0)
-		sideGround(c, pal, side).Children(func() {
-			s.sidebar(c, pal)
-		})
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Background(pal.ground()).Children(func() {
-			if s.notice != "" {
-				ui.Row(c).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.hairline).Children(func() {
-					ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Danger)
-					ui.Text(c, s.notice).FontSize(13).TextColor(t.Danger).Grow(1).Selectable()
-					if ui.Button(c, "关闭").Clicked() {
-						s.notice = ""
-					}
-				})
+// window is the sidebar and the chosen page side by side, apart by the
+// gutters that show the painting.
+func (s *Shell) window(c *ui.Context, pal *palette, row ui.Element) {
+	row.Padding(gutter).Gap(gutter).AlignItems(ui.Stretch).Children(func() {
+		side := ui.Column(c).Width(sideW).Shrink(0)
+		glassPane(pal, side).Children(func() { s.sidebar(c, pal) })
+		switch {
+		case strings.HasPrefix(s.page, pageWS):
+			if v := s.view(strings.TrimPrefix(s.page, pageWS)); v != nil {
+				s.workspaceView(c, pal, v)
+				return
 			}
-			switch {
-			case strings.HasPrefix(s.page, pageWS):
-				if v := s.view(strings.TrimPrefix(s.page, pageWS)); v != nil {
-					s.workspaceView(c, pal, v)
-					return
-				}
-				s.welcomeView(c)
-			case s.page == PageWaiting:
-				s.waitingView(c, pal)
-			case s.page == PagePlugins:
-				s.pluginsView(c, pal)
-			case strings.HasPrefix(s.page, pagePlugin):
-				s.pluginView(c, pal, strings.TrimPrefix(s.page, pagePlugin))
-			case strings.HasPrefix(s.page, pageView):
-				plugin, id, _ := strings.Cut(strings.TrimPrefix(s.page, pageView), "#")
-				s.pluginPageView(c, pal, plugin, id)
-			case strings.HasPrefix(s.page, pageInbox):
-				s.inboxView(c, pal, strings.TrimPrefix(s.page, pageInbox))
-			default:
-				s.settingsView(c, pal)
+			s.onSheet(c, pal, func() { s.welcomeView(c) })
+		case s.page == PageWaiting:
+			s.onSheet(c, pal, func() { s.waitingView(c, pal) })
+			m, now := moodIdle, "没有要你处理的事"
+			if n := s.waitingTotal(); n > 0 {
+				m, now = moodAsking, fmt.Sprintf("有 %d 件事等你处理", n)
 			}
-		})
+			s.band(c, pal, m, "waiting", moodNames[m], now)
+		case s.page == PagePlugins:
+			s.onSheet(c, pal, func() { s.pluginsView(c, pal) })
+		case strings.HasPrefix(s.page, pagePlugin):
+			s.onSheet(c, pal, func() { s.pluginView(c, pal, strings.TrimPrefix(s.page, pagePlugin)) })
+		case strings.HasPrefix(s.page, pageView):
+			plugin, id, _ := strings.Cut(strings.TrimPrefix(s.page, pageView), "#")
+			s.onSheet(c, pal, func() { s.pluginPageView(c, pal, plugin, id) })
+		case strings.HasPrefix(s.page, pageInbox):
+			name := strings.TrimPrefix(s.page, pageInbox)
+			s.onSheet(c, pal, func() { s.inboxView(c, pal, name) })
+			s.band(c, pal, moodIdle, "inbox:"+name, moodNames[moodIdle], "陪你和「"+s.pluginTitle(name)+"」聊天")
+		default:
+			s.onSheet(c, pal, func() { s.settingsView(c, pal) })
+		}
+	})
+}
+
+// onSheet lays a page on the sheet, under the window's notice when there is
+// one.
+func (s *Shell) onSheet(c *ui.Context, pal *palette, page func()) {
+	col := ui.Column(c).Grow(1).Basis(0).MinWidth(0)
+	sheet(pal, col).Children(func() {
+		s.noticeBar(c, pal)
+		page()
+	})
+}
+
+// noticeBar is the window's one-line notice, an error most often, over the
+// page until closed.
+func (s *Shell) noticeBar(c *ui.Context, pal *palette) {
+	if s.notice == "" {
+		return
+	}
+	t := c.Theme()
+	ui.Row(c).Padding(8, 12, 8, 16).Gap(8).AlignItems(ui.Center).Background(t.Danger.Alpha(0.08)).BorderWidth(0, 0, 1, 0).BorderColor(t.Danger.Alpha(0.16)).Children(func() {
+		ui.Icon(c, icAlert).Size(15, 15).TextColor(t.Danger)
+		ui.Text(c, s.notice).FontSize(13).TextColor(t.Danger).Grow(1).Selectable()
+		if ui.Button(c, "关闭").Clicked() {
+			s.notice = ""
+		}
 	})
 }
 
@@ -87,85 +113,6 @@ func (s *Shell) welcomeView(c *ui.Context) {
 				s.createWorkspace()
 			}
 		})
-	})
-}
-
-func (s *Shell) approvalCard(c *ui.Context, pal *palette, a *approval) {
-	t := c.Theme()
-	ui.Column(c).Gap(8).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			dot(c, pal.waiting)
-			ui.Text(c, "需要你确认").FontSize(13).Bold()
-			ui.Text(c, toolVerb(a.req.ToolName)).FontSize(13).TextColor(t.TextMuted)
-		})
-		reason := a.req.DisplayReason.Text(s.Lang)
-		if reason == "" {
-			reason = a.req.Reason
-		}
-		ui.Text(c, reason).FontSize(13.5).Selectable()
-		ui.Row(c).Gap(8).Padding(4, 0, 0).Children(func() {
-			if ui.PrimaryButton(c, "允许这一次").Clicked() {
-				answer(a, alrt.AllowedOnce)
-			}
-			if ui.Button(c, "拒绝").Clicked() {
-				answer(a, alrt.Rejected)
-			}
-		})
-	})
-}
-
-func answer(a *approval, outcome string) {
-	select {
-	case a.answer <- outcome:
-	default: // already answered
-	}
-}
-
-func questionCard(c *ui.Context, pal *palette, q *question) {
-	t := c.Theme()
-	ui.Column(c).Gap(10).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
-		for i, qq := range q.req.Questions {
-			if qq.Header != "" {
-				ui.Text(c, qq.Header).FontSize(12).TextColor(t.TextMuted)
-			}
-			ui.Text(c, qq.Question).Bold()
-			if qq.Detail != "" {
-				ui.Text(c, qq.Detail)
-			}
-			if qq.MultiSelect {
-				for j, o := range qq.Options {
-					ui.Checkbox(c, &q.multi[i][j], o.Label)
-				}
-			} else if len(qq.Options) > 0 {
-				labels := make([]string, len(qq.Options))
-				for j, o := range qq.Options {
-					labels[j] = o.Label
-				}
-				ui.Segmented(c, &q.choice[i], labels...)
-			}
-			ui.TextInput(c, &q.custom[i]).Placeholder("其他（可选）")
-		}
-		if ui.PrimaryButton(c, "提交").Clicked() {
-			var out []alrt.Answer
-			for i, qq := range q.req.Questions {
-				a := alrt.Answer{ID: qq.ID, Custom: strings.TrimSpace(q.custom[i])}
-				switch {
-				case qq.MultiSelect:
-					for j, on := range q.multi[i] {
-						if on {
-							a.Selected = append(a.Selected, qq.Options[j].Label)
-						}
-					}
-				case len(qq.Options) > 0 && a.Custom == "":
-					a.Selected = []string{qq.Options[q.choice[i]].Label}
-				}
-				out = append(out, a)
-			}
-			select {
-			case q.answer <- out:
-			default:
-			}
-		}
 	})
 }
 

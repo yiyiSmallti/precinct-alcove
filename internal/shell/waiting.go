@@ -46,44 +46,42 @@ func (s *Shell) waitingTotal() int {
 
 func (s *Shell) waitingView(c *ui.Context, pal *palette) {
 	t := c.Theme()
-	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(28, 32).AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Width(720).MaxWidthPercent(100).Gap(14).Children(func() {
-				ui.Text(c, "等你处理").FontSize(20).Bold()
-				total := 0
-				for _, w := range s.workspaces {
-					v := s.views[w.ID]
-					if v == nil || len(v.approvals)+len(v.questions) == 0 {
-						continue
-					}
-					for _, a := range v.approvals {
-						total++
-						s.waitingContext(c, pal, v, a.req.SessionID)
-						s.approvalCard(c, pal, a)
-					}
-					for _, q := range v.questions {
-						total++
-						s.waitingContext(c, pal, v, q.req.SessionID)
-						questionCard(c, pal, q)
-					}
-				}
-				for i, ask := range s.taskAsks {
-					total++
-					s.askCard(c, pal, ask, fmt.Sprint("ask:", i, ask.plugin, ask.req.ID))
-				}
-				for _, wc := range s.waitingCards() {
-					total++
-					ui.Row(c).Key("ctx:"+wc.plugin+wc.item.ID).Gap(6).AlignItems(ui.Center).Padding(6, 0, 0).Children(func() {
-						ui.Icon(c, icCloud).Size(13, 13).TextColor(t.TextMuted)
-						ui.Text(c, "来自 "+displayName(wc.plugin)).FontSize(12).TextColor(t.TextMuted)
-					})
-					s.cardView(c, pal, wc.plugin, wc.item, "w:"+wc.plugin+wc.item.ID)
-				}
-				if total == 0 {
-					emptyState(c, icCheck, t.Success, "没有要你处理的事", "任务需要确认、提问，或助手和云端 bot 想在工作区里运行任务时，会出现在这里。", nil)
-				}
-			})
+	topBar(c, pal, func() {
+		ui.Icon(c, icInbox).Size(15, 15).TextColor(t.TextMuted)
+		ui.Text(c, "等你处理").FontSize(14).Bold().Grow(1)
+	})
+	n := s.waitingTotal()
+	if n == 0 {
+		ui.Column(c).Grow(1).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			emptyState(c, icCheck, pal.done, "没有要你处理的事", "任务需要确认、提问，或助手和云端 bot 想在工作区里运行任务时，会出现在这里。", nil)
 		})
+		return
+	}
+	pageColumn(c, pal, fmt.Sprintf("有 %d 件事等你处理", n), "任务要你确认或回答的事，以及助手和云端 bot 想在工作区里运行的任务。", func() {
+		for _, w := range s.workspaces {
+			v := s.views[w.ID]
+			if v == nil || len(v.approvals)+len(v.questions) == 0 {
+				continue
+			}
+			for _, a := range v.approvals {
+				s.waitingContext(c, pal, v, a.req.SessionID)
+				s.approvalCard(c, pal, v, a)
+			}
+			for _, q := range v.questions {
+				s.waitingContext(c, pal, v, q.req.SessionID)
+				questionCard(c, pal, q)
+			}
+		}
+		for i, ask := range s.taskAsks {
+			s.askCard(c, pal, ask, fmt.Sprint("ask:", i, ask.plugin, ask.req.ID))
+		}
+		for _, wc := range s.waitingCards() {
+			ui.Row(c).Key("ctx:"+wc.plugin+wc.item.ID).Gap(6).AlignItems(ui.Center).Padding(6, 0, 0).Children(func() {
+				ui.Icon(c, icCloud).Size(13, 13).TextColor(t.TextMuted)
+				ui.Text(c, "来自 "+displayName(wc.plugin)).FontSize(12).TextColor(t.TextMuted)
+			})
+			s.cardView(c, pal, wc.plugin, wc.item, "w:"+wc.plugin+wc.item.ID)
+		}
 	})
 }
 
