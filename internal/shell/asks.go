@@ -94,10 +94,10 @@ func (s *Shell) askWorkspaces() []workspace.Workspace {
 func (s *Shell) askCard(c *ui.Context, pal *palette, ask *taskAsk, key any) {
 	t := c.Theme()
 	name := s.pluginTitle(ask.plugin)
-	ui.Column(c).Key(key).Gap(8).Padding(14, 16).Radius(12).Border(1, t.Border).Background(pal.content).Shadow(0, 4, 18, 0, pal.shadow).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			dot(c, pal.waiting)
-			ui.Text(c, "需要你确认").FontSize(13).Bold()
+	slip(c, pal, key, pal.waiting).Children(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			s.pluginMark(c, ask.plugin, 26)
+			ui.Text(c, "需要你确认").FontSize(13.5).Bold()
 			ui.Text(c, name+" 想在工作区里运行任务").FontSize(13).TextColor(t.TextMuted).SingleLine().Shrink(1).MinWidth(0)
 		})
 		ui.Text(c, ask.req.Title).FontSize(14).FontWeight(600).Selectable()

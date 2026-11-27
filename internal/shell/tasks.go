@@ -228,6 +228,15 @@ func (v *wsView) waiting(t *taskView) bool {
 	return false
 }
 
+// waitWord is what a task waiting on the user waits for: 确认, an approval,
+// or 回答, questions alone.
+func (v *wsView) waitWord(t *taskView) string {
+	if as, _ := v.pending(t); len(as) > 0 {
+		return "确认"
+	}
+	return "回答"
+}
+
 // waitingCount is how many tasks of the workspace wait on the user.
 func (v *wsView) waitingCount() int {
 	n := 0

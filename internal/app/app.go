@@ -143,6 +143,11 @@ type Appearance struct {
 	CodeFont string `json:"codeFont,omitempty"`
 	// Zoom scales the whole window; 0 is 1.
 	Zoom float32 `json:"zoom,omitempty"`
+	// EffortStyle is how the run panel draws the thinking effort: ""
+	// (星核, a knob of particles circling a core), "stream" (流光,
+	// particles flowing along the track into the knob) or "embers" (火星,
+	// the efforts as labeled segments, embers rising from the chosen one).
+	EffortStyle string `json:"effortStyle,omitempty"`
 }
 
 // App is one running Alcove.

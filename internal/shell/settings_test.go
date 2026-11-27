@@ -3,6 +3,8 @@ package shell
 import (
 	"testing"
 
+	"github.com/egoist/mygo/ui"
+
 	"github.com/yiyiSmallti/precinct-alcove/internal/app"
 )
 
@@ -10,7 +12,7 @@ func TestAppearanceLooks(t *testing.T) {
 	if !isDark(app.Appearance{}, true) || isDark(app.Appearance{Mode: "light"}, true) || !isDark(app.Appearance{Mode: "dark"}, false) {
 		t.Fatal("mode")
 	}
-	if c, ink := accentColor(app.Appearance{}, false); ink || hexOf(c) != "#4f46e5" {
+	if c, ink := accentColor(app.Appearance{}, false); !ink || hexOf(c) != "#18181b" {
 		t.Fatalf("default: %s %v", hexOf(c), ink)
 	}
 	if c, ink := accentColor(app.Appearance{Tone: "warm"}, false); !ink || hexOf(c) != "#26221d" {
@@ -38,10 +40,27 @@ func TestAppearanceSaved(t *testing.T) {
 	tt.Frame()
 	tt.Click("深色")
 	tt.Frame()
-	tt.Click("紫藤")
+	reveal(t, tt, "紫藤")
+	if err := tt.Click("紫藤"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
 	until(t, tt, s, func() bool {
 		st, err := s.App.Settings()
 		return err == nil && st.Appearance.Mode == "dark" && st.Appearance.Accent == "violet"
 	})
+}
+
+// reveal scrolls the page under the pointer until the element showing s is
+// whole in the window (1100 by 760, as newShell makes it).
+func reveal(t *testing.T, tt *ui.Tester, s string) {
+	t.Helper()
+	for range 30 {
+		if r, ok := tt.Find(s); ok && r.H > 0 && r.Y+r.H <= 760 {
+			return
+		}
+		tt.Scroll(700, 400, 0, 80)
+		tt.Frame()
+	}
+	t.Fatalf("%q does not come into view", s)
 }
